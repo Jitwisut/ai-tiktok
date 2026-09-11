@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
 type Scene = {
   id: string;
@@ -43,6 +44,14 @@ const STATUS_LABEL: Record<string, string> = {
   completed: "เสร็จแล้ว",
   failed: "ล้มเหลว",
   cancelled: "ยกเลิก",
+};
+
+const STATUS_PROGRESS: Record<string, number> = {
+  queued: 20,
+  processing: 65,
+  completed: 100,
+  failed: 100,
+  cancelled: 100,
 };
 
 export function ContentDetailClient({
@@ -256,6 +265,12 @@ export function ContentDetailClient({
                     >
                       {STATUS_LABEL[v.status] ?? v.status}
                     </Badge>
+                    {(v.status === "queued" || v.status === "processing") && (
+                      <Progress
+                        value={STATUS_PROGRESS[v.status]}
+                        className="mt-2 w-full max-w-40"
+                      />
+                    )}
                     {v.errorMessage && (
                       <p className="mt-1 text-xs text-destructive">{v.errorMessage}</p>
                     )}
