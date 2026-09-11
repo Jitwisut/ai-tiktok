@@ -24,6 +24,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 400 });
   }
 
-  const result = await grantCreditsFromEvent(event);
-  return NextResponse.json({ ok: true, result });
+  try {
+    const result = await grantCreditsFromEvent(event);
+    return NextResponse.json({ ok: true, result });
+  } catch (err) {
+    // A permanently-unprocessable event (e.g. the user was deleted after
+    // checkout) must not 500 — Stripe retries 5xx responses for days.
+    // Acknowledge receipt so Stripe stops retrying; log for manual follow-up.
+    console.error("billing webhook: failed to process event", event.id, err);
+    return NextResponse.json({ ok: true, error: "processing_failed" }, { status: 200 });
+  }
 }
