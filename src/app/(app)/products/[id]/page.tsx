@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth/auth";
 import { getProduct } from "@/services/product.service";
+import { getProductAnalysis } from "@/services/analysis.service";
 import { ProductDetailClient } from "./product-detail-client";
 
 export default async function ProductDetailPage({
@@ -17,6 +18,8 @@ export default async function ProductDetailPage({
     notFound();
   }
 
+  const analysis = await getProductAnalysis(session!.user.id, id);
+
   return (
     <ProductDetailClient
       product={{
@@ -31,6 +34,16 @@ export default async function ProductDetailPage({
         sourceUrl: product.sourceUrl,
         images: product.images.map((img) => ({ id: img.id, url: img.url })),
       }}
+      analysis={
+        analysis
+          ? {
+              targetCustomer: analysis.targetCustomer,
+              painPoints: analysis.painPoints,
+              sellingPoints: analysis.sellingPoints,
+              angles: analysis.angles,
+            }
+          : null
+      }
     />
   );
 }

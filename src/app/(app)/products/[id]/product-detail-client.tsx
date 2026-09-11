@@ -9,6 +9,14 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { CONTENT_STYLES } from "@/lib/validation/content";
 
 type ProductDetail = {
   id: string;
@@ -23,7 +31,20 @@ type ProductDetail = {
   images: { id: string; url: string }[];
 };
 
-export function ProductDetailClient({ product }: { product: ProductDetail }) {
+type Analysis = {
+  targetCustomer: string;
+  painPoints: string[];
+  sellingPoints: string[];
+  angles: string[];
+};
+
+export function ProductDetailClient({
+  product,
+  analysis,
+}: {
+  product: ProductDetail;
+  analysis: Analysis | null;
+}) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -36,6 +57,9 @@ export function ProductDetailClient({ product }: { product: ProductDetail }) {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [style, setStyle] = useState<string>(CONTENT_STYLES[0]);
+  const [generatingContent, setGeneratingContent] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -119,6 +143,43 @@ export function ProductDetailClient({ product }: { product: ProductDetail }) {
     router.refresh();
   }
 
+  async function handleAnalyze() {
+    setAnalyzing(true);
+    const res = await fetch(`/api/products/${product.id}/analyze`, {
+      method: "POST",
+    });
+    setAnalyzing(false);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      toast.error(body?.error ?? "วิเคราะห์สินค้าไม่สำเร็จ");
+      return;
+    }
+
+    toast.success("วิเคราะห์สินค้าเสร็จแล้ว");
+    router.refresh();
+  }
+
+  async function handleGenerateContent() {
+    setGeneratingContent(true);
+    const res = await fetch(`/api/contents/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ productId: product.id, style }),
+    });
+    setGeneratingContent(false);
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      toast.error(body?.error ?? "สร้างคอนเทนต์ไม่สำเร็จ");
+      return;
+    }
+
+    const { content } = await res.json();
+    toast.success("สร้างคอนเทนต์แล้ว");
+    router.push(`/contents/${content.id}`);
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -173,6 +234,74 @@ export function ProductDetailClient({ product }: { product: ProductDetail }) {
               </p>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle>AI วิเคราะห์สินค้า</CardTitle>
+            <Button size="sm" variant="outline" onClick={handleAnalyze} disabled={analyzing}>
+              {analyzing ? "กำลังวิเคราะห์..." : analysis ? "วิเคราะห์ใหม่" : "วิเคราะห์สินค้า"}
+            </Button>
+          </div>
+        </CardHeader>
+        {analysis && (
+          <CardContent className="flex flex-col gap-3 text-sm">
+            <div>
+              <p className="font-medium">กลุ่มเป้าหมาย</p>
+              <p className="text-muted-foreground">{analysis.targetCustomer}</p>
+            </div>
+            <div>
+              <p className="font-medium">Pain Points</p>
+              <ul className="list-inside list-disc text-muted-foreground">
+                {analysis.painPoints.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="font-medium">จุดขาย</p>
+              <ul className="list-inside list-disc text-muted-foreground">
+                {analysis.sellingPoints.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {analysis.angles.map((a) => (
+                <Badge key={a} variant="secondary">
+                  {a}
+                </Badge>
+              ))}
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>สร้างคอนเทนต์</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex flex-1 flex-col gap-2">
+            <Label>สไตล์คอนเทนต์</Label>
+            <Select value={style} onValueChange={(value) => value && setStyle(value)}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONTENT_STYLES.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button onClick={handleGenerateContent} disabled={generatingContent}>
+            {generatingContent ? "กำลังสร้าง..." : "สร้าง Hook/Script/Caption"}
+          </Button>
         </CardContent>
       </Card>
 

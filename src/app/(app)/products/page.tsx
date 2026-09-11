@@ -14,7 +14,7 @@ export default async function ProductsPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Products</h1>
-        <Button render={<Link href="/products/new">+ เพิ่มสินค้า</Link>} />
+        <Button nativeButton={false} render={<Link href="/products/new">+ เพิ่มสินค้า</Link>} />
       </div>
 
       {products.length === 0 ? (
@@ -23,6 +23,7 @@ export default async function ProductsPage() {
             <p>ยังไม่มีสินค้าในระบบ</p>
             <Button
               variant="outline"
+              nativeButton={false}
               render={<Link href="/products/new">เพิ่มสินค้าแรกของคุณ</Link>}
             />
           </CardContent>
