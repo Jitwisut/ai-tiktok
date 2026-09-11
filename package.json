@@ -7,8 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "worker": "tsx watch src/workers/video.worker.ts",
-    "db:migrate": "prisma migrate dev && prisma generate"
+    "worker": "tsx watch src/workers/video.worker.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

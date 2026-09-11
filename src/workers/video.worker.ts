@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Worker, type Job } from "bullmq";
-import { redisConnection } from "@/lib/queue/connection";
+import { createWorkerConnection } from "@/lib/queue/connection";
 import { VIDEO_QUEUE_NAME, type VideoJobData } from "@/lib/queue/video-queue";
 import { prisma } from "@/lib/db/prisma";
 import { getVideoProvider } from "@/lib/video";
@@ -39,7 +39,7 @@ async function processVideoJob(job: Job<VideoJobData>) {
 }
 
 const worker = new Worker<VideoJobData>(VIDEO_QUEUE_NAME, processVideoJob, {
-  connection: redisConnection,
+  connection: createWorkerConnection(),
   settings: {
     backoffStrategy: (attemptsMade) =>
       BACKOFF_DELAYS_MS[attemptsMade - 1] ?? BACKOFF_DELAYS_MS.at(-1)!,
