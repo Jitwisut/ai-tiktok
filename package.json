@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "worker": "tsx watch src/workers/video.worker.ts"
+    "worker": "tsx watch src/workers/video.worker.ts",
+    "worker:scheduler": "tsx watch src/workers/scheduled-post.worker.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

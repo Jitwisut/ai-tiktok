@@ -27,6 +27,7 @@ model User {
   contents      Content[]
   videos        Video[]
   creditTransactions CreditTransaction[]
+  scheduledPosts ScheduledPost[]
 
   @@unique([email])
   @@map("user")
@@ -139,10 +140,37 @@ model Video {
   attempts      Int         @default(0)
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
+  scheduledPosts ScheduledPost[]
 
   @@index([userId])
   @@index([contentId])
   @@map("videos")
+}
+
+enum ScheduledPostStatus {
+  scheduled
+  posted
+  failed
+  cancelled
+}
+
+model ScheduledPost {
+  id             String              @id @default(cuid())
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  videoId        String
+  video          Video               @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  platform       String
+  scheduledAt    DateTime
+  status         ScheduledPostStatus @default(scheduled)
+  platformPostId String?
+  error          String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([userId])
+  @@index([videoId])
+  @@map("scheduled_posts")
 }
 
 model CreditTransaction {

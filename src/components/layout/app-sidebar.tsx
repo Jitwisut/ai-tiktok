@@ -9,6 +9,7 @@ import {
   Video,
   Settings,
   LogOut,
+  CalendarClock,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/auth-client";
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { title: "Products", url: "/products", icon: Package },
   { title: "Content", url: "/contents", icon: FileText },
   { title: "Videos", url: "/videos", icon: Video },
+  { title: "Schedule", url: "/schedule", icon: CalendarClock },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
