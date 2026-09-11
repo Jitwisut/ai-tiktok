@@ -18,6 +18,7 @@ export const config = {
     "/contents/:path*",
     "/videos/:path*",
     "/schedule/:path*",
+    "/analytics/:path*",
     "/settings/:path*",
   ],
 };
