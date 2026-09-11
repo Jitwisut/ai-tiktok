@@ -50,9 +50,22 @@ model Product {
   status      ProductStatus @default(pending)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+  images      ProductImage[]
 
   @@index([userId])
   @@map("products")
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+  @@map("product_images")
 }
 
 model Session {
