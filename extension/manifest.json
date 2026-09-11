@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AI Affiliate Studio — Add to Studio",
+  "version": "0.1.0",
+  "description": "Add the product on the current page to AI Affiliate Studio.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://localhost:3000/*"],
+  "action": {
+    "default_title": "Add to AI Studio"
+  },
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

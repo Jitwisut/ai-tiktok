@@ -6,6 +6,8 @@ export const createProductSchema = z.object({
   description: z.string().max(2000).optional(),
   price: z.coerce.number().positive().optional(),
   currency: z.string().max(10).optional(),
+  source: z.enum(["manual", "extension", "url"]).optional(),
+  images: z.array(z.string().url()).max(5).optional(),
 });
 
 export type CreateProductInput = z.infer<typeof createProductSchema>;

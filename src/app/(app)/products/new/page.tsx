@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,12 +15,23 @@ import {
 } from "@/components/ui/card";
 
 export default function NewProductPage() {
-  const router = useRouter();
+  return (
+    <Suspense>
+      <NewProductForm />
+    </Suspense>
+  );
+}
 
-  const [name, setName] = useState("");
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [description, setDescription] = useState("");
-  const [price, setPrice] = useState("");
+function NewProductForm() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromExtension = searchParams.get("source") === "extension";
+
+  const [name, setName] = useState(searchParams.get("name") ?? "");
+  const [sourceUrl, setSourceUrl] = useState(searchParams.get("sourceUrl") ?? "");
+  const [description, setDescription] = useState(searchParams.get("description") ?? "");
+  const [price, setPrice] = useState(searchParams.get("price") ?? "");
+  const [image] = useState(searchParams.get("image") ?? "");
   const [importUrl, setImportUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -39,6 +50,8 @@ export default function NewProductPage() {
         description: description || undefined,
         price: price || undefined,
         currency: price ? "THB" : undefined,
+        source: fromExtension ? "extension" : "manual",
+        images: image ? [image] : undefined,
       }),
     });
 
@@ -83,7 +96,12 @@ export default function NewProductPage() {
           <CardTitle>เพิ่มสินค้าใหม่</CardTitle>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="url">
+          {fromExtension && (
+            <p className="mb-3 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+              ดึงข้อมูลจาก Chrome Extension มาให้แล้ว ตรวจสอบก่อนบันทึก
+            </p>
+          )}
+          <Tabs defaultValue={fromExtension ? "manual" : "url"}>
             <TabsList className="w-full">
               <TabsTrigger value="url" className="flex-1">
                 นำเข้าจาก URL
