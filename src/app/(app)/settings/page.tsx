@@ -1,6 +1,8 @@
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CREDIT_PACKAGES } from "@/lib/billing/packages";
+import { BillingSection } from "./billing-section";
 
 export default async function SettingsPage() {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -17,6 +19,10 @@ export default async function SettingsPage() {
           <p>อีเมล: {session?.user.email}</p>
         </CardContent>
       </Card>
+      <BillingSection
+        credits={(session?.user as { credits?: number })?.credits ?? 0}
+        packages={CREDIT_PACKAGES}
+      />
     </div>
   );
 }
