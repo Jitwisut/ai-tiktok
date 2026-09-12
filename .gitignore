@@ -26,6 +26,7 @@
 
 # local file uploads (dev-only storage provider)
 /public/uploads
+/public/generated-videos
 
 # debug
 npm-debug.log*

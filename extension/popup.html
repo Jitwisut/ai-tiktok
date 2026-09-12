@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8" />
+    <title>AI Affiliate Studio</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        width: 360px;
+        margin: 0;
+        padding: 14px;
+        color: #111827;
+        background: #fff;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 10px;
+      }
+      .job {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      .job img {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 6px;
+        background: #f3f4f6;
+        flex-shrink: 0;
+      }
+      .job-info {
+        flex: 1;
+        min-width: 0;
+      }
+      .job-name {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .job-hook {
+        font-size: 11px;
+        color: #6b7280;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      button.run {
+        background: #111827;
+        color: #fff;
+        border: none;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      button.run:disabled {
+        background: #9ca3af;
+        cursor: default;
+      }
+      .msg {
+        font-size: 12px;
+        color: #6b7280;
+        line-height: 1.5;
+      }
+      .msg a {
+        color: #2563eb;
+      }
+      .bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .link {
+        font-size: 11px;
+        color: #2563eb;
+        cursor: pointer;
+        text-decoration: underline;
+        background: none;
+        border: none;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <h1>งานวิดีโอที่รออยู่</h1>
+      <button class="link" id="openOptions">ตั้งค่า</button>
+    </div>
+    <div id="content"><p class="msg">กำลังโหลด...</p></div>
+    <script src="dist/popup.js"></script>
+  </body>
+</html>

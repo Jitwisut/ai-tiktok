@@ -1,20 +1,32 @@
 {
   "manifest_version": 3,
   "name": "AI Affiliate Studio — Add to Studio",
-  "version": "0.1.0",
-  "description": "Add the product on the current page to AI Affiliate Studio.",
-  "permissions": ["activeTab", "scripting"],
-  "host_permissions": ["http://localhost:3000/*"],
+  "version": "0.2.0",
+  "description": "Add the product on the current page to AI Affiliate Studio, and generate videos through Google AI Studio.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": ["http://localhost:3000/*", "https://aistudio.google.com/*"],
   "action": {
-    "default_title": "Add to AI Studio"
+    "default_title": "AI Affiliate Studio",
+    "default_popup": "popup.html"
   },
   "background": {
     "service_worker": "dist/background.js"
   },
+  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["dist/content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://localhost:3000/*"],
+      "js": ["dist/app-bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://aistudio.google.com/*"],
+      "js": ["dist/ai-studio-automation.js"],
       "run_at": "document_idle"
     }
   ]

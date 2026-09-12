@@ -71,6 +71,7 @@ export function ContentDetailClient({
   const [saving, setSaving] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [creatingVideo, setCreatingVideo] = useState(false);
+  const [creatingViaExtension, setCreatingViaExtension] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const hasPending = videos.some(
@@ -134,6 +135,50 @@ export function ContentDetailClient({
       return;
     }
     toast.success("เริ่มสร้างวิดีโอแล้ว กำลังประมวลผล...");
+    router.refresh();
+  }
+
+  async function handleGenerateViaExtension() {
+    // The extension's content script stamps this on load, so presence is a
+    // straight check rather than a race against a reply timeout.
+    const extensionPresent = document.documentElement.hasAttribute(
+      "data-ai-affiliate-bridge-loaded",
+    );
+    if (!extensionPresent) {
+      toast.error("ไม่พบ Extension — ติดตั้งแล้วรีเฟรชหน้านี้ก่อนใช้ฟีเจอร์นี้");
+      return;
+    }
+
+    setCreatingViaExtension(true);
+    const res = await fetch("/api/videos/extension", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentId: content.id }),
+    });
+
+    if (!res.ok) {
+      setCreatingViaExtension(false);
+      const body = await res.json().catch(() => null);
+      toast.error(body?.error ?? "สร้างวิดีโอไม่สำเร็จ");
+      return;
+    }
+
+    const { video, prompt, imageUrl } = await res.json();
+
+    window.dispatchEvent(
+      new CustomEvent("ai-affiliate:generate-via-extension", {
+        detail: {
+          videoId: video.id,
+          prompt,
+          duration: video.duration,
+          aspectRatio: video.aspectRatio,
+          imageUrl,
+        },
+      }),
+    );
+
+    setCreatingViaExtension(false);
+    toast.success("ส่งงานไปที่ AI Studio แล้ว กำลังรอผลลัพธ์...");
     router.refresh();
   }
 
@@ -233,12 +278,21 @@ export function ContentDetailClient({
           <CardTitle>สร้างวิดีโอ</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          <Button
-            onClick={handleCreateVideo}
-            disabled={creatingVideo || content.scenes.length === 0}
-          >
-            {creatingVideo ? "กำลังส่งงาน..." : "Generate Video (20 เครดิต)"}
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button
+              onClick={handleCreateVideo}
+              disabled={creatingVideo || content.scenes.length === 0}
+            >
+              {creatingVideo ? "กำลังส่งงาน..." : "Generate Video (20 เครดิต)"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleGenerateViaExtension}
+              disabled={creatingViaExtension || content.scenes.length === 0}
+            >
+              {creatingViaExtension ? "กำลังส่งงาน..." : "สร้างผ่าน AI Studio (Extension)"}
+            </Button>
+          </div>
           {content.scenes.length === 0 && (
             <p className="text-xs text-muted-foreground">ต้องสร้างฉากก่อนจึงจะสร้างวิดีโอได้</p>
           )}

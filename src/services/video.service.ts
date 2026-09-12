@@ -75,6 +75,47 @@ export async function createVideo(
   return { video };
 }
 
+/**
+ * Alternate path for users generating video manually through Google AI
+ * Studio's web UI (via the browser extension) instead of the app's own
+ * VIDEO_PROVIDER. No credit deduction and no queue job — the extension
+ * does the generation and POSTs the finished file to the upload route,
+ * which flips this row to completed.
+ */
+export async function createExtensionVideoJob(
+  userId: string,
+  contentId: string,
+  settings: VideoSettings,
+) {
+  const content = await prisma.content.findFirst({
+    where: { id: contentId, userId },
+    include: {
+      product: { include: { images: { orderBy: { position: "asc" }, take: 1 } } },
+      scenes: { orderBy: { position: "asc" } },
+    },
+  });
+  if (!content) return { error: "not_found" as const };
+  if (content.scenes.length === 0) return { error: "no_scenes" as const };
+
+  const built = buildVeoPrompt(content.product.name, content.scenes, settings);
+
+  const video = await prisma.video.create({
+    data: {
+      userId,
+      contentId,
+      provider: "extension",
+      status: "queued",
+      aspectRatio: settings.aspectRatio,
+      duration: settings.duration,
+      settings: JSON.parse(
+        JSON.stringify({ ...settings, promptText: built.text, structured: built.structured }),
+      ),
+    },
+  });
+
+  return { video, prompt: built.text, imageUrl: content.product.images[0]?.url ?? null };
+}
+
 export function listVideos(userId: string) {
   return prisma.video.findMany({
     where: { userId },
