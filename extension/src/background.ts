@@ -25,6 +25,7 @@ interface AddProductMessage {
     description?: string;
     price?: string;
     image?: string;
+    images?: string[];
   };
 }
 
@@ -275,6 +276,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
     if (message.product.description) params.set("description", message.product.description);
     if (message.product.price) params.set("price", message.product.price);
     if (message.product.image) params.set("image", message.product.image);
+    // Extra shots ride along so the analysis has more than one angle to look at.
+    if (message.product.images?.length) params.set("images", message.product.images.join("|"));
 
     chrome.tabs.create({ url: `${WEB_APP_URL}/products/new?${params.toString()}` });
     sendResponse({ ok: true });

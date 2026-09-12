@@ -31,7 +31,13 @@ function NewProductForm() {
   const [sourceUrl, setSourceUrl] = useState(searchParams.get("sourceUrl") ?? "");
   const [description, setDescription] = useState(searchParams.get("description") ?? "");
   const [price, setPrice] = useState(searchParams.get("price") ?? "");
-  const [image] = useState(searchParams.get("image") ?? "");
+  // The extension sends every product shot it found; the analysis reads all
+  // of them, so keep more than the first.
+  const [images] = useState<string[]>(() => {
+    const extra = searchParams.get("images")?.split("|").filter(Boolean) ?? [];
+    const primary = searchParams.get("image");
+    return Array.from(new Set([primary, ...extra].filter((v): v is string => Boolean(v))));
+  });
   const [importUrl, setImportUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,7 +57,7 @@ function NewProductForm() {
         price: price || undefined,
         currency: price ? "THB" : undefined,
         source: fromExtension ? "extension" : "manual",
-        images: image ? [image] : undefined,
+        images: images.length ? images : undefined,
       }),
     });
 
