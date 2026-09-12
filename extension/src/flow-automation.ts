@@ -117,59 +117,113 @@ function flowFindRejectedNotice(): string | undefined {
   return undefined;
 }
 
-/**
- * Flow only attaches the real <video> element once a tile is hovered, and the
- * listener sits on an inner node — mouseenter does not bubble and no event
- * propagates downward, so the events have to be fired on the tile and every
- * descendant for the video to materialise.
- */
-function flowCollectVideoSrcs(): string[] {
-  const fire = (el: Element) => {
+function flowHover(el: Element) {
+  const fire = (target: Element) => {
     for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
-      el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "mouse" }));
+      target.dispatchEvent(
+        new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "mouse" }),
+      );
     }
   };
+  fire(el);
+  for (const child of Array.from(el.querySelectorAll("*"))) fire(child);
+}
 
-  for (const tile of Array.from(document.querySelectorAll("flow-video-tile"))) {
-    fire(tile);
-    for (const child of Array.from(tile.querySelectorAll("*"))) fire(child);
+/**
+ * Only ever looks at the newest tile. Flow renders newest-first in a
+ * virtualised grid, so scanning the whole grid for "a src we haven't seen"
+ * reports an old clip as new the moment one scrolls into view — which
+ * previously made the run think a clip had finished while Flow was still
+ * generating it, leaving the next clip unable to submit.
+ *
+ * Flow also only attaches the real <video> once a tile is hovered, and the
+ * listener sits on an inner node (mouseenter does not bubble, and nothing
+ * propagates downward), hence hovering every descendant.
+ */
+function flowNewestVideoSrc(): string | undefined {
+  const tile = document.querySelector("flow-video-tile");
+  if (!tile) return undefined;
+  flowHover(tile);
+  const video = tile.querySelector("video");
+  return video?.getAttribute("src") ?? video?.currentSrc ?? undefined;
+}
+
+/**
+ * The baseline this run compares against. A plain read right after page load
+ * returns undefined because the hover has not attached the <video> yet, and
+ * treating that as "no videos" makes the first already-existing clip look
+ * freshly generated — which is how a run could "finish" a clip seconds after
+ * starting it.
+ */
+async function flowBaselineVideoSrc(): Promise<string | undefined> {
+  if (!document.querySelector("flow-video-tile")) return undefined;
+  return await flowWaitFor(() => flowNewestVideoSrc(), 15000, 500);
+}
+
+/**
+ * Hands the previous clip to the agent as an ingredient. Prompt text alone
+ * does not hold the scene together — an earlier three-clip run came back
+ * with a different person and room each time — but Flow will carry over
+ * look and subject when it can see the clip it is continuing from.
+ */
+async function flowAttachPreviousClip(): Promise<boolean> {
+  const addButton = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Add ingredients to the prompt box"]',
+  );
+  if (!addButton) return false;
+  addButton.click();
+
+  const asset = await flowWaitFor(
+    () => document.querySelector<HTMLElement>(".asset-item") ?? undefined,
+    8000,
+    300,
+  );
+  if (!asset) return false;
+
+  for (const type of ["pointerdown", "mousedown", "mouseup", "click"] as const) {
+    asset.dispatchEvent(new MouseEvent(type, { bubbles: true }));
   }
-
-  return Array.from(document.querySelectorAll<HTMLVideoElement>("flow-video-tile video"))
-    .map((v) => v.getAttribute("src") ?? v.currentSrc ?? "")
-    .filter(Boolean);
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  return true;
 }
 
 async function flowGenerateClip(
   clip: FlowClip,
   label: string,
-  knownSrcs: Set<string>,
   aspectRatio: string,
-) {
+): Promise<string | null> {
   const editor = await flowWaitFor(() => flowFindEditor(), 30000, 500);
   if (!editor) {
     flowShowBanner("ไม่พบช่อง prompt บนหน้า Flow (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
     return null;
   }
 
+  // Flow refuses a new prompt while the last one is still running, so wait
+  // for it to go idle rather than typing into a locked composer.
+  if (clip.index > 0) {
+    flowShowBanner(`AI Affiliate Studio: ${label} รอ Flow ว่าง...`, "#111827");
+    await flowWaitFor(() => (flowIsGenerating() ? undefined : true), FLOW_MAX_WAIT_MS, FLOW_POLL_MS);
+
+    flowShowBanner(`AI Affiliate Studio: ${label} กำลังแนบคลิปก่อนหน้า...`, "#111827");
+    await flowAttachPreviousClip();
+  }
+
+  const previousNewest = await flowBaselineVideoSrc();
+
   flowShowBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
 
-  // The planner writes a start-frame hint for AI Studio; Flow has no
-  // start-frame input we can drive, so point the agent at the clip it just
-  // made in this project instead.
-  const basePrompt = clip.prompt.replace(
-    /\nContinue seamlessly from the provided start frame[^\n]*/,
-    "",
-  );
+  // The previous clip is attached as an ingredient for parts after the
+  // first. Say what to copy from it and what must differ — asking only for a
+  // match makes the agent re-render the same shot.
   const continuation =
     clip.index > 0
-      ? " Continue seamlessly from the previous video in this project: same set, same lighting, same product, same character and framing. Do not restart the scene."
+      ? " The attached video is the previous part. Reuse its person, wardrobe, room, product and colour grade, but this part must be a NEW shot: different camera angle and the new action described above. Do not re-create the attached video."
       : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
   flowSetPrompt(
     editor,
-    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${basePrompt}${continuation}`,
+    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${clip.prompt}${continuation}`,
   );
   await new Promise((resolve) => setTimeout(resolve, 1200));
 
@@ -178,7 +232,7 @@ async function flowGenerateClip(
       const btn = flowFindStartButton();
       return btn && btn.getAttribute("aria-disabled") !== "true" ? btn : undefined;
     },
-    20000,
+    60000,
     500,
   );
   if (!start) {
@@ -204,8 +258,8 @@ async function flowGenerateClip(
     () => {
       const blocked = flowFindRejectedNotice();
       if (blocked) return blocked;
-      const fresh = flowCollectVideoSrcs().find((src) => !knownSrcs.has(src));
-      return fresh;
+      const newest = flowNewestVideoSrc();
+      return newest && newest !== previousNewest ? newest : undefined;
     },
     FLOW_MAX_WAIT_MS,
     FLOW_POLL_MS,
@@ -250,18 +304,16 @@ async function flowRunJob(job: FlowVideoJob) {
   }
 
   const total = job.clips.length;
-  const knownSrcs = new Set(flowCollectVideoSrcs());
 
   for (const clip of job.clips) {
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
-    const src = await flowGenerateClip(clip, label, knownSrcs, job.aspectRatio || "9:16");
+    const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16");
     if (!src) {
       flowReportProgress(job.videoId, clip.index + 1, total, "failed");
       return;
     }
-    knownSrcs.add(src);
 
     flowShowBanner(`AI Affiliate Studio: ${label} กำลังอัปโหลด...`, "#111827");
     flowReportProgress(job.videoId, clip.index + 1, total, "uploading");

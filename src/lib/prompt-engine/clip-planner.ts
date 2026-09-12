@@ -42,14 +42,38 @@ export function planClips(
     }));
 
     const built = buildVeoPrompt(productName, scaled, { ...settings, duration: CLIP_SECONDS });
-    const continuation =
-      index === 0
-        ? ""
-        : "\nContinue seamlessly from the provided start frame, same set, same lighting, same product.";
+
+    // Each clip is rendered by a separate call that sees only its own prompt,
+    // so the story has to be restated every time or the cuts read as
+    // unrelated videos. Separating what must stay identical from what must
+    // change matters: instructions that only ask for sameness produce three
+    // near-copies of the same shot.
+    const story = [
+      `This is part ${index + 1} of ${clipCount} of one continuous ${clipCount * CLIP_SECONDS}-second advert.`,
+      "Keep identical across parts: the same person, wardrobe, room, product and colour grade.",
+      "Change in every part: the action, the camera angle and the framing.",
+    ];
+
+    if (index > 0) {
+      const alreadyShown = scenes
+        .slice(0, first)
+        .map((scene) => scene.description)
+        .join(" / ");
+      if (alreadyShown) {
+        story.push(`Earlier parts already showed: ${alreadyShown}. Do not repeat any of that.`);
+      }
+      story.push(
+        "Pick up where the previous part left off and move the story forward with the new action above.",
+      );
+    }
+
+    if (index === clipCount - 1 && clipCount > 1) {
+      story.push("This is the final part — end on the product looking appealing.");
+    }
 
     return {
       index,
-      prompt: `${built.text}${continuation}`,
+      prompt: `${built.text}\n${story.join(" ")}`,
       startSecond: index * CLIP_SECONDS,
     };
   });

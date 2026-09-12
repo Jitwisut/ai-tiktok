@@ -49,7 +49,7 @@ export class GeminiProvider implements LLMProvider {
    * both worth waiting out; anything else is a real error and rethrown.
    */
   private async withRetry<R>(call: () => Promise<R>): Promise<R> {
-    const delaysMs = [1000, 3000, 8000];
+    const delaysMs = [1000, 3000, 8000, 15000, 30000, 45000];
 
     for (let attempt = 0; ; attempt++) {
       try {
@@ -58,7 +58,13 @@ export class GeminiProvider implements LLMProvider {
         const status = (err as { status?: number })?.status;
         const retriable = status === 429 || status === 503 || status === 500;
         if (!retriable || attempt >= delaysMs.length) throw err;
-        await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+
+        // Rate-limit responses say how long to wait; prefer that over guessing.
+        const asked = /retry in ([\d.]+)s/i.exec(String((err as Error)?.message ?? ""));
+        const askedMs = asked ? Math.ceil(Number(asked[1]) * 1000) : 0;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(delaysMs[attempt], askedMs)),
+        );
       }
     }
   }
