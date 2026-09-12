@@ -63,7 +63,7 @@ function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
   if (!onStudioPage) {
     const note = document.createElement("p");
     note.className = "msg";
-    note.textContent = "ไม่ได้อยู่หน้า AI Studio — กดสร้างแล้วระบบจะเปิดแท็บใหม่ให้";
+    note.textContent = "ไม่ได้อยู่หน้าเว็บสร้างวิดีโอ — กดสร้างแล้วระบบจะเปิดแท็บใหม่ให้";
     contentEl.appendChild(note);
   }
 
@@ -102,8 +102,9 @@ function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
       const targetDuration = Number(
         (document.getElementById("duration") as HTMLSelectElement).value,
       );
+      const site = (document.getElementById("site") as HTMLSelectElement).value;
       chrome.runtime.sendMessage(
-        { type: "RUN_JOB_FROM_POPUP", job, targetDuration },
+        { type: "RUN_JOB_FROM_POPUP", job, targetDuration, site },
         (result: { ok: boolean; error?: string }) => {
           if (result?.ok) {
             button.textContent = "เริ่มแล้ว ✓";
@@ -127,10 +128,17 @@ async function load() {
     "appBaseUrl",
     "extensionToken",
     "targetDuration",
+    "generationSite",
     "jobProgress",
   ]);
   const appBaseUrl = (stored.appBaseUrl as string | undefined) || "http://localhost:3000";
   const extensionToken = (stored.extensionToken as string | undefined) || "";
+
+  const siteSelect = document.getElementById("site") as HTMLSelectElement;
+  siteSelect.value = (stored.generationSite as string | undefined) ?? "aistudio";
+  siteSelect.addEventListener("change", () => {
+    chrome.storage.local.set({ generationSite: siteSelect.value });
+  });
 
   const durationSelect = document.getElementById("duration") as HTMLSelectElement;
   durationSelect.value = String((stored.targetDuration as number | undefined) ?? 24);
@@ -146,7 +154,11 @@ async function load() {
   }
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const onStudioPage = (tab?.url ?? "").includes("aistudio.google.com");
+  const tabUrl = tab?.url ?? "";
+  const onStudioPage =
+    siteSelect.value === "flow"
+      ? tabUrl.includes("flow.google.com")
+      : tabUrl.includes("aistudio.google.com");
 
   try {
     const res = await fetch(`${appBaseUrl}/api/videos/extension/pending`, {

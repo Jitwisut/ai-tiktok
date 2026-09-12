@@ -4,7 +4,11 @@
   "version": "0.2.0",
   "description": "Add the product on the current page to AI Affiliate Studio, and generate videos through Google AI Studio.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
-  "host_permissions": ["http://localhost:3000/*", "https://aistudio.google.com/*"],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "https://aistudio.google.com/*",
+    "https://flow.google.com/*"
+  ],
   "action": {
     "default_title": "AI Affiliate Studio",
     "default_popup": "popup.html"
@@ -27,6 +31,11 @@
     {
       "matches": ["https://aistudio.google.com/*"],
       "js": ["dist/ai-studio-automation.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://flow.google.com/*"],
+      "js": ["dist/flow-automation.js"],
       "run_at": "document_idle"
     }
   ]

@@ -3,6 +3,20 @@ const VEO_MODEL_ID = "veo-3.1-fast-generate-preview";
 const CLIP_SECONDS = 8;
 const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VEO_MODEL_ID}`;
 
+type GenerationSite = "aistudio" | "flow";
+
+async function siteTargetUrl(site: GenerationSite): Promise<string> {
+  if (site === "aistudio") return VEO_STUDIO_URL;
+  const stored = await chrome.storage.local.get("flowProjectUrl");
+  return (stored.flowProjectUrl as string | undefined) || "https://flow.google.com/";
+}
+
+function siteMatchesTab(site: GenerationSite, url: string): boolean {
+  return site === "aistudio"
+    ? url.includes("aistudio.google.com")
+    : url.includes("flow.google.com");
+}
+
 interface AddProductMessage {
   type: "ADD_PRODUCT";
   product: {
@@ -40,6 +54,7 @@ interface IncomingVideoJob {
 interface QueueVideoJobMessage {
   type: "QUEUE_EXTENSION_VIDEO_JOB";
   job: IncomingVideoJob;
+  site?: GenerationSite;
 }
 
 interface GetPendingVideoJobMessage {
@@ -50,6 +65,7 @@ interface RunJobFromPopupMessage {
   type: "RUN_JOB_FROM_POPUP";
   job: IncomingVideoJob;
   targetDuration?: number;
+  site?: GenerationSite;
 }
 
 interface UploadVideoMessage {
@@ -61,12 +77,26 @@ interface UploadVideoMessage {
   clipTotal?: number;
 }
 
+/**
+ * Flow serves its clips from a URL the page's CSP forbids the content script
+ * from fetching, so the worker fetches it here instead — host_permissions
+ * cover it and extension contexts are not bound by the page's CSP.
+ */
+interface FetchAndUploadMessage {
+  type: "FETCH_AND_UPLOAD_VIDEO";
+  videoId: string;
+  url: string;
+  clipIndex?: number;
+  clipTotal?: number;
+}
+
 type ExtensionMessage =
   | AddProductMessage
   | QueueVideoJobMessage
   | GetPendingVideoJobMessage
   | RunJobFromPopupMessage
-  | UploadVideoMessage;
+  | UploadVideoMessage
+  | FetchAndUploadMessage;
 
 async function getExtensionConfig() {
   const stored = await chrome.storage.local.get(["appBaseUrl", "extensionToken"]);
@@ -156,6 +186,32 @@ async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Pr
   };
 }
 
+async function postClipToApp(
+  videoId: string,
+  body: BodyInit,
+  mimeType: string,
+  clipIndex: number,
+  clipTotal: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const { appBaseUrl, extensionToken } = await getExtensionConfig();
+  if (!extensionToken) {
+    return { ok: false, error: "ยังไม่ได้ตั้งค่า Extension Token ใน Options" };
+  }
+
+  const query = `?clip=${clipIndex}&total=${clipTotal}`;
+  const res = await fetch(`${appBaseUrl}/api/videos/${videoId}/upload${query}`, {
+    method: "POST",
+    headers: { "Content-Type": mimeType, "X-Extension-Token": extensionToken },
+    body,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    return { ok: false, error: errorBody.error ?? `อัปโหลดล้มเหลว (${res.status})` };
+  }
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   if (message.type === "ADD_PRODUCT") {
     const params = new URLSearchParams({ source: "extension", sourceUrl: message.product.url });
@@ -171,9 +227,11 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
   if (message.type === "QUEUE_EXTENSION_VIDEO_JOB") {
     (async () => {
+      const site = message.site ?? "aistudio";
       const job = await buildJob(message.job);
+      const url = await siteTargetUrl(site);
       chrome.storage.local.set({ pendingVideoJob: job }, () => {
-        chrome.tabs.create({ url: VEO_STUDIO_URL });
+        chrome.tabs.create({ url });
         sendResponse({ ok: true });
       });
     })();
@@ -182,23 +240,25 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
   if (message.type === "RUN_JOB_FROM_POPUP") {
     (async () => {
+      const site = message.site ?? "aistudio";
       const job = await buildJob(message.job, message.targetDuration);
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-      // Already on AI Studio: drive that tab directly so the user never
-      // leaves the page they are looking at.
-      if (tab?.id && (tab.url ?? "").includes("aistudio.google.com")) {
+      // Already on the generation site: drive that tab directly so the user
+      // never leaves the page they are looking at.
+      if (tab?.id && siteMatchesTab(site, tab.url ?? "")) {
         try {
           const result = await chrome.tabs.sendMessage(tab.id, { type: "RUN_VIDEO_JOB", job });
           sendResponse(result ?? { ok: true });
         } catch {
-          sendResponse({ ok: false, error: "รีเฟรชหน้า AI Studio ก่อนแล้วลองใหม่" });
+          sendResponse({ ok: false, error: "รีเฟรชหน้าเว็บสร้างวิดีโอก่อนแล้วลองใหม่" });
         }
         return;
       }
 
+      const url = await siteTargetUrl(site);
       chrome.storage.local.set({ pendingVideoJob: job }, () => {
-        chrome.tabs.create({ url: VEO_STUDIO_URL });
+        chrome.tabs.create({ url });
         sendResponse({ ok: true });
       });
     })();
@@ -218,31 +278,42 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
   if (message.type === "UPLOAD_VIDEO") {
     (async () => {
-      const { appBaseUrl, extensionToken } = await getExtensionConfig();
-      if (!extensionToken) {
-        sendResponse({ ok: false, error: "ยังไม่ได้ตั้งค่า Extension Token ใน Options" });
-        return;
-      }
-
       try {
         const bytes = base64ToUint8Array(message.base64);
-        const query = `?clip=${message.clipIndex ?? 0}&total=${message.clipTotal ?? 1}`;
-        const res = await fetch(`${appBaseUrl}/api/videos/${message.videoId}/upload${query}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": message.mimeType,
-            "X-Extension-Token": extensionToken,
-          },
-          body: new Blob([bytes as unknown as BlobPart]),
-        });
+        sendResponse(
+          await postClipToApp(
+            message.videoId,
+            new Blob([bytes as unknown as BlobPart]),
+            message.mimeType,
+            message.clipIndex ?? 0,
+            message.clipTotal ?? 1,
+          ),
+        );
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "อัปโหลดล้มเหลว" });
+      }
+    })();
+    return true;
+  }
 
+  if (message.type === "FETCH_AND_UPLOAD_VIDEO") {
+    (async () => {
+      try {
+        const res = await fetch(message.url, { credentials: "include" });
         if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          sendResponse({ ok: false, error: body.error ?? `อัปโหลดล้มเหลว (${res.status})` });
+          sendResponse({ ok: false, error: `ดึงไฟล์วิดีโอไม่สำเร็จ (${res.status})` });
           return;
         }
-
-        sendResponse({ ok: true });
+        const blob = await res.blob();
+        sendResponse(
+          await postClipToApp(
+            message.videoId,
+            blob,
+            "video/mp4",
+            message.clipIndex ?? 0,
+            message.clipTotal ?? 1,
+          ),
+        );
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "อัปโหลดล้มเหลว" });
       }

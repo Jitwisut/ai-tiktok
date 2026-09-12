@@ -152,6 +152,14 @@
     </div>
 
     <div class="duration">
+      <label for="site">สร้างที่</label>
+      <select id="site">
+        <option value="aistudio">AI Studio</option>
+        <option value="flow">Google Flow</option>
+      </select>
+    </div>
+
+    <div class="duration">
       <label for="duration">ความยาว</label>
       <select id="duration">
         <option value="8">8 วินาที (1 คลิป)</option>
@@ -161,8 +169,8 @@
       </select>
     </div>
     <p class="hint">
-      Veo สร้างได้ครั้งละ 8 วินาที ระบบจะสร้างหลายคลิปต่อกันโดยใช้เฟรมสุดท้ายของคลิปก่อนหน้าเป็นภาพเริ่มต้น
-      แล้วแอปจะต่อเป็นไฟล์เดียวให้
+      สร้างได้ครั้งละ 8 วินาที ระบบจะสร้างหลายคลิปแล้วให้แอปต่อเป็นไฟล์เดียว
+      (AI Studio ต่อภาพด้วยเฟรมสุดท้ายของคลิปก่อนหน้า ส่วน Flow ยังต่อด้วยข้อความ prompt อย่างเดียว)
     </p>
 
     <div id="progress" hidden></div>
