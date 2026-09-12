@@ -127,6 +127,25 @@ function flowSetPrompt(editor: HTMLElement, text: string) {
   document.execCommand("insertText", false, text);
 }
 
+/**
+ * execCommand writes nothing if anything else holds focus, and the failure is
+ * silent — the run then waits forever on a Run button that stays disabled
+ * because the box is empty. Read the text back and retry rather than trust it.
+ */
+async function flowSetPromptVerified(text: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const editor = flowFindEditor();
+    if (editor) {
+      flowSetPrompt(editor, text);
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      if ((flowFindEditor()?.textContent ?? "").trim().length > 20) return true;
+    }
+    // Something took focus — usually a picker overlay still open.
+    await flowCloseIngredientMenu();
+  }
+  return false;
+}
+
 function flowFindStartButton(): HTMLButtonElement | null {
   return document.querySelector<HTMLButtonElement>('button[aria-label="Start generation"]');
 }
@@ -215,7 +234,46 @@ async function flowSnapshotVideoSrcs(): Promise<Set<string>> {
  * with a different person and room each time — but Flow will carry over
  * look and subject when it can see the clip it is continuing from.
  */
+/**
+ * The prompt bar, scoped from the Run button. Deliberately returns null when
+ * that anchor is missing rather than falling back to the document — clearing
+ * ingredients clicks every remove/close control it finds, and page-wide that
+ * would start dismissing Flow's own dialogs.
+ */
+function flowComposer(): Element | null {
+  return flowFindStartButton()?.closest("div")?.parentElement?.parentElement ?? null;
+}
+
+/** Drops ingredients left over from the previous clip so they do not stack up. */
+async function flowClearIngredients() {
+  const composer = flowComposer();
+  const removers = composer
+    ? Array.from(composer.querySelectorAll("button")).filter((b) =>
+        /remove|delete|clear|close/i.test(b.getAttribute("aria-label") ?? ""),
+      )
+    : [];
+  for (const button of removers) button.click();
+  if (removers.length) await new Promise((resolve) => setTimeout(resolve, 800));
+}
+
+/**
+ * The picker is a CDK overlay that keeps focus once open, which silently
+ * swallows the prompt typed straight afterwards — the clip then sits there
+ * attached with an empty prompt box and Run disabled.
+ */
+async function flowCloseIngredientMenu() {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await flowWaitFor(
+    () => (document.querySelector(".asset-item") ? undefined : true),
+    5000,
+    300,
+  );
+}
+
 async function flowAttachPreviousClip(): Promise<boolean> {
+  await flowClearIngredients();
+
   const addButton = document.querySelector<HTMLButtonElement>(
     'button[aria-label="Add ingredients to the prompt box"]',
   );
@@ -232,7 +290,8 @@ async function flowAttachPreviousClip(): Promise<boolean> {
   for (const type of ["pointerdown", "mousedown", "mouseup", "click"] as const) {
     asset.dispatchEvent(new MouseEvent(type, { bubbles: true }));
   }
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await flowCloseIngredientMenu();
   return true;
 }
 
@@ -270,11 +329,14 @@ async function flowGenerateClip(
       : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
-  flowSetPrompt(
-    editor,
+  const written = await flowSetPromptVerified(
     `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${clip.prompt}${continuation}`,
   );
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  if (!written) {
+    flowShowBanner(`${label} ใส่ prompt ลงช่องไม่สำเร็จ — มีหน้าต่างอื่นบังอยู่`, "#dc2626");
+    return null;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 800));
 
   const start = await flowWaitFor(
     () => {
