@@ -69,6 +69,21 @@ interface GetPendingJobsMessage {
   type: "GET_PENDING_JOBS";
 }
 
+interface GetContentsMessage {
+  type: "GET_CONTENTS";
+}
+
+interface CreateJobMessage {
+  type: "CREATE_JOB";
+  contentId: string;
+  targetDuration: number;
+}
+
+interface CancelJobMessage {
+  type: "CANCEL_JOB";
+  videoId: string;
+}
+
 interface RunJobFromPopupMessage {
   type: "RUN_JOB_FROM_POPUP";
   job: IncomingVideoJob;
@@ -103,6 +118,9 @@ type ExtensionMessage =
   | QueueVideoJobMessage
   | GetPendingVideoJobMessage
   | GetPendingJobsMessage
+  | GetContentsMessage
+  | CreateJobMessage
+  | CancelJobMessage
   | RunJobFromPopupMessage
   | UploadVideoMessage
   | FetchAndUploadMessage;
@@ -193,6 +211,35 @@ async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Pr
     imageBase64: image?.base64,
     imageMimeType: image?.mimeType,
   };
+}
+
+async function callApp(
+  path: string,
+  init?: RequestInit,
+): Promise<{ ok: boolean; status: number; body: Record<string, unknown>; error?: string }> {
+  const { appBaseUrl, extensionToken } = await getExtensionConfig();
+  if (!extensionToken) {
+    return { ok: false, status: 0, body: {}, error: "ยังไม่ได้ตั้งค่า Extension Token ในหน้า Settings" };
+  }
+  try {
+    const res = await fetch(`${appBaseUrl}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Extension-Token": extensionToken,
+        ...(init?.headers ?? {}),
+      },
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return {
+      ok: res.ok,
+      status: res.status,
+      body,
+      error: res.ok ? undefined : ((body.error as string) ?? `ผิดพลาด (${res.status})`),
+    };
+  } catch {
+    return { ok: false, status: 0, body: {}, error: `เชื่อมต่อ ${appBaseUrl} ไม่ได้` };
+  }
 }
 
 async function postClipToApp(
@@ -294,6 +341,44 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
       } catch {
         sendResponse({ ok: false, error: `เชื่อมต่อ ${appBaseUrl} ไม่ได้` });
       }
+    })();
+    return true;
+  }
+
+  if (message.type === "GET_CONTENTS") {
+    (async () => {
+      const result = await callApp("/api/contents/extension");
+      sendResponse(
+        result.ok ? { ok: true, contents: result.body.contents ?? [] } : { ok: false, error: result.error },
+      );
+    })();
+    return true;
+  }
+
+  if (message.type === "CREATE_JOB") {
+    (async () => {
+      const result = await callApp("/api/contents/extension", {
+        method: "POST",
+        body: JSON.stringify({
+          contentId: message.contentId,
+          targetDuration: message.targetDuration,
+        }),
+      });
+      sendResponse(result.ok ? { ok: true, ...result.body } : { ok: false, error: result.error });
+    })();
+    return true;
+  }
+
+  if (message.type === "CANCEL_JOB") {
+    (async () => {
+      await chrome.storage.local.remove(["activeFlowJob", "pendingVideoJob"]);
+      await chrome.storage.local.set({
+        jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
+      });
+      const result = await callApp(`/api/videos/extension/${message.videoId}/cancel`, {
+        method: "POST",
+      });
+      sendResponse(result.ok ? { ok: true } : { ok: false, error: result.error });
     })();
     return true;
   }

@@ -99,6 +99,7 @@ async function flowWaitFor<T>(
 ): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (flowCancelled) return undefined;
     const result = fn();
     if (result) return result;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -420,6 +421,11 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
   }
 
   for (const clip of job.clips.slice(startIndex)) {
+    if (flowIsCancelled()) {
+      flowShowBanner("ยกเลิกงานแล้ว", "#d97706");
+      await flowClearActiveJob();
+      return;
+    }
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
@@ -454,6 +460,16 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
 }
 
 let flowJobRunning = false;
+let flowCancelled = false;
+
+/**
+ * Cancellation cannot interrupt an await already in flight, so the loop
+ * checks between steps and the long waits bail out too — otherwise a cancel
+ * during a twelve-minute queue wait would appear to do nothing.
+ */
+function flowIsCancelled(): boolean {
+  return flowCancelled;
+}
 
 function flowStartJob(job: FlowVideoJob, startIndex = 0) {
   // Only an in-memory guard: a reload is a legitimate resume, so nothing
@@ -461,6 +477,7 @@ function flowStartJob(job: FlowVideoJob, startIndex = 0) {
   if (flowJobRunning) return false;
 
   flowJobRunning = true;
+  flowCancelled = false;
   flowSaveActiveJob(job, startIndex)
     .then(() => flowRunJob(job, startIndex))
     .catch((err) => {
@@ -474,6 +491,12 @@ function flowStartJob(job: FlowVideoJob, startIndex = 0) {
 
 chrome.runtime.onMessage.addListener(
   (message: { type: string; job?: FlowVideoJob }, _sender, sendResponse) => {
+    if (message.type === "CANCEL_RUNNING_JOB") {
+      flowCancelled = true;
+      flowShowBanner("กำลังยกเลิก...", "#d97706");
+      sendResponse({ ok: true });
+      return;
+    }
     if (message.type !== "RUN_VIDEO_JOB" || !message.job) return;
     const started = flowStartJob(message.job);
     sendResponse({ ok: started, error: started ? undefined : "มีงานกำลังทำอยู่แล้วในแท็บนี้" });

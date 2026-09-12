@@ -95,6 +95,7 @@ function findQuotaBlock(): string | undefined {
 async function waitFor<T>(fn: () => T | undefined, timeoutMs: number, intervalMs: number): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (studioCancelled) return undefined;
     const result = fn();
     if (result) return result;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -381,6 +382,10 @@ async function runJob(job: StudioVideoJob) {
   let previousFilename = "";
 
   for (const clip of job.clips) {
+    if (studioCancelled) {
+      showBanner("ยกเลิกงานแล้ว", "#d97706");
+      return;
+    }
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     reportProgress(job.videoId, clip.index + 1, total, "generating");
 
@@ -421,6 +426,7 @@ async function runJob(job: StudioVideoJob) {
 }
 
 let jobRunning = false;
+let studioCancelled = false;
 
 function startJob(job: StudioVideoJob) {
   if (jobRunning) return false;
@@ -436,6 +442,7 @@ function startJob(job: StudioVideoJob) {
   }
 
   jobRunning = true;
+  studioCancelled = false;
   runJob(job)
     .catch((err) => {
       showBanner(`เกิดข้อผิดพลาด: ${err instanceof Error ? err.message : String(err)}`, "#dc2626");
@@ -448,6 +455,12 @@ function startJob(job: StudioVideoJob) {
 
 // Triggered from the popup while the user is already looking at this tab.
 chrome.runtime.onMessage.addListener((message: { type: string; job?: StudioVideoJob }, _sender, sendResponse) => {
+  if (message.type === "CANCEL_RUNNING_JOB") {
+    studioCancelled = true;
+    showBanner("กำลังยกเลิก...", "#d97706");
+    sendResponse({ ok: true });
+    return;
+  }
   if (message.type !== "RUN_VIDEO_JOB" || !message.job) return;
   const started = startJob(message.job);
   sendResponse({ ok: started, error: started ? undefined : "มีงานกำลังทำอยู่แล้วในแท็บนี้" });
