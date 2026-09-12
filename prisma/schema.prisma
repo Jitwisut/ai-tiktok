@@ -178,6 +178,10 @@ model ScheduledPost {
   videoId        String
   video          Video               @relation(fields: [videoId], references: [id], onDelete: Cascade)
   platform       String
+  /// "api" goes through the queue worker's Publisher; "extension" is picked
+  /// up by the browser extension, which drives the platform's own web
+  /// uploader in a tab the user is already signed into.
+  method         String              @default("api")
   scheduledAt    DateTime
   status         ScheduledPostStatus @default(scheduled)
   platformPostId String?

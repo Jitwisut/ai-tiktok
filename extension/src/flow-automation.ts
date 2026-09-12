@@ -141,6 +141,11 @@ function flowHover(el: Element) {
  * propagates downward), hence hovering every descendant.
  */
 function flowNewestVideoSrc(): string | undefined {
+  // The grid virtualises, so once a project holds more than a screenful the
+  // first tile in DOM order is whatever happens to be rendered rather than
+  // the newest clip. Scrolling back to the top puts the newest one there.
+  document.querySelector(".virtual-scroll-container")?.scrollTo({ top: 0 });
+
   const tile = document.querySelector("flow-video-tile");
   if (!tile) return undefined;
   flowHover(tile);

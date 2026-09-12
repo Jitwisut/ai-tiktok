@@ -13,15 +13,25 @@ export async function createSchedule(userId: string, input: CreateScheduledPostI
       userId,
       videoId: input.videoId,
       platform: input.platform,
+      method: input.method,
       scheduledAt: input.scheduledAt,
     },
   });
 
-  await scheduledPostQueue.add(
-    "publish",
-    { scheduledPostId: scheduledPost.id },
-    { delay: Math.max(0, input.scheduledAt.getTime() - Date.now()) },
-  );
+  // Extension posts are collected by the extension when they come due, so
+  // they must not also be handed to the worker — it would publish them
+  // through the Publisher adapter as well.
+  if (input.method === "api") {
+    await scheduledPostQueue.add(
+      "publish",
+      { scheduledPostId: scheduledPost.id },
+      {
+        delay: Math.max(0, input.scheduledAt.getTime() - Date.now()),
+        attempts: 3,
+        backoff: { type: "exponential", delay: 30000 },
+      },
+    );
+  }
 
   return { scheduledPost };
 }
