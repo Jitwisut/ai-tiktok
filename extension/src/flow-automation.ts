@@ -140,7 +140,12 @@ function flowCollectVideoSrcs(): string[] {
     .filter(Boolean);
 }
 
-async function flowGenerateClip(clip: FlowClip, label: string, knownSrcs: Set<string>) {
+async function flowGenerateClip(
+  clip: FlowClip,
+  label: string,
+  knownSrcs: Set<string>,
+  aspectRatio: string,
+) {
   const editor = await flowWaitFor(() => flowFindEditor(), 30000, 500);
   if (!editor) {
     flowShowBanner("ไม่พบช่อง prompt บนหน้า Flow (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
@@ -148,10 +153,23 @@ async function flowGenerateClip(clip: FlowClip, label: string, knownSrcs: Set<st
   }
 
   flowShowBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
-  // Flow's agent decides between image and video, so say it outright.
+
+  // The planner writes a start-frame hint for AI Studio; Flow has no
+  // start-frame input we can drive, so point the agent at the clip it just
+  // made in this project instead.
+  const basePrompt = clip.prompt.replace(
+    /\nContinue seamlessly from the provided start frame[^\n]*/,
+    "",
+  );
+  const continuation =
+    clip.index > 0
+      ? " Continue seamlessly from the previous video in this project: same set, same lighting, same product, same character and framing. Do not restart the scene."
+      : "";
+
+  // Flow's agent decides between image and video on its own, so say it outright.
   flowSetPrompt(
     editor,
-    `Generate exactly one 8-second video (no images) in ${"9:16"} vertical format. ${clip.prompt}`,
+    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${basePrompt}${continuation}`,
   );
   await new Promise((resolve) => setTimeout(resolve, 1200));
 
@@ -169,10 +187,16 @@ async function flowGenerateClip(clip: FlowClip, label: string, knownSrcs: Set<st
   }
   start.click();
 
-  // Approve the credit spend if the agent asks.
+  // The agent asks to confirm the credit spend, but only when the account
+  // has not already chosen "Always approve" — so stop waiting as soon as
+  // either the card shows up or generation starts without one.
   flowShowBanner(`AI Affiliate Studio: ${label} รอ agent ยืนยัน...`, "#111827");
-  const approve = await flowWaitFor(() => flowFindApprove(), 90000, 1000);
-  if (approve) approve.click();
+  const outcome = await flowWaitFor(
+    () => flowFindApprove() ?? (flowIsGenerating() ? "generating" : undefined),
+    90000,
+    1000,
+  );
+  if (outcome && outcome !== "generating") (outcome as HTMLElement).click();
 
   flowShowBanner(`AI Affiliate Studio: ${label} กำลังสร้าง (Flow อาจเข้าคิวหลายนาที)...`, "#111827");
 
@@ -232,7 +256,7 @@ async function flowRunJob(job: FlowVideoJob) {
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
-    const src = await flowGenerateClip(clip, label, knownSrcs);
+    const src = await flowGenerateClip(clip, label, knownSrcs, job.aspectRatio || "9:16");
     if (!src) {
       flowReportProgress(job.videoId, clip.index + 1, total, "failed");
       return;
