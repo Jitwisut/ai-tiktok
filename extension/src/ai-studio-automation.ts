@@ -330,7 +330,7 @@ async function generateClip(
     return null;
   }
 
-  showBanner(`AI Affiliate Studio: ${label} กำลังสร้าง รอสักครู่...`, "#111827");
+  showBanner(`AI Affiliate Studio: ${label} กำลังสร้าง รอสักครู่ — ห้ามปิดแท็บนี้`, "#111827");
   await waitFor(
     () => (findStopButton() && !findQuotaBlock() ? undefined : true),
     MAX_WAIT_MS,

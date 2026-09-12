@@ -21,6 +21,44 @@ interface FlowVideoJob {
 const FLOW_MAX_WAIT_MS = 12 * 60 * 1000;
 const FLOW_POLL_MS = 5000;
 
+// Flow reloads its own page after a generation finishes, which tears down
+// this script mid-job — that is why multi-clip runs always died on the
+// second clip. Progress is kept outside the page so the next load can pick
+// the job back up instead of starting over or stalling.
+const FLOW_JOB_KEY = "activeFlowJob";
+const FLOW_JOB_STALE_MS = 60 * 60 * 1000;
+
+interface FlowActiveJob {
+  job: FlowVideoJob;
+  nextClipIndex: number;
+  at: number;
+}
+
+async function flowSaveActiveJob(job: FlowVideoJob, nextClipIndex: number) {
+  await chrome.storage.local.set({
+    [FLOW_JOB_KEY]: { job, nextClipIndex, at: Date.now() } satisfies FlowActiveJob,
+  });
+}
+
+async function flowClearActiveJob() {
+  await chrome.storage.local.remove(FLOW_JOB_KEY);
+}
+
+async function flowLoadActiveJob(): Promise<FlowActiveJob | null> {
+  const stored = await chrome.storage.local.get(FLOW_JOB_KEY);
+  const active = stored[FLOW_JOB_KEY] as FlowActiveJob | undefined;
+  if (!active) return null;
+  if (Date.now() - active.at > FLOW_JOB_STALE_MS) {
+    await flowClearActiveJob();
+    return null;
+  }
+  if (active.nextClipIndex >= active.job.clips.length) {
+    await flowClearActiveJob();
+    return null;
+  }
+  return active;
+}
+
 function flowShowBanner(text: string, color: string) {
   const id = "ai-affiliate-flow-banner";
   document.getElementById(id)?.remove();
@@ -117,6 +155,11 @@ function flowFindRejectedNotice(): string | undefined {
   return undefined;
 }
 
+/**
+ * Flow only attaches the real <video> once a tile is hovered, and the
+ * listener sits on an inner node — mouseenter does not bubble and nothing
+ * propagates downward, so the events go to the tile and every descendant.
+ */
 function flowHover(el: Element) {
   const fire = (target: Element) => {
     for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) {
@@ -130,39 +173,36 @@ function flowHover(el: Element) {
 }
 
 /**
- * Only ever looks at the newest tile. Flow renders newest-first in a
- * virtualised grid, so scanning the whole grid for "a src we haven't seen"
- * reports an old clip as new the moment one scrolls into view — which
- * previously made the run think a clip had finished while Flow was still
- * generating it, leaving the next clip unable to submit.
- *
- * Flow also only attaches the real <video> once a tile is hovered, and the
- * listener sits on an inner node (mouseenter does not bubble, and nothing
- * propagates downward), hence hovering every descendant.
+ * Every clip currently in the project. Position cannot be used to find the
+ * newest one — Flow does not place a finished clip first, it landed fifth in
+ * testing — so a new clip is identified as a src that was not there before.
  */
-function flowNewestVideoSrc(): string | undefined {
-  // The grid virtualises, so once a project holds more than a screenful the
-  // first tile in DOM order is whatever happens to be rendered rather than
-  // the newest clip. Scrolling back to the top puts the newest one there.
-  document.querySelector(".virtual-scroll-container")?.scrollTo({ top: 0 });
-
-  const tile = document.querySelector("flow-video-tile");
-  if (!tile) return undefined;
-  flowHover(tile);
-  const video = tile.querySelector("video");
-  return video?.getAttribute("src") ?? video?.currentSrc ?? undefined;
+function flowAllVideoSrcs(): Set<string> {
+  for (const tile of Array.from(document.querySelectorAll("flow-video-tile"))) {
+    flowHover(tile);
+  }
+  return new Set(
+    Array.from(document.querySelectorAll<HTMLVideoElement>("flow-video-tile video"))
+      .map((v) => v.getAttribute("src") ?? v.currentSrc ?? "")
+      .filter(Boolean),
+  );
 }
 
 /**
- * The baseline this run compares against. A plain read right after page load
- * returns undefined because the hover has not attached the <video> yet, and
- * treating that as "no videos" makes the first already-existing clip look
- * freshly generated — which is how a run could "finish" a clip seconds after
- * starting it.
+ * Snapshot taken immediately before submitting. Hovering is what attaches the
+ * <video> elements, and it takes a moment to settle, so this waits for the
+ * count to stop climbing — a half-built snapshot makes an existing clip look
+ * new and the run then races ahead while Flow is still busy.
  */
-async function flowBaselineVideoSrc(): Promise<string | undefined> {
-  if (!document.querySelector("flow-video-tile")) return undefined;
-  return await flowWaitFor(() => flowNewestVideoSrc(), 15000, 500);
+async function flowSnapshotVideoSrcs(): Promise<Set<string>> {
+  let previous = flowAllVideoSrcs();
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const current = flowAllVideoSrcs();
+    if (current.size === previous.size) return current;
+    previous = current;
+  }
+  return previous;
 }
 
 /**
@@ -213,7 +253,7 @@ async function flowGenerateClip(
     await flowAttachPreviousClip();
   }
 
-  const previousNewest = await flowBaselineVideoSrc();
+  const before = await flowSnapshotVideoSrcs();
 
   flowShowBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
 
@@ -257,14 +297,16 @@ async function flowGenerateClip(
   );
   if (outcome && outcome !== "generating") (outcome as HTMLElement).click();
 
-  flowShowBanner(`AI Affiliate Studio: ${label} กำลังสร้าง (Flow อาจเข้าคิวหลายนาที)...`, "#111827");
+  flowShowBanner(
+    `AI Affiliate Studio: ${label} กำลังสร้าง (Flow อาจเข้าคิวหลายนาที) — ห้ามปิดแท็บนี้`,
+    "#111827",
+  );
 
   const newSrc = await flowWaitFor(
     () => {
       const blocked = flowFindRejectedNotice();
       if (blocked) return blocked;
-      const newest = flowNewestVideoSrc();
-      return newest && newest !== previousNewest ? newest : undefined;
+      return Array.from(flowAllVideoSrcs()).find((src) => !before.has(src));
     },
     FLOW_MAX_WAIT_MS,
     FLOW_POLL_MS,
@@ -302,21 +344,23 @@ function flowUploadClip(
   });
 }
 
-async function flowRunJob(job: FlowVideoJob) {
-  if (flowIsGenerating()) {
-    flowShowBanner("Flow กำลังสร้างงานอื่นอยู่ในแท็บนี้", "#d97706");
-    return;
+async function flowRunJob(job: FlowVideoJob, startIndex: number) {
+  const total = job.clips.length;
+  if (startIndex > 0) {
+    flowShowBanner(
+      `AI Affiliate Studio: ทำงานต่อจากคลิป ${startIndex + 1}/${total} (หน้าเว็บโหลดใหม่)`,
+      "#111827",
+    );
   }
 
-  const total = job.clips.length;
-
-  for (const clip of job.clips) {
+  for (const clip of job.clips.slice(startIndex)) {
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
     const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16");
     if (!src) {
       flowReportProgress(job.videoId, clip.index + 1, total, "failed");
+      await flowClearActiveJob();
       return;
     }
 
@@ -326,10 +370,16 @@ async function flowRunJob(job: FlowVideoJob) {
     if (!result.ok) {
       flowShowBanner(`อัปโหลดไม่สำเร็จ: ${result.error ?? "unknown error"}`, "#dc2626");
       flowReportProgress(job.videoId, clip.index + 1, total, "failed");
+      await flowClearActiveJob();
       return;
     }
+
+    // Recorded after the upload lands, so a reload resumes at the next clip
+    // and never re-generates one that is already in the app.
+    await flowSaveActiveJob(job, clip.index + 1);
   }
 
+  await flowClearActiveJob();
   flowReportProgress(job.videoId, total, total, "done");
   flowShowBanner(
     total > 1 ? `เสร็จแล้ว ${total} คลิป — แอปกำลังต่อเป็นวิดีโอเดียว ✓` : "อัปโหลดกลับเข้าแอปสำเร็จ ✓",
@@ -339,19 +389,14 @@ async function flowRunJob(job: FlowVideoJob) {
 
 let flowJobRunning = false;
 
-function flowStartJob(job: FlowVideoJob) {
+function flowStartJob(job: FlowVideoJob, startIndex = 0) {
+  // Only an in-memory guard: a reload is a legitimate resume, so nothing
+  // durable may block the same job from being picked up again.
   if (flowJobRunning) return false;
 
-  const claimKey = `ai-affiliate-flow-claimed-${job.videoId}`;
-  try {
-    if (sessionStorage.getItem(claimKey)) return false;
-    sessionStorage.setItem(claimKey, "1");
-  } catch {
-    // sessionStorage can be unavailable; the in-memory guard still applies.
-  }
-
   flowJobRunning = true;
-  flowRunJob(job)
+  flowSaveActiveJob(job, startIndex)
+    .then(() => flowRunJob(job, startIndex))
     .catch((err) => {
       flowShowBanner(`เกิดข้อผิดพลาด: ${err instanceof Error ? err.message : String(err)}`, "#dc2626");
     })
@@ -370,5 +415,13 @@ chrome.runtime.onMessage.addListener(
 );
 
 chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB" }, (result: { job: FlowVideoJob | null }) => {
-  if (result?.job) flowStartJob(result.job);
+  if (result?.job) {
+    flowStartJob(result.job);
+    return;
+  }
+  // No new job, but Flow may have reloaded out from under one that was
+  // half finished.
+  flowLoadActiveJob().then((active) => {
+    if (active) flowStartJob(active.job, active.nextClipIndex);
+  });
 });

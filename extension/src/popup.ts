@@ -46,6 +46,19 @@ function renderProgress(progress: JobProgress | undefined) {
     return;
   }
   progressEl.hidden = false;
+
+  // Progress only advances while the generating tab is open — closing it
+  // kills the content script mid-job, and a bar frozen at the last value
+  // otherwise looks like the job is still running.
+  const stalledMs = Date.now() - progress.at;
+  if (progress.state !== "done" && progress.state !== "failed" && stalledMs > 3 * 60 * 1000) {
+    progressEl.innerHTML = `
+      <div class="progress-row"><span>หยุดค้างที่คลิป ${progress.current}/${progress.total}</span></div>
+      <p class="msg">ไม่มีความคืบหน้า ${Math.round(stalledMs / 60000)} นาที — แท็บที่ใช้สร้างอาจถูกปิดไป กดสร้างใหม่ได้เลย</p>
+    `;
+    return;
+  }
+
   const label = PROGRESS_LABEL[progress.state] ?? progress.state;
   const pct = Math.round((progress.current / Math.max(1, progress.total)) * 100);
   progressEl.innerHTML = `
