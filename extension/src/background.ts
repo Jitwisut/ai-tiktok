@@ -61,6 +61,14 @@ interface GetPendingVideoJobMessage {
   type: "GET_PENDING_VIDEO_JOB";
 }
 
+/**
+ * Used by the in-page panel. The content script cannot fetch the app itself
+ * — Flow's CSP blocks it — so the worker does it and hands back the list.
+ */
+interface GetPendingJobsMessage {
+  type: "GET_PENDING_JOBS";
+}
+
 interface RunJobFromPopupMessage {
   type: "RUN_JOB_FROM_POPUP";
   job: IncomingVideoJob;
@@ -94,6 +102,7 @@ type ExtensionMessage =
   | AddProductMessage
   | QueueVideoJobMessage
   | GetPendingVideoJobMessage
+  | GetPendingJobsMessage
   | RunJobFromPopupMessage
   | UploadVideoMessage
   | FetchAndUploadMessage;
@@ -261,6 +270,30 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
         chrome.tabs.create({ url });
         sendResponse({ ok: true });
       });
+    })();
+    return true;
+  }
+
+  if (message.type === "GET_PENDING_JOBS") {
+    (async () => {
+      const { appBaseUrl, extensionToken } = await getExtensionConfig();
+      if (!extensionToken) {
+        sendResponse({ ok: false, error: "ยังไม่ได้ตั้งค่า Extension Token ในหน้า Settings" });
+        return;
+      }
+      try {
+        const res = await fetch(`${appBaseUrl}/api/videos/extension/pending`, {
+          headers: { "X-Extension-Token": extensionToken },
+        });
+        if (!res.ok) {
+          sendResponse({ ok: false, error: `โหลดงานไม่สำเร็จ (${res.status})` });
+          return;
+        }
+        const body = (await res.json()) as { jobs: unknown[] };
+        sendResponse({ ok: true, jobs: body.jobs ?? [], appBaseUrl });
+      } catch {
+        sendResponse({ ok: false, error: `เชื่อมต่อ ${appBaseUrl} ไม่ได้` });
+      }
     })();
     return true;
   }

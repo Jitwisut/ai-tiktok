@@ -25,6 +25,10 @@ const POLL_INTERVAL_MS = 3000;
 const MAX_WAIT_MS = 5 * 60 * 1000;
 
 function showBanner(text: string, color: string) {
+  // The in-page panel is the primary surface; the floating banner stays as a
+  // fallback for when the panel has not mounted yet.
+  aiPanelStatus(text, color === "#111827" ? "#e5e7eb" : color);
+
   const id = "ai-affiliate-ext-banner";
   document.getElementById(id)?.remove();
 
@@ -450,6 +454,8 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: StudioVideo
 });
 
 // Triggered by the app opening this tab with a job already queued.
+aiPanelMount({ site: "aistudio", siteLabel: "AI Studio" });
+
 chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB" }, (result: { job: StudioVideoJob | null }) => {
   if (result?.job) startJob(result.job);
 });

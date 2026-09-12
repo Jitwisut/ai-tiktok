@@ -3,7 +3,12 @@
   "name": "AI Affiliate Studio — Add to Studio",
   "version": "0.2.0",
   "description": "Add the product on the current page to AI Affiliate Studio, and generate videos through Google AI Studio.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
   "host_permissions": [
     "http://localhost:3000/*",
     "https://aistudio.google.com/*",
@@ -19,23 +24,41 @@
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["dist/content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "dist/content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["http://localhost:3000/*"],
-      "js": ["dist/app-bridge.js"],
+      "matches": [
+        "http://localhost:3000/*"
+      ],
+      "js": [
+        "dist/app-bridge.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://aistudio.google.com/*"],
-      "js": ["dist/ai-studio-automation.js"],
+      "matches": [
+        "https://aistudio.google.com/*"
+      ],
+      "js": [
+        "dist/panel.js",
+        "dist/ai-studio-automation.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://flow.google.com/*"],
-      "js": ["dist/flow-automation.js"],
+      "matches": [
+        "https://flow.google.com/*"
+      ],
+      "js": [
+        "dist/panel.js",
+        "dist/flow-automation.js"
+      ],
       "run_at": "document_idle"
     }
   ]

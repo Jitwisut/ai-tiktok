@@ -60,6 +60,10 @@ async function flowLoadActiveJob(): Promise<FlowActiveJob | null> {
 }
 
 function flowShowBanner(text: string, color: string) {
+  // The in-page panel is the primary surface; the floating banner stays as a
+  // fallback for when the panel has not mounted yet.
+  aiPanelStatus(text, color === "#111827" ? "#e5e7eb" : color);
+
   const id = "ai-affiliate-flow-banner";
   document.getElementById(id)?.remove();
 
@@ -413,6 +417,8 @@ chrome.runtime.onMessage.addListener(
     sendResponse({ ok: started, error: started ? undefined : "มีงานกำลังทำอยู่แล้วในแท็บนี้" });
   },
 );
+
+aiPanelMount({ site: "flow", siteLabel: "Google Flow" });
 
 chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB" }, (result: { job: FlowVideoJob | null }) => {
   if (result?.job) {
