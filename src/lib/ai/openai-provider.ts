@@ -15,12 +15,22 @@ export class OpenAIProvider implements LLMProvider {
     this.model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
   }
 
-  async generateObject<T>({ system, prompt, schema }: GenerateObjectParams<T>): Promise<T> {
+  async generateObject<T>({ system, prompt, images, schema }: GenerateObjectParams<T>): Promise<T> {
+    const userContent = images?.length
+      ? [
+          ...images.map((image) => ({
+            type: "image_url" as const,
+            image_url: { url: `data:${image.mimeType};base64,${image.base64}` },
+          })),
+          { type: "text" as const, text: prompt },
+        ]
+      : prompt;
+
     const completion = await this.client.chat.completions.parse({
       model: this.model,
       messages: [
         ...(system ? [{ role: "system" as const, content: system }] : []),
-        { role: "user" as const, content: prompt },
+        { role: "user" as const, content: userContent },
       ],
       response_format: zodResponseFormat(schema, "result"),
     });

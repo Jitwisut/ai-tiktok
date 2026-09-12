@@ -12,19 +12,28 @@ export class GeminiProvider implements LLMProvider {
       throw new Error("GEMINI_API_KEY is not set");
     }
     this.client = new GoogleGenAI({ apiKey });
-    this.model = process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
+    this.model = process.env.GEMINI_MODEL ?? "gemini-flash-latest";
   }
 
-  async generateObject<T>({ system, prompt, schema }: GenerateObjectParams<T>): Promise<T> {
-    const response = await this.client.models.generateContent({
-      model: this.model,
-      contents: prompt,
-      config: {
-        systemInstruction: system,
-        responseMimeType: "application/json",
-        responseSchema: z.toJSONSchema(schema),
-      },
-    });
+  async generateObject<T>({ system, prompt, images, schema }: GenerateObjectParams<T>): Promise<T> {
+    const parts = [
+      ...(images ?? []).map((image) => ({
+        inlineData: { data: image.base64, mimeType: image.mimeType },
+      })),
+      { text: prompt },
+    ];
+
+    const response = await this.withRetry(() =>
+      this.client.models.generateContent({
+        model: this.model,
+        contents: [{ role: "user", parts }],
+        config: {
+          systemInstruction: system,
+          responseMimeType: "application/json",
+          responseSchema: z.toJSONSchema(schema),
+        },
+      }),
+    );
 
     const text = response.text;
     if (!text) {
@@ -32,5 +41,25 @@ export class GeminiProvider implements LLMProvider {
     }
 
     return schema.parse(JSON.parse(text));
+  }
+
+  /**
+   * Gemini returns 503 "experiencing high demand" often enough that a single
+   * attempt regularly loses a user's action. Overload and rate limiting are
+   * both worth waiting out; anything else is a real error and rethrown.
+   */
+  private async withRetry<R>(call: () => Promise<R>): Promise<R> {
+    const delaysMs = [1000, 3000, 8000];
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await call();
+      } catch (err) {
+        const status = (err as { status?: number })?.status;
+        const retriable = status === 429 || status === 503 || status === 500;
+        if (!retriable || attempt >= delaysMs.length) throw err;
+        await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+      }
+    }
   }
 }

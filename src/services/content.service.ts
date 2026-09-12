@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { getLLMProvider } from "@/lib/ai";
+import { loadProductImages } from "@/lib/ai/product-images";
 import {
   contentGenerationResultSchema,
   type UpdateContentInput,
@@ -23,11 +24,16 @@ export async function generateContent(
   });
   if (!product) return null;
 
+  const images = await loadProductImages(productId);
+
   const llm = getLLMProvider();
   const result = await llm.generateObject({
-    system:
+    system: [
       "คุณเป็นนักเขียนสคริปต์ TikTok affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น ใช้ภาษาไทยที่เป็นธรรมชาติ กระชับ เหมาะกับวิดีโอสั้น",
+      "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปว่าสินค้าคืออะไร และพูดถึงประโยชน์ที่ตรงกับสินค้าประเภทนั้นจริงๆ",
+    ].join("\n"),
     prompt: [
+      images.length ? `รูปสินค้าจริงแนบมา ${images.length} รูป ให้ยึดตามรูป` : "",
       `สร้างคอนเทนต์สไตล์ "${style}" สำหรับสินค้านี้:`,
       `ชื่อสินค้า: ${product.name}`,
       `รายละเอียด: ${product.description ?? "-"}`,
@@ -42,6 +48,7 @@ export async function generateContent(
     ]
       .filter(Boolean)
       .join("\n"),
+    images,
     schema: contentGenerationResultSchema,
     mock: MOCK_CONTENT,
   });

@@ -140,11 +140,17 @@ export function ContentDetailClient({
   }
 
   async function handleGenerateViaExtension() {
-    // The extension's content script stamps this on load, so presence is a
-    // straight check rather than a race against a reply timeout.
-    const extensionPresent = document.documentElement.hasAttribute(
-      "data-ai-affiliate-bridge-loaded",
-    );
+    // The extension answers this ping synchronously during dispatch, so the
+    // result is known by the time dispatchEvent returns — no timeout race,
+    // and nothing touches the DOM that React hydrates.
+    let extensionPresent = false;
+    const onPong = () => {
+      extensionPresent = true;
+    };
+    window.addEventListener("ai-affiliate:pong", onPong);
+    window.dispatchEvent(new CustomEvent("ai-affiliate:ping"));
+    window.removeEventListener("ai-affiliate:pong", onPong);
+
     if (!extensionPresent) {
       toast.error("ไม่พบ Extension — ติดตั้งแล้วรีเฟรชหน้านี้ก่อนใช้ฟีเจอร์นี้");
       return;

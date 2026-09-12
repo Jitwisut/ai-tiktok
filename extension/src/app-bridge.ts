@@ -6,7 +6,13 @@ interface GenerateViaExtensionDetail {
   imageUrl?: string | null;
 }
 
-document.documentElement.setAttribute("data-ai-affiliate-bridge-loaded", "true");
+// Answers the app's presence check. Event dispatch is synchronous, so the
+// app knows the extension is here by the time its own dispatch returns.
+// (Marking the DOM instead would change <html> under React and break
+// hydration.)
+window.addEventListener("ai-affiliate:ping", () => {
+  window.dispatchEvent(new CustomEvent("ai-affiliate:pong"));
+});
 
 window.addEventListener("ai-affiliate:generate-via-extension", (event) => {
   const detail = (event as CustomEvent<GenerateViaExtensionDetail>).detail;

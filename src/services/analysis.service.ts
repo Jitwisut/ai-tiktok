@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getLLMProvider } from "@/lib/ai";
 import { productAnalysisSchema } from "@/lib/validation/analysis";
+import { loadProductImages } from "@/lib/ai/product-images";
 
 const MOCK_ANALYSIS = {
   targetCustomer: "ผู้หญิงวัยทำงาน อายุ 22-35 ปี ที่ดูแลผิวหน้าเป็นประจำ",
@@ -15,11 +16,25 @@ export async function analyzeProduct(userId: string, productId: string) {
   });
   if (!product) return null;
 
+  const images = await loadProductImages(productId);
+
   const llm = getLLMProvider();
   const result = await llm.generateObject({
-    system:
+    system: [
       "คุณเป็นนักการตลาดที่เชี่ยวชาญด้าน affiliate marketing วิเคราะห์สินค้าแล้วตอบเป็น JSON ตาม schema เท่านั้น",
-    prompt: `วิเคราะห์สินค้านี้:\nชื่อ: ${product.name}\nรายละเอียด: ${product.description ?? "-"}\nราคา: ${product.price ?? "-"} ${product.currency ?? ""}\nหมวดหมู่: ${product.category ?? "-"}`,
+      "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปเป็นหลักว่าสินค้าคืออะไร ใช้ทำอะไร เพราะชื่อและรายละเอียดที่ดึงมาจากหน้าเว็บมักไม่ครบหรือคลาดเคลื่อน",
+      "ห้ามแต่งสรรพคุณที่ไม่สอดคล้องกับประเภทสินค้าที่เห็นจริง",
+    ].join("\n"),
+    prompt: [
+      images.length
+        ? `วิเคราะห์สินค้านี้จากรูปที่แนบมา (${images.length} รูป) ประกอบกับข้อมูลด้านล่าง:`
+        : "วิเคราะห์สินค้านี้:",
+      `ชื่อ: ${product.name}`,
+      `รายละเอียด: ${product.description ?? "-"}`,
+      `ราคา: ${product.price ?? "-"} ${product.currency ?? ""}`,
+      `หมวดหมู่: ${product.category ?? "-"}`,
+    ].join("\n"),
+    images,
     schema: productAnalysisSchema,
     mock: MOCK_ANALYSIS,
   });
@@ -28,7 +43,7 @@ export async function analyzeProduct(userId: string, productId: string) {
     process.env.LLM_PROVIDER === "openai"
       ? (process.env.OPENAI_MODEL ?? "gpt-4o-mini")
       : process.env.LLM_PROVIDER === "gemini"
-        ? (process.env.GEMINI_MODEL ?? "gemini-2.0-flash")
+        ? (process.env.GEMINI_MODEL ?? "gemini-flash-latest")
         : "mock";
 
   return prisma.productAnalysis.upsert({

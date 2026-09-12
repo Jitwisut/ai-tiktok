@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getLLMProvider } from "@/lib/ai";
 import { scenePlanResultSchema } from "@/lib/validation/scene";
+import { loadProductImages } from "@/lib/ai/product-images";
 
 const MOCK_SCENES = {
   scenes: [
@@ -21,16 +22,27 @@ export async function planScenes(
   });
   if (!content) return null;
 
+  const images = await loadProductImages(content.productId);
+
   const llm = getLLMProvider();
   const result = await llm.generateObject({
-    system:
+    system: [
       "คุณเป็น storyboard artist สำหรับวิดีโอ TikTok affiliate ตอบเป็น JSON ตาม schema เท่านั้น แบ่งสคริปต์เป็นฉากสั้นๆ ที่รวมความยาวเท่ากับเวลาที่กำหนด",
+      "คำบรรยายฉากจะถูกส่งต่อให้โมเดลสร้างวิดีโอโดยตรง จึงต้องบรรยายสิ่งที่เห็นในเฟรมอย่างเป็นรูปธรรม",
+      "ถ้ามีรูปสินค้าแนบมา ให้บรรยายสินค้าตามหน้าตาจริงในรูป (รูปทรง สี วัสดุ) และให้ฉากเป็นการใช้งานที่สมเหตุสมผลกับสินค้าประเภทนั้นจริงๆ",
+      "ห้ามใส่ฉากที่ไม่เข้ากับประเภทสินค้า เช่น ห้ามให้ทาสินค้าที่ไม่ใช่เครื่องสำอางลงบนใบหน้า",
+    ].join("\n"),
     prompt: [
+      images.length ? `รูปสินค้าจริงแนบมา ${images.length} รูป ให้ยึดตามรูป` : "",
       `สคริปต์: ${content.script}`,
       `สินค้า: ${content.product.name}`,
+      `รายละเอียดสินค้า: ${content.product.description ?? "-"}`,
       `ความยาววิดีโอทั้งหมด: ${targetDuration} วินาที`,
       "แบ่งเป็นฉากสั้นๆ (3-5 ฉาก) แต่ละฉากมี duration (วินาที) และ description (บรรยายภาพที่เห็น)",
-    ].join("\n"),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    images,
     schema: scenePlanResultSchema,
     mock: MOCK_SCENES,
   });
