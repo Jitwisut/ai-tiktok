@@ -1,14 +1,29 @@
+interface PendingClip {
+  index: number;
+  prompt: string;
+}
+
 interface PendingJob {
   videoId: string;
   productName: string;
   hook: string;
-  prompt: string;
+  clips: PendingClip[];
   imageUrl: string | null;
   duration: number | null;
   aspectRatio: string | null;
 }
 
+interface JobProgress {
+  videoId: string;
+  current: number;
+  total: number;
+  state: string;
+  at: number;
+}
+
+const POPUP_CLIP_SECONDS = 8;
 const contentEl = document.getElementById("content") as HTMLDivElement;
+const progressEl = document.getElementById("progress") as HTMLDivElement;
 
 document.getElementById("openOptions")?.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
@@ -16,6 +31,30 @@ document.getElementById("openOptions")?.addEventListener("click", () => {
 
 function renderMessage(html: string) {
   contentEl.innerHTML = `<p class="msg">${html}</p>`;
+}
+
+const PROGRESS_LABEL: Record<string, string> = {
+  generating: "กำลังสร้าง",
+  uploading: "กำลังอัปโหลด",
+  done: "เสร็จแล้ว",
+  failed: "ล้มเหลว",
+};
+
+function renderProgress(progress: JobProgress | undefined) {
+  if (!progress || Date.now() - progress.at > 30 * 60 * 1000) {
+    progressEl.hidden = true;
+    return;
+  }
+  progressEl.hidden = false;
+  const label = PROGRESS_LABEL[progress.state] ?? progress.state;
+  const pct = Math.round((progress.current / Math.max(1, progress.total)) * 100);
+  progressEl.innerHTML = `
+    <div class="progress-row">
+      <span>${label} — คลิป ${progress.current}/${progress.total}</span>
+      <span>${pct}%</span>
+    </div>
+    <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+  `;
 }
 
 function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
@@ -38,13 +77,20 @@ function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
 
     const info = document.createElement("div");
     info.className = "job-info";
+
     const name = document.createElement("div");
     name.className = "job-name";
     name.textContent = job.productName;
+
     const hook = document.createElement("div");
     hook.className = "job-hook";
     hook.textContent = job.hook;
-    info.append(name, hook);
+
+    const meta = document.createElement("div");
+    meta.className = "job-meta";
+    meta.textContent = `${job.clips.length} คลิป · ${job.clips.length * POPUP_CLIP_SECONDS} วินาที`;
+
+    info.append(name, hook, meta);
     row.appendChild(info);
 
     const button = document.createElement("button");
@@ -53,8 +99,11 @@ function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
     button.addEventListener("click", () => {
       button.disabled = true;
       button.textContent = "กำลังส่ง...";
+      const targetDuration = Number(
+        (document.getElementById("duration") as HTMLSelectElement).value,
+      );
       chrome.runtime.sendMessage(
-        { type: "RUN_JOB_FROM_POPUP", job },
+        { type: "RUN_JOB_FROM_POPUP", job, targetDuration },
         (result: { ok: boolean; error?: string }) => {
           if (result?.ok) {
             button.textContent = "เริ่มแล้ว ✓";
@@ -74,9 +123,22 @@ function renderJobs(jobs: PendingJob[], onStudioPage: boolean) {
 }
 
 async function load() {
-  const stored = await chrome.storage.local.get(["appBaseUrl", "extensionToken"]);
+  const stored = await chrome.storage.local.get([
+    "appBaseUrl",
+    "extensionToken",
+    "targetDuration",
+    "jobProgress",
+  ]);
   const appBaseUrl = (stored.appBaseUrl as string | undefined) || "http://localhost:3000";
   const extensionToken = (stored.extensionToken as string | undefined) || "";
+
+  const durationSelect = document.getElementById("duration") as HTMLSelectElement;
+  durationSelect.value = String((stored.targetDuration as number | undefined) ?? 24);
+  durationSelect.addEventListener("change", () => {
+    chrome.storage.local.set({ targetDuration: Number(durationSelect.value) });
+  });
+
+  renderProgress(stored.jobProgress as JobProgress | undefined);
 
   if (!extensionToken) {
     renderMessage('ยังไม่ได้ตั้งค่า Extension Token — กด "ตั้งค่า" ด้านบนก่อนใช้งาน');
@@ -118,5 +180,10 @@ async function load() {
     );
   }
 }
+
+// Keep the progress bar live while the popup stays open.
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.jobProgress) renderProgress(changes.jobProgress.newValue as JobProgress | undefined);
+});
 
 load();

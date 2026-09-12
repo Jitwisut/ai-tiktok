@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
 import { videoQueue } from "@/lib/queue/video-queue";
 import { buildVeoPrompt } from "@/lib/prompt-engine/prompt-builder";
-import type { VideoSettings } from "@/lib/prompt-engine/types";
+import { CLIP_SECONDS, planClips } from "@/lib/prompt-engine/clip-planner";
+import { videoSettingsSchema, type VideoSettings } from "@/lib/prompt-engine/types";
 
 export const VIDEO_CREDIT_COST = 20;
 
@@ -86,6 +87,7 @@ export async function createExtensionVideoJob(
   userId: string,
   contentId: string,
   settings: VideoSettings,
+  targetDuration: number = CLIP_SECONDS,
 ) {
   const content = await prisma.content.findFirst({
     where: { id: contentId, userId },
@@ -97,7 +99,7 @@ export async function createExtensionVideoJob(
   if (!content) return { error: "not_found" as const };
   if (content.scenes.length === 0) return { error: "no_scenes" as const };
 
-  const built = buildVeoPrompt(content.product.name, content.scenes, settings);
+  const clips = planClips(content.product.name, content.scenes, settings, targetDuration);
 
   const video = await prisma.video.create({
     data: {
@@ -106,14 +108,51 @@ export async function createExtensionVideoJob(
       provider: "extension",
       status: "queued",
       aspectRatio: settings.aspectRatio,
-      duration: settings.duration,
-      settings: JSON.parse(
-        JSON.stringify({ ...settings, promptText: built.text, structured: built.structured }),
-      ),
+      duration: clips.length * CLIP_SECONDS,
+      settings: JSON.parse(JSON.stringify({ ...settings, targetDuration, clips })),
     },
   });
 
-  return { video, prompt: built.text, imageUrl: content.product.images[0]?.url ?? null };
+  return { video, clips, imageUrl: content.product.images[0]?.url ?? null };
+}
+
+/**
+ * Rewrites a queued extension job's clip plan for a different length, so the
+ * user can pick the duration from the extension popup at run time instead of
+ * having to recreate the job in the app.
+ */
+export async function replanExtensionVideoClips(videoId: string, targetDuration: number) {
+  const video = await prisma.video.findUnique({
+    where: { id: videoId },
+    include: {
+      content: {
+        include: {
+          product: true,
+          scenes: { orderBy: { position: "asc" } },
+        },
+      },
+    },
+  });
+  if (!video || video.provider !== "extension") return { error: "not_found" as const };
+  if (video.status !== "queued") return { error: "not_queued" as const };
+
+  const settings = videoSettingsSchema.parse((video.settings as Record<string, unknown>) ?? {});
+  const clips = planClips(
+    video.content.product.name,
+    video.content.scenes,
+    settings,
+    targetDuration,
+  );
+
+  await prisma.video.update({
+    where: { id: videoId },
+    data: {
+      duration: clips.length * CLIP_SECONDS,
+      settings: JSON.parse(JSON.stringify({ ...settings, targetDuration, clips })),
+    },
+  });
+
+  return { clips };
 }
 
 export function listVideos(userId: string) {

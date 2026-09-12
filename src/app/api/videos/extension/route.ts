@@ -18,7 +18,12 @@ export async function POST(request: NextRequest) {
   }
 
   const settings = videoSettingsSchema.parse(parsed.data.settings ?? {});
-  const result = await createExtensionVideoJob(session.user.id, parsed.data.contentId, settings);
+  const result = await createExtensionVideoJob(
+    session.user.id,
+    parsed.data.contentId,
+    settings,
+    parsed.data.targetDuration,
+  );
 
   if ("error" in result) {
     const message =
@@ -27,7 +32,7 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json(
-    { video: result.video, prompt: result.prompt, imageUrl: result.imageUrl },
+    { video: result.video, clips: result.clips, imageUrl: result.imageUrl },
     { status: 201 },
   );
 }

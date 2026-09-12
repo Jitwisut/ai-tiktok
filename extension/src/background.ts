@@ -1,5 +1,6 @@
 const WEB_APP_URL = "http://localhost:3000";
 const VEO_MODEL_ID = "veo-3.1-fast-generate-preview";
+const CLIP_SECONDS = 8;
 const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VEO_MODEL_ID}`;
 
 interface AddProductMessage {
@@ -13,9 +14,14 @@ interface AddProductMessage {
   };
 }
 
+interface JobClip {
+  index: number;
+  prompt: string;
+}
+
 interface VideoJob {
   videoId: string;
-  prompt: string;
+  clips: JobClip[];
   duration: number;
   aspectRatio: string;
   modelId: string;
@@ -25,7 +31,7 @@ interface VideoJob {
 
 interface IncomingVideoJob {
   videoId: string;
-  prompt: string;
+  clips: JobClip[];
   duration: number;
   aspectRatio: string;
   imageUrl?: string | null;
@@ -43,6 +49,7 @@ interface GetPendingVideoJobMessage {
 interface RunJobFromPopupMessage {
   type: "RUN_JOB_FROM_POPUP";
   job: IncomingVideoJob;
+  targetDuration?: number;
 }
 
 interface UploadVideoMessage {
@@ -50,6 +57,8 @@ interface UploadVideoMessage {
   videoId: string;
   base64: string;
   mimeType: string;
+  clipIndex?: number;
+  clipTotal?: number;
 }
 
 type ExtensionMessage =
@@ -106,13 +115,39 @@ async function fetchImageAsBase64(
   }
 }
 
-async function buildJob(incoming: IncomingVideoJob): Promise<VideoJob> {
-  const { appBaseUrl } = await getExtensionConfig();
+/** Asks the app to re-plan the job's clips when the popup picked a length. */
+async function replanClips(
+  videoId: string,
+  targetDuration: number,
+  appBaseUrl: string,
+  extensionToken: string,
+): Promise<JobClip[] | null> {
+  try {
+    const res = await fetch(`${appBaseUrl}/api/videos/extension/${videoId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "X-Extension-Token": extensionToken },
+      body: JSON.stringify({ targetDuration }),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { clips: JobClip[] };
+    return body.clips ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Promise<VideoJob> {
+  const { appBaseUrl, extensionToken } = await getExtensionConfig();
   const image = incoming.imageUrl ? await fetchImageAsBase64(incoming.imageUrl, appBaseUrl) : null;
+
+  let clips = incoming.clips;
+  if (targetDuration && targetDuration !== incoming.clips.length * CLIP_SECONDS) {
+    clips = (await replanClips(incoming.videoId, targetDuration, appBaseUrl, extensionToken)) ?? clips;
+  }
 
   return {
     videoId: incoming.videoId,
-    prompt: incoming.prompt,
+    clips,
     duration: incoming.duration,
     aspectRatio: incoming.aspectRatio,
     modelId: VEO_MODEL_ID,
@@ -147,7 +182,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
   if (message.type === "RUN_JOB_FROM_POPUP") {
     (async () => {
-      const job = await buildJob(message.job);
+      const job = await buildJob(message.job, message.targetDuration);
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
       // Already on AI Studio: drive that tab directly so the user never
@@ -191,7 +226,8 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
       try {
         const bytes = base64ToUint8Array(message.base64);
-        const res = await fetch(`${appBaseUrl}/api/videos/${message.videoId}/upload`, {
+        const query = `?clip=${message.clipIndex ?? 0}&total=${message.clipTotal ?? 1}`;
+        const res = await fetch(`${appBaseUrl}/api/videos/${message.videoId}/upload${query}`, {
           method: "POST",
           headers: {
             "Content-Type": message.mimeType,

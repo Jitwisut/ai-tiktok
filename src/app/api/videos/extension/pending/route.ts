@@ -16,7 +16,7 @@ export async function GET(request: NextRequest) {
   }
 
   const videos = await prisma.video.findMany({
-    where: { provider: "extension", status: "queued" },
+    where: { provider: "extension", status: { in: ["queued", "processing"] } },
     orderBy: { createdAt: "desc" },
     take: 20,
     include: {
@@ -28,15 +28,24 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  const jobs = videos.map((video) => ({
-    videoId: video.id,
-    productName: video.content.product.name,
-    hook: video.content.hook,
-    prompt: (video.settings as { promptText?: string })?.promptText ?? "",
-    imageUrl: video.content.product.images[0]?.url ?? null,
-    duration: video.duration,
-    aspectRatio: video.aspectRatio,
-  }));
+  const jobs = videos.map((video) => {
+    const settings = video.settings as {
+      clips?: { index: number; prompt: string }[];
+      promptText?: string;
+    };
+    // Older rows predate clip planning and carry a single prompt.
+    const clips = settings?.clips ?? [{ index: 0, prompt: settings?.promptText ?? "" }];
+
+    return {
+      videoId: video.id,
+      productName: video.content.product.name,
+      hook: video.content.hook,
+      clips,
+      imageUrl: video.content.product.images[0]?.url ?? null,
+      duration: video.duration,
+      aspectRatio: video.aspectRatio,
+    };
+  });
 
   return NextResponse.json({ jobs });
 }

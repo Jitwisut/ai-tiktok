@@ -141,10 +141,27 @@ model Video {
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   scheduledPosts ScheduledPost[]
+  clips         VideoClip[]
 
   @@index([userId])
   @@index([contentId])
   @@map("videos")
+}
+
+/// One Veo generation. Veo caps a single render at 8 seconds, so longer
+/// videos are produced as several clips that get concatenated once the
+/// last one arrives.
+model VideoClip {
+  id        String   @id @default(cuid())
+  videoId   String
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  index     Int
+  url       String
+  createdAt DateTime @default(now())
+
+  @@unique([videoId, index])
+  @@index([videoId])
+  @@map("video_clips")
 }
 
 enum ScheduledPostStatus {

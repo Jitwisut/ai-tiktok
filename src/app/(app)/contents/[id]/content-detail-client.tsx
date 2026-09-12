@@ -72,6 +72,7 @@ export function ContentDetailClient({
   const [planning, setPlanning] = useState(false);
   const [creatingVideo, setCreatingVideo] = useState(false);
   const [creatingViaExtension, setCreatingViaExtension] = useState(false);
+  const [targetDuration, setTargetDuration] = useState(24);
   const [deleting, setDeleting] = useState(false);
 
   const hasPending = videos.some(
@@ -153,7 +154,7 @@ export function ContentDetailClient({
     const res = await fetch("/api/videos/extension", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contentId: content.id }),
+      body: JSON.stringify({ contentId: content.id, targetDuration }),
     });
 
     if (!res.ok) {
@@ -163,13 +164,13 @@ export function ContentDetailClient({
       return;
     }
 
-    const { video, prompt, imageUrl } = await res.json();
+    const { video, clips, imageUrl } = await res.json();
 
     window.dispatchEvent(
       new CustomEvent("ai-affiliate:generate-via-extension", {
         detail: {
           videoId: video.id,
-          prompt,
+          clips,
           duration: video.duration,
           aspectRatio: video.aspectRatio,
           imageUrl,
@@ -292,7 +293,21 @@ export function ContentDetailClient({
             >
               {creatingViaExtension ? "กำลังส่งงาน..." : "สร้างผ่าน AI Studio (Extension)"}
             </Button>
+            <select
+              className="h-9 rounded-md border bg-transparent px-3 text-sm"
+              value={targetDuration}
+              onChange={(e) => setTargetDuration(Number(e.target.value))}
+            >
+              <option value={8}>8 วินาที (1 คลิป)</option>
+              <option value={16}>16 วินาที (2 คลิป)</option>
+              <option value={24}>24 วินาที (3 คลิป)</option>
+              <option value={32}>32 วินาที (4 คลิป)</option>
+            </select>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Veo สร้างได้ครั้งละ 8 วินาที — ความยาวที่มากกว่านั้นจะสร้างเป็นหลายคลิปต่อเนื่องกันแล้วต่อเป็นไฟล์เดียว
+            (ใช้ได้เฉพาะปุ่ม Extension)
+          </p>
           {content.scenes.length === 0 && (
             <p className="text-xs text-muted-foreground">ต้องสร้างฉากก่อนจึงจะสร้างวิดีโอได้</p>
           )}

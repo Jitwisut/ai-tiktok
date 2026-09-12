@@ -1,14 +1,24 @@
 // NOTE: every file here compiles to a classic script (Chrome loads content
 // scripts and MV3 service workers as classic, not modules), so they all share
 // one TypeScript global scope — top-level names must stay unique across files.
+interface StudioClip {
+  index: number;
+  prompt: string;
+}
+
 interface StudioVideoJob {
   videoId: string;
-  prompt: string;
+  clips: StudioClip[];
   duration: number;
   aspectRatio: string;
   modelId: string;
   imageBase64?: string;
   imageMimeType?: string;
+}
+
+interface StudioFrame {
+  base64: string;
+  mimeType: string;
 }
 
 const POLL_INTERVAL_MS = 3000;
@@ -38,6 +48,10 @@ function showBanner(text: string, color: string) {
   document.body.appendChild(banner);
 }
 
+function reportProgress(videoId: string, current: number, total: number, state: string) {
+  chrome.storage.local.set({ jobProgress: { videoId, current, total, state, at: Date.now() } });
+}
+
 function setNativeValue(element: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
   setter?.call(element, value);
@@ -54,6 +68,24 @@ function findStopButton(): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll("button")).find((b) =>
     /stop/i.test(b.textContent?.trim() ?? ""),
   );
+}
+
+function findVideos(): HTMLVideoElement[] {
+  return Array.from(document.querySelectorAll<HTMLVideoElement>("video[src^='blob:']"));
+}
+
+/**
+ * Google throws an upgrade/quota dialog over the page once the account runs
+ * out of allowance. It looks identical to a generation that never finishes,
+ * so name it explicitly instead of reporting a mystery timeout.
+ */
+function findQuotaBlock(): string | undefined {
+  const dialog = document.querySelector("mat-dialog-container, [role='dialog']");
+  const text = dialog?.textContent ?? "";
+  if (/upgrade to unlock|pay per request|quota|rate limit/i.test(text)) {
+    return "AI Studio ขอให้อัปเกรด/โควตาหมด — เปิดหน้า AI Studio แล้วจัดการก่อน แล้วค่อยสั่งใหม่";
+  }
+  return undefined;
 }
 
 async function waitFor<T>(fn: () => T | undefined, timeoutMs: number, intervalMs: number): Promise<T | undefined> {
@@ -102,8 +134,7 @@ async function ensureModelSelected(modelId: string): Promise<boolean> {
   if (!currentBadge) return false;
   if (currentBadge.textContent?.trim() === modelId) return true;
 
-  const selectorButton = document.querySelector<HTMLButtonElement>("button.model-selector-card");
-  selectorButton?.click();
+  document.querySelector<HTMLButtonElement>("button.model-selector-card")?.click();
 
   const searchInput = await waitFor(
     () => document.querySelector<HTMLInputElement>('input[placeholder="Search for a model or agent"]'),
@@ -138,19 +169,44 @@ async function ensureModelSelected(modelId: string): Promise<boolean> {
   return getCurrentModelId() === modelId;
 }
 
-async function uploadStartFrameImage(base64: string, mimeType: string): Promise<boolean> {
-  const input = await waitFor(
-    () =>
-      document.querySelector<HTMLInputElement>(
-        'input[type="file"][data-test-upload-file-input]:not([multiple])',
-      ) ?? undefined,
-    8000,
-    400,
+function findStartFrameInput(): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>(
+    'input[type="file"][data-test-upload-file-input]:not([multiple])',
   );
+}
+
+/**
+ * Clears a previously attached start frame before the next clip. The remove
+ * control has no stable hook, so fall back to overwriting the input, which a
+ * single-file input accepts.
+ */
+async function clearStartFrame(filename: string) {
+  const label = Array.from(document.querySelectorAll("*")).find(
+    (el) => el.children.length === 0 && el.textContent?.trim() === filename,
+  );
+  const container = label?.closest("div")?.parentElement;
+  const removeButton = container
+    ? Array.from(container.querySelectorAll("button")).find((b) =>
+        /remove|delete|clear|close/i.test(b.getAttribute("aria-label") ?? ""),
+      )
+    : undefined;
+
+  if (removeButton) {
+    removeButton.click();
+    await waitFor(
+      () => (document.body.textContent?.includes(filename) ? undefined : true),
+      5000,
+      300,
+    );
+  }
+}
+
+async function attachStartFrame(frame: StudioFrame, filename: string): Promise<boolean> {
+  const input = await waitFor(() => findStartFrameInput() ?? undefined, 8000, 400);
   if (!input) return false;
 
-  const bytes = decodeBase64ToBytes(base64);
-  const file = new File([bytes as unknown as BlobPart], "product.jpg", { type: mimeType });
+  const bytes = decodeBase64ToBytes(frame.base64);
+  const file = new File([bytes as unknown as BlobPart], filename, { type: frame.mimeType });
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(file);
   input.files = dataTransfer.files;
@@ -160,39 +216,79 @@ async function uploadStartFrameImage(base64: string, mimeType: string): Promise<
   // which takes far longer than the change event — wait for the attachment
   // chip to appear instead of guessing a delay.
   const attached = await waitFor(
-    () => (document.body.textContent?.includes("product.jpg") ? true : undefined),
+    () => (document.body.textContent?.includes(filename) ? true : undefined),
     30000,
     500,
   );
   return attached === true;
 }
 
-async function runJob(job: StudioVideoJob) {
-  // A generation already in flight means something else (a duplicate
-  // delivery, or the user) started one — don't fight it for the Run button.
-  if (findStopButton()) {
-    showBanner("มีวิดีโอกำลังสร้างอยู่ในแท็บนี้แล้ว", "#d97706");
-    return;
-  }
-
-  showBanner("AI Affiliate Studio: กำลังเลือกโมเดล...", "#111827");
-  const modelOk = await ensureModelSelected(job.modelId);
-  if (!modelOk) {
-    showBanner("เลือกโมเดล Veo ไม่สำเร็จ (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
-    return;
-  }
-
-  if (job.imageBase64 && job.imageMimeType) {
-    showBanner("AI Affiliate Studio: กำลังแนบรูปสินค้า...", "#111827");
-    const uploaded = await uploadStartFrameImage(job.imageBase64, job.imageMimeType);
-    if (!uploaded) {
-      showBanner("แนบรูปสินค้าไม่สำเร็จ กำลังสร้างแบบไม่มีรูปแทน", "#d97706");
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+/**
+ * Grabs the final frame of a finished clip so it can seed the next one and
+ * the cuts line up instead of jumping to an unrelated scene.
+ */
+async function captureLastFrame(video: HTMLVideoElement): Promise<StudioFrame | null> {
+  try {
+    if (!video.videoWidth) {
+      await waitFor(() => (video.videoWidth ? true : undefined), 8000, 300);
     }
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        video.removeEventListener("seeked", done);
+        resolve();
+      };
+      video.addEventListener("seeked", done);
+      video.currentTime = Math.max(0, (video.duration || 8) - 0.15);
+      setTimeout(done, 4000);
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    if (!canvas.width || !canvas.height) return null;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    return { base64: dataUrl.split(",")[1], mimeType: "image/jpeg" };
+  } catch {
+    return null;
+  }
+}
+
+async function uploadClip(
+  videoId: string,
+  video: HTMLVideoElement,
+  clipIndex: number,
+  clipTotal: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const response = await fetch(video.src);
+  const blob = await response.blob();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const base64 = uint8ArrayToBase64(bytes);
+
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: "UPLOAD_VIDEO", videoId, base64, mimeType: "video/mp4", clipIndex, clipTotal },
+      (result: { ok: boolean; error?: string }) => resolve(result ?? { ok: false, error: "no response" }),
+    );
+  });
+}
+
+/** Runs one Veo generation and returns the <video> element it produced. */
+async function generateClip(
+  clip: StudioClip,
+  frame: StudioFrame | null,
+  frameFilename: string,
+  label: string,
+): Promise<HTMLVideoElement | null> {
+  if (frame) {
+    showBanner(`AI Affiliate Studio: ${label} กำลังแนบภาพเริ่มต้น...`, "#111827");
+    await attachStartFrame(frame, frameFilename);
   }
 
-  showBanner("AI Affiliate Studio: กำลังกรอก prompt...", "#111827");
-
+  showBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
   const textarea = await waitFor(
     () => document.querySelector<HTMLTextAreaElement>('textarea[placeholder="Describe your video"]'),
     30000,
@@ -200,10 +296,12 @@ async function runJob(job: StudioVideoJob) {
   );
   if (!textarea) {
     showBanner("ไม่พบช่อง prompt บนหน้า AI Studio (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
-    return;
+    return null;
   }
 
-  setNativeValue(textarea, job.prompt);
+  setNativeValue(textarea, clip.prompt);
+
+  const videosBefore = findVideos().length;
 
   // Angular enables Run asynchronously, and an attached image keeps it
   // disabled until the upload settles — poll generously rather than
@@ -226,40 +324,95 @@ async function runJob(job: StudioVideoJob) {
     }
   }
 
-  const started = await waitFor(() => (findStopButton() ? true : undefined), 8000, 400);
+  const started = await waitFor(() => (findStopButton() ? true : undefined), 10000, 400);
   if (!started) {
-    showBanner("กดสร้างไม่สำเร็จ — ลองกดปุ่ม Run เองได้เลย prompt กับรูปใส่ไว้ให้แล้ว", "#d97706");
+    showBanner("กดสร้างไม่สำเร็จ — ลองกดปุ่ม Run เองได้เลย prompt ใส่ไว้ให้แล้ว", "#d97706");
+    return null;
+  }
+
+  showBanner(`AI Affiliate Studio: ${label} กำลังสร้าง รอสักครู่...`, "#111827");
+  await waitFor(
+    () => (findStopButton() && !findQuotaBlock() ? undefined : true),
+    MAX_WAIT_MS,
+    POLL_INTERVAL_MS,
+  );
+
+  const quotaMessage = findQuotaBlock();
+  if (quotaMessage) {
+    showBanner(quotaMessage, "#dc2626");
+    return null;
+  }
+
+  const videos = await waitFor(() => {
+    const current = findVideos();
+    return current.length > videosBefore ? current : undefined;
+  }, 20000, 1000);
+  if (!videos) {
+    showBanner(`${label} สร้างไม่สำเร็จ หรือหาไฟล์ผลลัพธ์ไม่เจอ`, "#dc2626");
+    return null;
+  }
+
+  return videos[videos.length - 1];
+}
+
+async function runJob(job: StudioVideoJob) {
+  // A generation already in flight means something else (a duplicate
+  // delivery, or the user) started one — don't fight it for the Run button.
+  if (findStopButton()) {
+    showBanner("มีวิดีโอกำลังสร้างอยู่ในแท็บนี้แล้ว", "#d97706");
     return;
   }
 
-  showBanner("AI Affiliate Studio: กำลังสร้างวิดีโอ รอสักครู่...", "#111827");
-
-  // Generation is in progress while the Stop button is visible; wait for it
-  // to disappear, then look for the resulting <video> element.
-  await waitFor(() => (findStopButton() ? undefined : true), MAX_WAIT_MS, POLL_INTERVAL_MS);
-
-  const video = await waitFor(() => document.querySelector<HTMLVideoElement>("video[src^='blob:']"), 15000, 1000);
-  if (!video) {
-    showBanner("สร้างวิดีโอไม่สำเร็จ หรือหาไฟล์ผลลัพธ์ไม่เจอ", "#dc2626");
+  showBanner("AI Affiliate Studio: กำลังเลือกโมเดล...", "#111827");
+  if (!(await ensureModelSelected(job.modelId))) {
+    showBanner("เลือกโมเดล Veo ไม่สำเร็จ (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
     return;
   }
 
-  showBanner("AI Affiliate Studio: กำลังอัปโหลดกลับเข้าแอป...", "#111827");
+  const total = job.clips.length;
+  let frame: StudioFrame | null =
+    job.imageBase64 && job.imageMimeType
+      ? { base64: job.imageBase64, mimeType: job.imageMimeType }
+      : null;
+  let previousFilename = "";
 
-  const response = await fetch(video.src);
-  const blob = await response.blob();
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const base64 = uint8ArrayToBase64(bytes);
+  for (const clip of job.clips) {
+    const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
+    reportProgress(job.videoId, clip.index + 1, total, "generating");
 
-  chrome.runtime.sendMessage(
-    { type: "UPLOAD_VIDEO", videoId: job.videoId, base64, mimeType: "video/mp4" },
-    (result: { ok: boolean; error?: string }) => {
-      if (result?.ok) {
-        showBanner("อัปโหลดกลับเข้าแอปสำเร็จ ✓", "#16a34a");
-      } else {
-        showBanner(`อัปโหลดไม่สำเร็จ: ${result?.error ?? "unknown error"}`, "#dc2626");
+    if (previousFilename) await clearStartFrame(previousFilename);
+    const filename = `frame-${clip.index}.jpg`;
+
+    const video = await generateClip(clip, frame, filename, label);
+    if (!video) {
+      reportProgress(job.videoId, clip.index + 1, total, "failed");
+      return;
+    }
+    previousFilename = frame ? filename : "";
+
+    showBanner(`AI Affiliate Studio: ${label} กำลังอัปโหลด...`, "#111827");
+    reportProgress(job.videoId, clip.index + 1, total, "uploading");
+    const result = await uploadClip(job.videoId, video, clip.index, total);
+    if (!result.ok) {
+      showBanner(`อัปโหลดไม่สำเร็จ: ${result.error ?? "unknown error"}`, "#dc2626");
+      reportProgress(job.videoId, clip.index + 1, total, "failed");
+      return;
+    }
+
+    // Seed the next clip with this one's final frame so the cuts match.
+    if (clip.index < total - 1) {
+      frame = await captureLastFrame(video);
+      if (!frame) {
+        showBanner("จับเฟรมสุดท้ายไม่ได้ คลิปถัดไปอาจไม่ต่อเนื่อง", "#d97706");
+        previousFilename = "";
       }
-    },
+    }
+  }
+
+  reportProgress(job.videoId, total, total, "done");
+  showBanner(
+    total > 1 ? `เสร็จแล้ว ${total} คลิป — แอปกำลังต่อเป็นวิดีโอเดียว ✓` : "อัปโหลดกลับเข้าแอปสำเร็จ ✓",
+    "#16a34a",
   );
 }
 
