@@ -111,4 +111,8 @@ function injectButton() {
   document.body.appendChild(button);
 }
 
-injectButton();
+// The TikTok Studio product table gets its own cart-import button
+// (tiktok-studio.ts) — this generic one would just double up on that page.
+const onTikTokStudio =
+  /(^|\.)tiktok\.com$/.test(location.hostname) && location.pathname.startsWith("/tiktokstudio");
+if (!onTikTokStudio) injectButton();

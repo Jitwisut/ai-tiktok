@@ -6,7 +6,7 @@ export const createProductSchema = z.object({
   description: z.string().max(2000).optional(),
   price: z.coerce.number().positive().optional(),
   currency: z.string().max(10).optional(),
-  source: z.enum(["manual", "extension", "url"]).optional(),
+  source: z.enum(["manual", "extension", "url", "tiktok"]).optional(),
   images: z.array(z.string().url()).max(5).optional(),
 });
 
@@ -25,4 +25,18 @@ export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 
 export const importProductSchema = z.object({
   url: z.string().url(),
+});
+
+export const importTikTokProductsSchema = z.object({
+  products: z
+    .array(
+      z.object({
+        tiktokId: z.string().min(1),
+        name: z.string().min(1).max(200),
+        price: z.coerce.number().positive().optional(),
+        image: z.string().url().optional(),
+      }),
+    )
+    .min(1)
+    .max(50),
 });

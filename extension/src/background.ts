@@ -114,6 +114,18 @@ interface FetchAndUploadMessage {
   clipTotal?: number;
 }
 
+interface ScrapedTikTokProduct {
+  tiktokId: string;
+  name: string;
+  price?: number;
+  image?: string;
+}
+
+interface ImportTikTokProductsMessage {
+  type: "IMPORT_TIKTOK_PRODUCTS";
+  products: ScrapedTikTokProduct[];
+}
+
 type ExtensionMessage =
   | AddProductMessage
   | QueueVideoJobMessage
@@ -124,7 +136,8 @@ type ExtensionMessage =
   | CancelJobMessage
   | RunJobFromPopupMessage
   | UploadVideoMessage
-  | FetchAndUploadMessage;
+  | FetchAndUploadMessage
+  | ImportTikTokProductsMessage;
 
 async function getExtensionConfig() {
   const stored = await chrome.storage.local.get(["appBaseUrl", "extensionToken"]);
@@ -413,6 +426,17 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "อัปโหลดล้มเหลว" });
       }
+    })();
+    return true;
+  }
+
+  if (message.type === "IMPORT_TIKTOK_PRODUCTS") {
+    (async () => {
+      const result = await callApp("/api/products/extension", {
+        method: "POST",
+        body: JSON.stringify({ products: message.products }),
+      });
+      sendResponse(result.ok ? { ok: true, ...result.body } : { ok: false, error: result.error });
     })();
     return true;
   }

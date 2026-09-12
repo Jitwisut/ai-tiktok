@@ -91,6 +91,36 @@ export async function deleteProductImage(
   return count > 0;
 }
 
+export async function importTikTokProducts(
+  userId: string,
+  products: { tiktokId: string; name: string; price?: number; image?: string }[],
+) {
+  const results = [];
+  for (const item of products) {
+    const sourceUrl = `https://www.tiktok.com/tiktokstudio/product/${item.tiktokId}`;
+    const existing = await prisma.product.findFirst({
+      where: { userId, sourceUrl },
+      include: { images: { orderBy: { position: "asc" }, take: 1 } },
+    });
+    if (existing) {
+      results.push(existing);
+      continue;
+    }
+
+    results.push(
+      await createProduct(userId, {
+        name: item.name,
+        sourceUrl,
+        price: item.price,
+        currency: "THB",
+        source: "tiktok",
+        images: item.image ? [item.image] : undefined,
+      }),
+    );
+  }
+  return results;
+}
+
 export async function importProductFromUrl(userId: string, url: string) {
   const importer = new UrlImporter();
   const data = await importer.import(url);

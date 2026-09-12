@@ -60,6 +60,15 @@
         "dist/flow-automation.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.tiktok.com/tiktokstudio/*"
+      ],
+      "js": [
+        "dist/tiktok-studio.js"
+      ],
+      "run_at": "document_idle"
     }
   ]
 }
