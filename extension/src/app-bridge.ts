@@ -4,6 +4,7 @@ interface GenerateViaExtensionDetail {
   duration: number;
   aspectRatio: string;
   imageUrl?: string | null;
+  site?: "aistudio" | "flow";
 }
 
 // Answers the app's presence check. Event dispatch is synchronous, so the
@@ -18,7 +19,10 @@ window.addEventListener("ai-affiliate:generate-via-extension", (event) => {
   const detail = (event as CustomEvent<GenerateViaExtensionDetail>).detail;
   if (!detail?.videoId || !detail.clips?.length) return;
 
-  chrome.runtime.sendMessage({ type: "QUEUE_EXTENSION_VIDEO_JOB", job: detail }, () => {
-    window.dispatchEvent(new CustomEvent("ai-affiliate:extension-ack"));
-  });
+  chrome.runtime.sendMessage(
+    { type: "QUEUE_EXTENSION_VIDEO_JOB", job: detail, site: detail.site ?? "aistudio" },
+    () => {
+      window.dispatchEvent(new CustomEvent("ai-affiliate:extension-ack"));
+    },
+  );
 });

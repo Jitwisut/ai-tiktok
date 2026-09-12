@@ -73,6 +73,7 @@ export function ContentDetailClient({
   const [creatingVideo, setCreatingVideo] = useState(false);
   const [creatingViaExtension, setCreatingViaExtension] = useState(false);
   const [targetDuration, setTargetDuration] = useState(24);
+  const [site, setSite] = useState<"aistudio" | "flow">("aistudio");
   const [deleting, setDeleting] = useState(false);
 
   const hasPending = videos.some(
@@ -108,7 +109,7 @@ export function ContentDetailClient({
     const res = await fetch(`/api/contents/${content.id}/scenes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ targetDuration: 8 }),
+      body: JSON.stringify({ targetDuration }),
     });
     setPlanning(false);
 
@@ -180,12 +181,15 @@ export function ContentDetailClient({
           duration: video.duration,
           aspectRatio: video.aspectRatio,
           imageUrl,
+          site,
         },
       }),
     );
 
     setCreatingViaExtension(false);
-    toast.success("ส่งงานไปที่ AI Studio แล้ว กำลังรอผลลัพธ์...");
+    toast.success(
+      `ส่งงานไปที่ ${site === "flow" ? "Google Flow" : "AI Studio"} แล้ว กำลังรอผลลัพธ์...`,
+    );
     router.refresh();
   }
 
@@ -297,8 +301,16 @@ export function ContentDetailClient({
               onClick={handleGenerateViaExtension}
               disabled={creatingViaExtension || content.scenes.length === 0}
             >
-              {creatingViaExtension ? "กำลังส่งงาน..." : "สร้างผ่าน AI Studio (Extension)"}
+              {creatingViaExtension ? "กำลังส่งงาน..." : "สร้างผ่าน Extension"}
             </Button>
+            <select
+              className="h-9 rounded-md border bg-transparent px-3 text-sm"
+              value={site}
+              onChange={(e) => setSite(e.target.value as "aistudio" | "flow")}
+            >
+              <option value="aistudio">AI Studio</option>
+              <option value="flow">Google Flow</option>
+            </select>
             <select
               className="h-9 rounded-md border bg-transparent px-3 text-sm"
               value={targetDuration}
@@ -311,8 +323,11 @@ export function ContentDetailClient({
             </select>
           </div>
           <p className="text-xs text-muted-foreground">
-            Veo สร้างได้ครั้งละ 8 วินาที — ความยาวที่มากกว่านั้นจะสร้างเป็นหลายคลิปต่อเนื่องกันแล้วต่อเป็นไฟล์เดียว
+            สร้างได้ครั้งละ 8 วินาที — ความยาวที่มากกว่านั้นจะสร้างเป็นหลายคลิปแล้วต่อเป็นไฟล์เดียว
             (ใช้ได้เฉพาะปุ่ม Extension)
+            {site === "flow"
+              ? " · Flow ต่อภาพระหว่างคลิปไม่ได้ แต่ละคลิปอาจเป็นคนละฉาก และต้องตั้ง Flow project URL ในหน้า Settings ของ Extension ก่อน"
+              : " · AI Studio ส่งเฟรมสุดท้ายของคลิปก่อนหน้าไปต่อ ทำให้ภาพต่อเนื่องกว่า"}
           </p>
           {content.scenes.length === 0 && (
             <p className="text-xs text-muted-foreground">ต้องสร้างฉากก่อนจึงจะสร้างวิดีโอได้</p>
