@@ -77,7 +77,14 @@ export function VideoLibraryClient({ videos }: { videos: Video[] }) {
             </h2>
             {items.map((v) => (
               <Card key={v.id}>
-                {v.thumbnailUrl ? (
+                {v.status === "completed" && v.videoUrl ? (
+                  <video
+                    src={v.videoUrl}
+                    controls
+                    preload="metadata"
+                    className="aspect-video w-full rounded-t-xl bg-black object-contain"
+                  />
+                ) : v.thumbnailUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={v.thumbnailUrl}
@@ -110,7 +117,7 @@ export function VideoLibraryClient({ videos }: { videos: Video[] }) {
                         />
                       ) : (
                         <Button size="sm" variant="outline" disabled>
-                          ไม่มีไฟล์ (mock)
+                          ไม่มีไฟล์วิดีโอ
                         </Button>
                       ))}
                     {v.status === "failed" && (
