@@ -77,7 +77,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const clipPaths = clips.map((clip) => path.join(PUBLIC_DIR, clip.url));
   try {
-    const filename = await concatClips(clipPaths, OUTPUT_DIR);
+    const filename = await concatClips(clipPaths, OUTPUT_DIR, video.aspectRatio ?? "9:16");
     await removeFiles(clipPaths);
     await prisma.videoClip.deleteMany({ where: { videoId: id } });
 

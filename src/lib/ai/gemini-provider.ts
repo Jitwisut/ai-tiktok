@@ -56,11 +56,22 @@ export class GeminiProvider implements LLMProvider {
         return await call();
       } catch (err) {
         const status = (err as { status?: number })?.status;
+        const message = String((err as Error)?.message ?? "");
+
+        // A per-day quota won't reset within any backoff we can afford, so
+        // waiting it out only holds the request open for minutes before
+        // failing anyway. Per-minute limits are still worth retrying.
+        if (status === 429 && /PerDay/i.test(message)) {
+          throw new Error(
+            "โควต้า Gemini API รายวันเต็มแล้ว — รอโควต้ารีเซ็ต (เที่ยงคืนเวลาแปซิฟิก) หรือเปลี่ยน GEMINI_API_KEY",
+          );
+        }
+
         const retriable = status === 429 || status === 503 || status === 500;
         if (!retriable || attempt >= delaysMs.length) throw err;
 
         // Rate-limit responses say how long to wait; prefer that over guessing.
-        const asked = /retry in ([\d.]+)s/i.exec(String((err as Error)?.message ?? ""));
+        const asked = /retry in ([\d.]+)s/i.exec(message);
         const askedMs = asked ? Math.ceil(Number(asked[1]) * 1000) : 0;
         await new Promise((resolve) =>
           setTimeout(resolve, Math.max(delaysMs[attempt], askedMs)),
