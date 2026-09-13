@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AI Affiliate Studio</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #0b1220;
+        color: #f9fafb;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 13px;
+      }
+      button {
+        font-family: inherit;
+        cursor: pointer;
+      }
+      input,
+      select,
+      textarea {
+        font-family: inherit;
+      }
+      #tabs {
+        display: flex;
+        border-bottom: 1px solid #1f2937;
+        position: sticky;
+        top: 0;
+        background: #0b1220;
+        z-index: 1;
+      }
+      #tabs button {
+        flex: 1;
+        background: none;
+        border: none;
+        color: #9ca3af;
+        padding: 12px 6px;
+        font-size: 13px;
+        font-weight: 600;
+        border-bottom: 2px solid transparent;
+      }
+      #tabs button.active {
+        color: #f9fafb;
+        border-bottom-color: #2563eb;
+      }
+      .view {
+        padding: 14px;
+      }
+      .view[hidden] {
+        display: none;
+      }
+      .section-title {
+        font-size: 11px;
+        font-weight: 700;
+        color: #6b7280;
+        margin: 14px 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .section-title:first-child {
+        margin-top: 0;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+      }
+      button.btn {
+        background: #1f2937;
+        color: #e5e7eb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        padding: 8px 14px;
+        font-size: 12px;
+      }
+      button.btn-primary {
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        font-weight: 600;
+      }
+      button.btn-success {
+        background: #16a34a;
+        color: #fff;
+        border: none;
+        font-weight: 600;
+      }
+      button.btn-danger {
+        background: #7f1d1d;
+        color: #fecaca;
+        border: 1px solid #b91c1c;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      select,
+      input[type="text"],
+      input[type="password"],
+      input[type="url"] {
+        background: #1f2937;
+        color: #f9fafb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 12px;
+        width: 100%;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+      th {
+        text-align: left;
+        color: #6b7280;
+        padding: 4px;
+        border-bottom: 1px solid #374151;
+      }
+      td {
+        padding: 6px 4px;
+        border-bottom: 1px solid #1f2937;
+      }
+      td img {
+        width: 36px;
+        height: 36px;
+        object-fit: cover;
+        border-radius: 4px;
+        background: #374151;
+        display: block;
+      }
+      .card {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+        border: 1px solid #374151;
+        border-radius: 10px;
+        margin-bottom: 8px;
+      }
+      .merged-video {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        margin-top: 8px;
+      }
+      .merged-video video {
+        width: 160px;
+        border-radius: 8px;
+        background: #000;
+        flex-shrink: 0;
+      }
+      .merged-video .badge {
+        display: inline-block;
+        background: #16a34a;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        border-radius: 999px;
+        padding: 2px 8px;
+        margin-bottom: 6px;
+      }
+      .clip-parts-label {
+        font-size: 11px;
+        color: #6b7280;
+        margin-top: 8px;
+      }
+      .card img {
+        width: 40px;
+        height: 40px;
+        object-fit: cover;
+        border-radius: 8px;
+        background: #374151;
+        flex-shrink: 0;
+      }
+      .card .info {
+        flex: 1;
+        min-width: 0;
+      }
+      .card .title {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .card .subtitle {
+        font-size: 11px;
+        color: #9ca3af;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .empty {
+        color: #9ca3af;
+        font-size: 12px;
+        line-height: 1.6;
+        padding: 12px 0;
+      }
+      #review {
+        display: none;
+        background: #111827;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 12px;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      #catalog-status,
+      #settings-status {
+        display: none;
+        color: #fbbf24;
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+      #progress-wrap {
+        display: none;
+        margin-bottom: 10px;
+      }
+      #progress-label {
+        font-size: 11px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      #progress-track {
+        height: 6px;
+        background: #374151;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      #progress-bar {
+        height: 100%;
+        width: 0%;
+        background: #2563eb;
+        transition: width 0.3s;
+      }
+      #log {
+        max-height: 140px;
+        overflow-y: auto;
+        color: #9ca3af;
+        font-size: 10px;
+      }
+      #log div {
+        border-bottom: 1px solid #1f2937;
+        padding: 4px 0;
+      }
+      .field {
+        margin-bottom: 12px;
+      }
+      .field label {
+        display: block;
+        font-size: 11px;
+        color: #9ca3af;
+        margin-bottom: 4px;
+      }
+      .hint {
+        font-size: 11px;
+        color: #6b7280;
+        line-height: 1.5;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="tabs">
+      <button id="tab-products" class="active">สินค้า</button>
+      <button id="tab-library">คลัง/งาน</button>
+      <button id="tab-settings">ตั้งค่า</button>
+    </div>
+
+    <div id="view-products" class="view">
+      <div class="section-title">คลังสินค้า</div>
+      <div class="row">
+        <button id="get-product" class="btn btn-primary">ดึงจากหน้า TikTok</button>
+        <button id="add-current-page" class="btn">+ เพิ่มจากหน้านี้</button>
+        <button id="export-csv" class="btn">Export CSV</button>
+        <button id="import-json" class="btn">Import</button>
+        <button id="download-json" class="btn">Download JSON</button>
+        <input id="import-file" type="file" accept="application/json" style="display: none" />
+      </div>
+      <div id="catalog-status"></div>
+
+      <div class="section-title">การเลือก</div>
+      <div class="row">
+        <button id="delete-selected" class="btn btn-danger" disabled>Delete (0)</button>
+        <button id="reset-selection" class="btn">Reset (0)</button>
+      </div>
+
+      <div class="section-title">รีวิวและสร้างวิดีโอ</div>
+      <div class="row">
+        <select id="style"></select>
+        <select id="duration" title="ความยาววิดีโอ — Flow สร้างได้ครั้งละ 8 วิ เกินกว่านั้นจะต่อหลายคลิปให้เป็นวิดีโอเดียว">
+          <option value="8">8 วิ · คลิปเดียว</option>
+          <option value="16">16 วิ · ต่อ 2 คลิป</option>
+          <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
+        </select>
+        <select id="repeat" title="สร้างกี่วิดีโอจากคอนเทนต์นี้ — แต่ละวิดีโอจะต่างกัน และรันต่อกันอัตโนมัติ">
+          <option value="1" selected>ทำ 1 วิดีโอ</option>
+          <option value="2">ทำ 2 วิดีโอ</option>
+          <option value="3">ทำ 3 วิดีโอ</option>
+          <option value="4">ทำ 4 วิดีโอ</option>
+          <option value="5">ทำ 5 วิดีโอ</option>
+        </select>
+        <select id="site">
+          <option value="aistudio">AI Studio</option>
+          <option value="flow" selected>Google Flow</option>
+        </select>
+      </div>
+      <div class="row">
+        <button id="analyze" class="btn btn-primary">1. วิเคราะห์สินค้า</button>
+        <button id="generate-scenes" class="btn btn-primary">2. สร้างฉาก</button>
+        <button id="create-video" class="btn btn-success" disabled>3. สร้างวิดีโอ</button>
+      </div>
+      <div id="review"></div>
+
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>รูป</th>
+            <th>ชื่อสินค้า</th>
+            <th>ราคา</th>
+            <th>ID</th>
+          </tr>
+        </thead>
+        <tbody id="products-tbody"></tbody>
+      </table>
+
+      <div class="section-title">Activity Log</div>
+      <div id="log"></div>
+    </div>
+
+    <div id="view-library" class="view" hidden>
+      <div id="status-text" style="display: none; font-size: 12px; margin-bottom: 8px"></div>
+      <div id="progress-wrap">
+        <div id="progress-label"></div>
+        <div id="progress-track"><div id="progress-bar"></div></div>
+        <div id="queue-info" style="display: none; font-size: 11px; color: #9ca3af; margin-top: 4px"></div>
+        <div class="row" style="margin-top: 8px">
+          <button id="cancel-job" class="btn btn-danger">ยกเลิกงานนี้</button>
+        </div>
+      </div>
+
+      <div class="section-title">งานที่รออยู่</div>
+      <div id="jobs-list"></div>
+
+      <div class="section-title">สร้างจากคอนเทนต์</div>
+      <div id="contents-list"></div>
+
+      <div class="section-title">คลิปที่เสร็จแล้ว</div>
+      <div id="clips-list"></div>
+
+      <div class="section-title" style="display: flex; align-items: center; justify-content: space-between">
+        <span>บันทึกขั้นตอนงาน (สำหรับแก้บั๊ก)</span>
+        <button id="copy-job-log" class="btn" style="padding: 2px 8px; font-size: 10px; text-transform: none">
+          คัดลอก
+        </button>
+      </div>
+      <div
+        id="job-log"
+        style="
+          max-height: 220px;
+          overflow-y: auto;
+          background: #0b1220;
+          border: 1px solid #374151;
+          border-radius: 8px;
+          padding: 8px;
+          font-family: monospace;
+          font-size: 10px;
+          color: #9ca3af;
+          line-height: 1.6;
+        "
+      ></div>
+    </div>
+
+    <div id="view-settings" class="view" hidden>
+      <div class="field">
+        <label for="gemini-api-keys">Gemini API Keys (บรรทัดละ 1 key)</label>
+        <textarea
+          id="gemini-api-keys"
+          rows="4"
+          placeholder="AIza...&#10;AIza... (จากอีกบัญชี)&#10;AIza..."
+          style="background:#1f2937;color:#f9fafb;border:1px solid #374151;border-radius:6px;padding:8px;font-size:12px;width:100%;font-family:monospace;resize:vertical"
+        ></textarea>
+        <div class="hint">
+          ใส่ได้หลาย key จากหลายบัญชี Google — ระบบจะสลับ key อัตโนมัติแบบ round-robin
+          และพัก key ที่ติด rate limit (429) ไว้ชั่วคราวโดยไม่ต้องสลับเอง ไม่มี server กลางแล้ว
+          เรียก Gemini ตรงจาก extension นี้
+        </div>
+      </div>
+      <div class="field">
+        <label for="gemini-model">Gemini Model</label>
+        <input id="gemini-model" type="text" placeholder="gemini-flash-latest" />
+      </div>
+      <div class="field">
+        <label for="flow-project-url">Google Flow Project URL</label>
+        <input id="flow-project-url" type="url" placeholder="https://flow.google.com/project/..." />
+      </div>
+      <button id="save-settings" class="btn btn-primary">บันทึก</button>
+      <div id="settings-status"></div>
+
+      <div class="section-title">สถานะ Key</div>
+      <div id="key-status-list"></div>
+    </div>
+
+    <script src="dist/sidepanel.js" type="module"></script>
+  </body>
+</html>

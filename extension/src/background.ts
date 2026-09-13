@@ -1,32 +1,26 @@
-const WEB_APP_URL = "http://localhost:3000";
+import * as store from "./lib/store.js";
+import * as gemini from "./lib/gemini.js";
+import * as library from "./lib/library.js";
+import * as prompts from "./lib/analysis-prompts.js";
+import { DEFAULT_VIDEO_SETTINGS, CLIP_SECONDS, planClips, type PlanVariant } from "./lib/prompt-engine.js";
+import { concatMp4 } from "./lib/mp4-concat.js";
+
 const VEO_MODEL_ID = "veo-3.1-fast-generate-preview";
-const CLIP_SECONDS = 8;
 const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VEO_MODEL_ID}`;
 
 type GenerationSite = "aistudio" | "flow";
 
-async function siteTargetUrl(site: GenerationSite): Promise<string> {
+/** Only a project page has the prompt box — Flow's home page has nothing to drive. */
+const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/project\//;
+
+async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
   if (site === "aistudio") return VEO_STUDIO_URL;
-  const stored = await chrome.storage.local.get("flowProjectUrl");
-  return (stored.flowProjectUrl as string | undefined) || "https://flow.google.com/";
+  const { flowProjectUrl } = await store.getSettings();
+  return FLOW_PROJECT_URL.test(flowProjectUrl) ? flowProjectUrl : null;
 }
 
 function siteMatchesTab(site: GenerationSite, url: string): boolean {
-  return site === "aistudio"
-    ? url.includes("aistudio.google.com")
-    : url.includes("flow.google.com");
-}
-
-interface AddProductMessage {
-  type: "ADD_PRODUCT";
-  product: {
-    url: string;
-    name?: string;
-    description?: string;
-    price?: string;
-    image?: string;
-    images?: string[];
-  };
+  return site === "aistudio" ? url.includes("aistudio.google.com") : FLOW_PROJECT_URL.test(url);
 }
 
 interface JobClip {
@@ -47,25 +41,11 @@ interface VideoJob {
 interface IncomingVideoJob {
   videoId: string;
   clips: JobClip[];
-  duration: number;
-  aspectRatio: string;
+  duration?: number;
+  aspectRatio?: string;
   imageUrl?: string | null;
 }
 
-interface QueueVideoJobMessage {
-  type: "QUEUE_EXTENSION_VIDEO_JOB";
-  job: IncomingVideoJob;
-  site?: GenerationSite;
-}
-
-interface GetPendingVideoJobMessage {
-  type: "GET_PENDING_VIDEO_JOB";
-}
-
-/**
- * Used by the in-page panel. The content script cannot fetch the app itself
- * — Flow's CSP blocks it — so the worker does it and hands back the list.
- */
 interface GetPendingJobsMessage {
   type: "GET_PENDING_JOBS";
 }
@@ -74,10 +54,29 @@ interface GetContentsMessage {
   type: "GET_CONTENTS";
 }
 
+interface GetCompletedVideosMessage {
+  type: "GET_COMPLETED_VIDEOS";
+}
+
 interface CreateJobMessage {
   type: "CREATE_JOB";
   contentId: string;
   targetDuration: number;
+}
+
+/** Creates `count` separate videos from one content and runs them one after another. */
+interface RunBatchMessage {
+  type: "RUN_BATCH";
+  contentId: string;
+  targetDuration: number;
+  count: number;
+  site: GenerationSite;
+}
+
+/** Joins an already finished video's clips into one file (for videos made before auto-join). */
+interface MergeVideoMessage {
+  type: "MERGE_VIDEO";
+  videoId: string;
 }
 
 interface CancelJobMessage {
@@ -126,26 +125,91 @@ interface ImportTikTokProductsMessage {
   products: ScrapedTikTokProduct[];
 }
 
+interface GetTikTokProductsMessage {
+  type: "GET_TIKTOK_PRODUCTS";
+}
+
+interface DeleteTikTokProductsMessage {
+  type: "DELETE_TIKTOK_PRODUCTS";
+  ids: string[];
+}
+
+interface AddProductMessage {
+  type: "ADD_PRODUCT";
+  product: {
+    url: string;
+    name?: string;
+    description?: string;
+    price?: string;
+    image?: string;
+    images?: string[];
+  };
+}
+
+/** Step 1 of the panel's review flow. */
+interface AnalyzeProductMessage {
+  type: "ANALYZE_PRODUCT";
+  productId: string;
+}
+
+/** Step 2: generates Content + scenes, but stops short of creating a video job. */
+interface GenerateContentScenesMessage {
+  type: "GENERATE_CONTENT_SCENES";
+  productId: string;
+  style: string;
+  targetDuration: number;
+}
+
+interface GetPendingVideoJobMessage {
+  type: "GET_PENDING_VIDEO_JOB";
+}
+
+interface GetSettingsMessage {
+  type: "GET_SETTINGS";
+}
+
+interface SaveSettingsMessage {
+  type: "SAVE_SETTINGS";
+  settings: Partial<store.Settings>;
+}
+
+interface GetApiKeysStatusMessage {
+  type: "GET_API_KEYS_STATUS";
+}
+
+interface SaveApiKeysMessage {
+  type: "SAVE_API_KEYS";
+  keys: string[];
+}
+
+interface ResetKeyCooldownMessage {
+  type: "RESET_KEY_COOLDOWN";
+  key: string;
+}
+
 type ExtensionMessage =
   | AddProductMessage
-  | QueueVideoJobMessage
-  | GetPendingVideoJobMessage
   | GetPendingJobsMessage
   | GetContentsMessage
+  | GetCompletedVideosMessage
   | CreateJobMessage
+  | RunBatchMessage
+  | MergeVideoMessage
   | CancelJobMessage
   | RunJobFromPopupMessage
   | UploadVideoMessage
   | FetchAndUploadMessage
-  | ImportTikTokProductsMessage;
-
-async function getExtensionConfig() {
-  const stored = await chrome.storage.local.get(["appBaseUrl", "extensionToken"]);
-  return {
-    appBaseUrl: (stored.appBaseUrl as string | undefined) || WEB_APP_URL,
-    extensionToken: (stored.extensionToken as string | undefined) || "",
-  };
-}
+  | ImportTikTokProductsMessage
+  | GetTikTokProductsMessage
+  | DeleteTikTokProductsMessage
+  | AnalyzeProductMessage
+  | GenerateContentScenesMessage
+  | GetPendingVideoJobMessage
+  | GetSettingsMessage
+  | SaveSettingsMessage
+  | GetApiKeysStatusMessage
+  | SaveApiKeysMessage
+  | ResetKeyCooldownMessage;
 
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -154,247 +218,629 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
-}
+/** Asks the local planner to re-plan the job's clips when the panel picked a different length. */
+async function replanClips(videoId: string, targetDuration: number): Promise<JobClip[] | null> {
+  const video = await store.getVideo(videoId);
+  if (!video) return null;
+  const content = await store.getContent(video.contentId);
+  if (!content) return null;
+  const product = await store.getProduct(content.productId);
 
-/**
- * Fetched from the background worker (not the content script) because it
- * has host_permissions for the app's origin and isn't subject to
- * aistudio.google.com's page CSP — the resulting bytes travel to the
- * content script as base64 via chrome.storage instead.
- */
-async function fetchImageAsBase64(
-  imageUrl: string,
-  appBaseUrl: string,
-): Promise<{ base64: string; mimeType: string } | null> {
-  try {
-    const absoluteUrl = imageUrl.startsWith("http") ? imageUrl : `${appBaseUrl}${imageUrl}`;
-    const res = await fetch(absoluteUrl);
-    if (!res.ok) return null;
-    const mimeType = res.headers.get("content-type") ?? "image/jpeg";
-    const buffer = await res.arrayBuffer();
-    return { base64: arrayBufferToBase64(buffer), mimeType };
-  } catch {
-    return null;
-  }
-}
-
-/** Asks the app to re-plan the job's clips when the popup picked a length. */
-async function replanClips(
-  videoId: string,
-  targetDuration: number,
-  appBaseUrl: string,
-  extensionToken: string,
-): Promise<JobClip[] | null> {
-  try {
-    const res = await fetch(`${appBaseUrl}/api/videos/extension/${videoId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", "X-Extension-Token": extensionToken },
-      body: JSON.stringify({ targetDuration }),
-    });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { clips: JobClip[] };
-    return body.clips ?? null;
-  } catch {
-    return null;
-  }
+  const clips = planClips(
+    product?.name ?? "-",
+    prompts.toScenePromptInputs(content.scenes),
+    DEFAULT_VIDEO_SETTINGS,
+    targetDuration,
+  );
+  const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
+  await store.updateVideoJob(videoId, {
+    clips: mapped,
+    duration: clips.length * CLIP_SECONDS,
+    targetDuration,
+  });
+  return mapped;
 }
 
 async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Promise<VideoJob> {
-  const { appBaseUrl, extensionToken } = await getExtensionConfig();
-  const image = incoming.imageUrl ? await fetchImageAsBase64(incoming.imageUrl, appBaseUrl) : null;
+  const image = incoming.imageUrl ? await gemini.fetchImageAsBase64(incoming.imageUrl) : null;
 
   let clips = incoming.clips;
   if (targetDuration && targetDuration !== incoming.clips.length * CLIP_SECONDS) {
-    clips = (await replanClips(incoming.videoId, targetDuration, appBaseUrl, extensionToken)) ?? clips;
+    clips = (await replanClips(incoming.videoId, targetDuration)) ?? clips;
   }
 
   return {
     videoId: incoming.videoId,
     clips,
-    duration: incoming.duration,
-    aspectRatio: incoming.aspectRatio,
+    duration: incoming.duration ?? clips.length * CLIP_SECONDS,
+    aspectRatio: incoming.aspectRatio ?? DEFAULT_VIDEO_SETTINGS.aspectRatio,
     modelId: VEO_MODEL_ID,
     imageBase64: image?.base64,
     imageMimeType: image?.mimeType,
   };
 }
 
-async function callApp(
-  path: string,
-  init?: RequestInit,
-): Promise<{ ok: boolean; status: number; body: Record<string, unknown>; error?: string }> {
-  const { appBaseUrl, extensionToken } = await getExtensionConfig();
-  if (!extensionToken) {
-    return { ok: false, status: 0, body: {}, error: "ยังไม่ได้ตั้งค่า Extension Token ในหน้า Settings" };
+const SITE_TAB_PATTERNS: Record<GenerationSite, string> = {
+  aistudio: "https://aistudio.google.com/*",
+  flow: "https://flow.google.com/project/*",
+};
+
+const SITE_SCRIPTS: Record<GenerationSite, string[]> = {
+  aistudio: ["dist/panel.js", "dist/ai-studio-automation.js"],
+  flow: ["dist/panel.js", "dist/flow-automation.js"],
+};
+
+/**
+ * The tab to drive: the focused tab if it is already on the site, otherwise
+ * any open tab on it (the configured Flow project first). Only looking at
+ * the focused tab meant a Flow tab sitting in another window was ignored
+ * and a duplicate tab got opened instead.
+ */
+async function findSiteTab(site: GenerationSite): Promise<chrome.tabs.Tab | undefined> {
+  const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (active?.id && siteMatchesTab(site, active.url ?? "")) return active;
+
+  const open = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS[site] })).filter((tab) => tab.id);
+  if (site === "flow") {
+    const { flowProjectUrl } = await store.getSettings();
+    const configured = open.find((tab) => flowProjectUrl && tab.url?.startsWith(flowProjectUrl));
+    if (configured) return configured;
   }
+  return open[0];
+}
+
+/**
+ * Reloading the extension orphans the content scripts in tabs that were
+ * already open, so the first send finds no receiver. Inject a fresh copy and
+ * try once more instead of making the user refresh the page.
+ */
+async function sendJobToTab(
+  tabId: number,
+  site: GenerationSite,
+  job: VideoJob,
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${appBaseUrl}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Extension-Token": extensionToken,
-        ...(init?.headers ?? {}),
-      },
-    });
-    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    return {
-      ok: res.ok,
-      status: res.status,
-      body,
-      error: res.ok ? undefined : ((body.error as string) ?? `ผิดพลาด (${res.status})`),
-    };
+    return (await chrome.tabs.sendMessage(tabId, { type: "RUN_VIDEO_JOB", job })) ?? { ok: true };
   } catch {
-    return { ok: false, status: 0, body: {}, error: `เชื่อมต่อ ${appBaseUrl} ไม่ได้` };
+    await chrome.scripting.executeScript({ target: { tabId }, files: SITE_SCRIPTS[site] });
+    return (await chrome.tabs.sendMessage(tabId, { type: "RUN_VIDEO_JOB", job })) ?? { ok: true };
   }
 }
 
-async function postClipToApp(
+/**
+ * Used by RUN_JOB_FROM_POPUP (sent after CREATE_JOB): drive an open tab on
+ * the generation site if there is one, otherwise stash the job and open one.
+ */
+type DispatchResult = { ok: boolean; error?: string; opened?: boolean };
+
+async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<DispatchResult> {
+  const tab = await findSiteTab(site);
+
+  if (tab?.id) {
+    try {
+      const result = await sendJobToTab(tab.id, site, job);
+      if (result.ok) await chrome.tabs.update(tab.id, { active: true });
+      return result;
+    } catch {
+      return { ok: false, error: "รีเฟรชหน้าเว็บสร้างวิดีโอก่อนแล้วลองใหม่" };
+    }
+  }
+
+  const url = await siteTargetUrl(site);
+  if (!url) {
+    return {
+      ok: false,
+      error: "ตั้งค่า Google Flow Project URL (https://flow.google.com/project/...) ในแท็บ Settings ก่อน หรือเปิดหน้าโปรเจกต์ Flow ไว้แล้วกดใหม่",
+    };
+  }
+  await chrome.storage.local.set({ pendingVideoJob: job });
+  await chrome.tabs.create({ url });
+  return { ok: true, opened: true };
+}
+
+/* ---------- creating jobs ---------- */
+
+async function createJobForContent(
+  contentId: string,
+  targetDuration: number,
+  variant?: PlanVariant,
+): Promise<{ video: store.VideoJob; clips: JobClip[]; imageUrl: string | null }> {
+  const content = await store.getContent(contentId);
+  if (!content) throw new Error("ไม่พบคอนเทนต์");
+  if (content.scenes.length === 0) throw new Error("ต้องสร้าง Scene ก่อนจึงจะสร้างวิดีโอได้");
+  const product = await store.getProduct(content.productId);
+  const planned = planClips(
+    product?.name ?? "-",
+    prompts.toScenePromptInputs(content.scenes),
+    DEFAULT_VIDEO_SETTINGS,
+    targetDuration,
+    variant,
+  );
+  const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
+  const video = await store.createVideoJob({
+    contentId: content.id,
+    clips,
+    duration: clips.length * CLIP_SECONDS,
+    aspectRatio: DEFAULT_VIDEO_SETTINGS.aspectRatio,
+    targetDuration,
+  });
+  return { video, clips, imageUrl: product?.images[0] ?? null };
+}
+
+/* ---------- running several videos in a row ---------- */
+
+interface QueuedJob {
+  videoId: string;
+  site: GenerationSite;
+}
+
+/** `current` is the queued video now running; the next one starts when it reports done/failed. */
+interface JobQueue {
+  current: string | null;
+  pending: QueuedJob[];
+}
+
+const QUEUE_START_DELAY_MS = 4_000;
+const QUEUE_BUSY_RETRIES = 6;
+const QUEUE_BUSY_RETRY_MS = 5_000;
+
+async function getJobQueue(): Promise<JobQueue> {
+  const stored = await chrome.storage.local.get("jobQueue");
+  return (stored.jobQueue as JobQueue | undefined) ?? { current: null, pending: [] };
+}
+
+async function setJobQueue(queue: JobQueue): Promise<void> {
+  if (!queue.current && queue.pending.length === 0) await chrome.storage.local.remove("jobQueue");
+  else await chrome.storage.local.set({ jobQueue: queue });
+}
+
+async function jobFromStore(videoId: string): Promise<VideoJob | null> {
+  const video = await store.getVideo(videoId);
+  if (!video) return null;
+  const content = await store.getContent(video.contentId);
+  const product = content ? await store.getProduct(content.productId) : null;
+  return buildJob({
+    videoId: video.id,
+    clips: video.clips,
+    duration: video.duration,
+    aspectRatio: video.aspectRatio,
+    imageUrl: product?.images[0] ?? null,
+  });
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+let queueAdvancing = false;
+
+/**
+ * Starts the next queued video once `finishedVideoId` (the one running) is
+ * over. The generation tab only clears its "job running" flag a moment after
+ * it reports done, so a "busy" answer is retried rather than treated as a failure.
+ */
+async function advanceJobQueue(finishedVideoId: string) {
+  if (queueAdvancing) return;
+  queueAdvancing = true;
+  try {
+    let queue = await getJobQueue();
+    if (queue.current !== finishedVideoId) return;
+
+    while (queue.pending.length) {
+      const [next, ...rest] = queue.pending;
+      queue = { current: next.videoId, pending: rest };
+      await setJobQueue(queue);
+
+      await sleep(QUEUE_START_DELAY_MS);
+      const job = await jobFromStore(next.videoId);
+      let result: DispatchResult = { ok: false, error: "ไม่พบงานในคิว" };
+      for (let attempt = 0; job && attempt < QUEUE_BUSY_RETRIES; attempt++) {
+        result = await dispatchJob(job, next.site);
+        if (result.ok || !/มีงานกำลังทำอยู่/.test(result.error ?? "")) break;
+        await sleep(QUEUE_BUSY_RETRY_MS);
+      }
+      if (result.ok) return;
+
+      await store.updateVideoJob(next.videoId, { status: "failed", errorMessage: result.error ?? "เริ่มงานในคิวไม่สำเร็จ" });
+      queue = await getJobQueue();
+    }
+    await setJobQueue({ current: null, pending: [] });
+  } finally {
+    queueAdvancing = false;
+  }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  const progress = changes.jobProgress?.newValue as { videoId?: string; state?: string } | undefined;
+  if (!progress?.videoId || (progress.state !== "done" && progress.state !== "failed")) return;
+  void advanceJobQueue(progress.videoId);
+});
+
+/* ---------- joining clips into one video ---------- */
+
+let offscreenReady: Promise<void> | null = null;
+
+function ensureOffscreenDocument(): Promise<void> {
+  offscreenReady ??= (async () => {
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
+    });
+    if (existing.length) return;
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: [chrome.offscreen.Reason.BLOBS],
+      justification: "Create a blob: URL so the joined video can be saved with chrome.downloads",
+    });
+  })().catch((err) => {
+    offscreenReady = null;
+    throw err;
+  });
+  return offscreenReady;
+}
+
+async function downloadLibraryFile(videoId: string, index: number, filename: string): Promise<void> {
+  await ensureOffscreenDocument();
+  const result = (await chrome.runtime.sendMessage({ type: "OFFSCREEN_CLIP_BLOB_URL", videoId, index })) as
+    | { ok: boolean; url?: string; error?: string }
+    | undefined;
+  if (!result?.ok || !result.url) throw new Error(result?.error ?? "สร้างลิงก์ดาวน์โหลดไม่สำเร็จ");
+  await chrome.downloads.download({ url: result.url, filename, saveAs: false });
+}
+
+type MergeResult = { ok: boolean; seconds?: number; error?: string; warning?: string };
+
+async function mergeVideoClips(videoId: string): Promise<MergeResult> {
+  const video = await store.getVideo(videoId);
+  if (!video) return { ok: false, error: "ไม่พบงาน" };
+  const clips = (await library.getClipsForVideo(videoId)).filter((c) => c.index >= 0);
+  if (clips.length < 2) return { ok: false, error: "ต้องมีอย่างน้อย 2 คลิปจึงจะต่อได้" };
+  if (clips.length < video.clips.length) {
+    return { ok: false, error: `คลิปในคลังยังไม่ครบ (${clips.length}/${video.clips.length})` };
+  }
+
+  let seconds: number;
+  try {
+    const merged = concatMp4(await Promise.all(clips.map((c) => c.blob.arrayBuffer())));
+    await library.putClip(videoId, library.MERGED_CLIP_INDEX, new Blob([merged as BlobPart], { type: "video/mp4" }), "video/mp4");
+    seconds = clips.length * CLIP_SECONDS;
+    await store.updateVideoJob(videoId, { mergedAt: Date.now(), mergeError: null });
+  } catch (err) {
+    const error = `ต่อคลิปไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`;
+    await store.updateVideoJob(videoId, { mergeError: error });
+    return { ok: false, error };
+  }
+
+  try {
+    await downloadLibraryFile(videoId, library.MERGED_CLIP_INDEX, `ai-affiliate/${videoId}-full-${seconds}s.mp4`);
+    return { ok: true, seconds };
+  } catch (err) {
+    // The joined video is in the library either way; only the file copy failed.
+    return { ok: true, seconds, warning: `ดาวน์โหลดไฟล์ไม่สำเร็จ (${err instanceof Error ? err.message : String(err)}) — กดดาวน์โหลดจากแท็บคลังแทน` };
+  }
+}
+
+/**
+ * Saves a finished clip locally (IndexedDB for in-panel preview,
+ * chrome.downloads for a real file) and advances the job's status.
+ * `downloadUrl` must be something chrome.downloads.download() can fetch
+ * itself — a data: URL or a plain http(s) URL. `URL.createObjectURL()` is
+ * not available in an extension service worker (no document), so callers
+ * must not pass a blob: URL here.
+ */
+async function saveClip(
   videoId: string,
-  body: BodyInit,
-  mimeType: string,
   clipIndex: number,
   clipTotal: number,
-): Promise<{ ok: boolean; error?: string }> {
-  const { appBaseUrl, extensionToken } = await getExtensionConfig();
-  if (!extensionToken) {
-    return { ok: false, error: "ยังไม่ได้ตั้งค่า Extension Token ใน Options" };
-  }
+  blob: Blob,
+  mimeType: string,
+  downloadUrl: string,
+): Promise<{ ok: boolean; error?: string; merged?: MergeResult }> {
+  try {
+    await library.putClip(videoId, clipIndex, blob, mimeType);
 
-  const query = `?clip=${clipIndex}&total=${clipTotal}`;
-  const res = await fetch(`${appBaseUrl}/api/videos/${videoId}/upload${query}`, {
-    method: "POST",
-    headers: { "Content-Type": mimeType, "X-Extension-Token": extensionToken },
-    body,
-  });
+    const ext = mimeType.includes("mp4") ? "mp4" : "webm";
+    await chrome.downloads.download({
+      url: downloadUrl,
+      filename: `ai-affiliate/${videoId}-clip-${clipIndex}.${ext}`,
+      saveAs: false,
+    });
 
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({}));
-    return { ok: false, error: errorBody.error ?? `อัปโหลดล้มเหลว (${res.status})` };
+    const video = await store.getVideo(videoId);
+    const clipsReceived = (video?.clipsReceived ?? 0) + 1;
+    const done = clipsReceived >= clipTotal;
+    await store.updateVideoJob(videoId, {
+      clipsReceived,
+      status: done ? "completed" : "processing",
+    });
+    // A multi-clip video is one advert — hand back a single file, not parts.
+    if (done && clipTotal > 1) return { ok: true, merged: await mergeVideoClips(videoId) };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "บันทึกคลิปไม่สำเร็จ" };
   }
-  return { ok: true };
 }
 
-chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
-  if (message.type === "ADD_PRODUCT") {
-    const params = new URLSearchParams({ source: "extension", sourceUrl: message.product.url });
-    if (message.product.name) params.set("name", message.product.name);
-    if (message.product.description) params.set("description", message.product.description);
-    if (message.product.price) params.set("price", message.product.price);
-    if (message.product.image) params.set("image", message.product.image);
-    // Extra shots ride along so the analysis has more than one angle to look at.
-    if (message.product.images?.length) params.set("images", message.product.images.join("|"));
-
-    chrome.tabs.create({ url: `${WEB_APP_URL}/products/new?${params.toString()}` });
+chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
+  // Dev bridge only (dev-bridge.ts, localhost pages): picks up a rebuilt
+  // dist without a trip to chrome://extensions.
+  if ((message as { type: string }).type === "DEV_RELOAD_EXTENSION") {
+    if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(sender.url ?? "")) {
+      sendResponse({ ok: false, error: "not allowed" });
+      return;
+    }
     sendResponse({ ok: true });
+    setTimeout(() => chrome.runtime.reload(), 200);
     return;
   }
 
-  if (message.type === "QUEUE_EXTENSION_VIDEO_JOB") {
+  if (message.type === "ADD_PRODUCT") {
     (async () => {
-      const site = message.site ?? "aistudio";
-      const job = await buildJob(message.job);
-      const url = await siteTargetUrl(site);
-      chrome.storage.local.set({ pendingVideoJob: job }, () => {
-        chrome.tabs.create({ url });
-        sendResponse({ ok: true });
+      const product = await store.createProduct({
+        name: message.product.name || message.product.url,
+        description: message.product.description,
+        price: message.product.price ? Number(message.product.price) : undefined,
+        source: "extension",
+        sourceUrl: message.product.url,
+        images: message.product.images?.length ? message.product.images : message.product.image ? [message.product.image] : [],
       });
+      sendResponse({ ok: true, product });
     })();
     return true;
   }
 
   if (message.type === "RUN_JOB_FROM_POPUP") {
     (async () => {
-      const site = message.site ?? "aistudio";
-      const job = await buildJob(message.job, message.targetDuration);
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-      // Already on the generation site: drive that tab directly so the user
-      // never leaves the page they are looking at.
-      if (tab?.id && siteMatchesTab(site, tab.url ?? "")) {
-        try {
-          const result = await chrome.tabs.sendMessage(tab.id, { type: "RUN_VIDEO_JOB", job });
-          sendResponse(result ?? { ok: true });
-        } catch {
-          sendResponse({ ok: false, error: "รีเฟรชหน้าเว็บสร้างวิดีโอก่อนแล้วลองใหม่" });
-        }
-        return;
+      try {
+        const site = message.site ?? "aistudio";
+        const job = await buildJob(message.job, message.targetDuration);
+        sendResponse(await dispatchJob(job, site));
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "เริ่มสร้างวิดีโอไม่สำเร็จ" });
       }
+    })();
+    return true;
+  }
 
-      const url = await siteTargetUrl(site);
-      chrome.storage.local.set({ pendingVideoJob: job }, () => {
-        chrome.tabs.create({ url });
-        sendResponse({ ok: true });
-      });
+  if (message.type === "ANALYZE_PRODUCT") {
+    (async () => {
+      try {
+        const product = await store.getProduct(message.productId);
+        if (!product) {
+          sendResponse({ ok: false, error: "ไม่พบสินค้า" });
+          return;
+        }
+        const images = await gemini.loadImages(product.images);
+        const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
+        const analysis = await gemini.generateObject<store.ProductAnalysis>({
+          system,
+          prompt,
+          images,
+          schema: prompts.PRODUCT_ANALYSIS_SCHEMA,
+        });
+        await store.saveAnalysis(product.id, analysis);
+        sendResponse({ ok: true, analysis });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "วิเคราะห์สินค้าไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "GENERATE_CONTENT_SCENES") {
+    (async () => {
+      try {
+        const product = await store.getProduct(message.productId);
+        if (!product) {
+          sendResponse({ ok: false, error: "ไม่พบสินค้า" });
+          return;
+        }
+        const analysis = await store.getAnalysis(product.id);
+        const images = await gemini.loadImages(product.images);
+
+        const contentPrompt = prompts.buildContentPrompt(product, analysis, message.style, images.length > 0);
+        const contentResult = await gemini.generateObject<{
+          hook: string;
+          script: string;
+          caption: string;
+          cta: string;
+        }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA });
+
+        const content = await store.createContent({
+          productId: product.id,
+          style: message.style,
+          ...contentResult,
+        });
+
+        const scenePrompt = prompts.buildScenePrompt(
+          product,
+          contentResult.script,
+          message.targetDuration,
+          images.length > 0,
+        );
+        const sceneResult = await gemini.generateObject<{ scenes: store.Scene[] }>({
+          ...scenePrompt,
+          images,
+          schema: prompts.SCENE_PLAN_SCHEMA,
+        });
+        await store.setScenes(content.id, sceneResult.scenes);
+
+        sendResponse({
+          ok: true,
+          content: {
+            id: content.id,
+            hook: content.hook,
+            script: content.script,
+            caption: content.caption,
+            cta: content.cta,
+          },
+          scenes: sceneResult.scenes,
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างคอนเทนต์ไม่สำเร็จ" });
+      }
     })();
     return true;
   }
 
   if (message.type === "GET_PENDING_JOBS") {
     (async () => {
-      const { appBaseUrl, extensionToken } = await getExtensionConfig();
-      if (!extensionToken) {
-        sendResponse({ ok: false, error: "ยังไม่ได้ตั้งค่า Extension Token ในหน้า Settings" });
-        return;
-      }
-      try {
-        const res = await fetch(`${appBaseUrl}/api/videos/extension/pending`, {
-          headers: { "X-Extension-Token": extensionToken },
-        });
-        if (!res.ok) {
-          sendResponse({ ok: false, error: `โหลดงานไม่สำเร็จ (${res.status})` });
-          return;
-        }
-        const body = (await res.json()) as { jobs: unknown[] };
-        sendResponse({ ok: true, jobs: body.jobs ?? [], appBaseUrl });
-      } catch {
-        sendResponse({ ok: false, error: `เชื่อมต่อ ${appBaseUrl} ไม่ได้` });
-      }
+      const jobs = await store.listPendingVideoJobs();
+      sendResponse({
+        ok: true,
+        jobs: jobs.map((j) => ({
+          videoId: j.id,
+          productName: j.productName,
+          hook: j.hook,
+          clips: j.clips,
+          imageUrl: j.imageUrl,
+          duration: j.duration,
+          aspectRatio: j.aspectRatio,
+        })),
+      });
     })();
     return true;
   }
 
   if (message.type === "GET_CONTENTS") {
     (async () => {
-      const result = await callApp("/api/contents/extension");
-      sendResponse(
-        result.ok ? { ok: true, contents: result.body.contents ?? [] } : { ok: false, error: result.error },
-      );
+      const contents = await store.listContentsWithScenes();
+      sendResponse({
+        ok: true,
+        contents: contents.map((c) => ({
+          contentId: c.id,
+          productName: c.productName,
+          hook: c.hook,
+          sceneCount: c.scenes.length,
+          imageUrl: c.imageUrl,
+        })),
+      });
+    })();
+    return true;
+  }
+
+  if (message.type === "GET_COMPLETED_VIDEOS") {
+    (async () => {
+      const videos = await store.listCompletedVideos();
+      sendResponse({
+        ok: true,
+        videos: videos.map((v) => ({
+          videoId: v.id,
+          productName: v.productName,
+          hook: v.hook,
+          imageUrl: v.imageUrl,
+          clipCount: v.clips.length,
+          seconds: v.clips.length * CLIP_SECONDS,
+          mergedAt: v.mergedAt ?? null,
+          mergeError: v.mergeError ?? null,
+        })),
+      });
     })();
     return true;
   }
 
   if (message.type === "CREATE_JOB") {
     (async () => {
-      const result = await callApp("/api/contents/extension", {
-        method: "POST",
-        body: JSON.stringify({
-          contentId: message.contentId,
-          targetDuration: message.targetDuration,
-        }),
-      });
-      sendResponse(result.ok ? { ok: true, ...result.body } : { ok: false, error: result.error });
+      try {
+        const { video, clips, imageUrl } = await createJobForContent(message.contentId, message.targetDuration);
+        sendResponse({
+          ok: true,
+          video: { id: video.id },
+          clips,
+          duration: video.duration,
+          aspectRatio: video.aspectRatio,
+          imageUrl,
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างงานไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "RUN_BATCH") {
+    (async () => {
+      try {
+        const queue = await getJobQueue();
+        const running = queue.current ? await store.getVideo(queue.current) : null;
+        if (queue.current && running?.status !== "queued" && running?.status !== "processing") {
+          // Left behind by a run whose tab was closed or never reported back.
+          await setJobQueue({ current: null, pending: [] });
+        } else if (queue.current || queue.pending.length) {
+          sendResponse({ ok: false, error: "มีงานในคิวอยู่แล้ว — รอให้เสร็จหรือกดยกเลิกก่อน" });
+          return;
+        }
+        const count = Math.min(10, Math.max(1, Math.round(message.count || 1)));
+        const created = [];
+        for (let i = 0; i < count; i++) {
+          created.push(await createJobForContent(message.contentId, message.targetDuration, { index: i, total: count }));
+        }
+
+        const [first, ...rest] = created;
+        await setJobQueue({
+          current: rest.length ? first.video.id : null,
+          pending: rest.map((c) => ({ videoId: c.video.id, site: message.site })),
+        });
+        const job = await buildJob({
+          videoId: first.video.id,
+          clips: first.clips,
+          duration: first.video.duration,
+          aspectRatio: first.video.aspectRatio,
+          imageUrl: first.imageUrl,
+        });
+        const result = await dispatchJob(job, message.site);
+        if (!result.ok) {
+          // Nothing started, so don't leave the rest waiting on a job that never runs.
+          await setJobQueue({ current: null, pending: [] });
+          for (const c of created) await store.updateVideoJob(c.video.id, { status: "cancelled", errorMessage: result.error ?? null });
+        }
+        sendResponse({ ...result, videoIds: created.map((c) => c.video.id) });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างงานไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "MERGE_VIDEO") {
+    (async () => {
+      sendResponse(await mergeVideoClips(message.videoId));
     })();
     return true;
   }
 
   if (message.type === "CANCEL_JOB") {
     (async () => {
+      // The side panel's CANCEL_RUNNING_JOB goes through runtime.sendMessage,
+      // which never reaches content scripts — so the automation loop in the
+      // generation tab kept submitting prompts after a cancel. Tell the tabs.
+      const generationTabs = await chrome.tabs.query({ url: Object.values(SITE_TAB_PATTERNS) });
+      await Promise.all(
+        generationTabs
+          .filter((tab) => tab.id)
+          .map((tab) => chrome.tabs.sendMessage(tab.id!, { type: "CANCEL_RUNNING_JOB" }).catch(() => {})),
+      );
+
+      // Cancelling stops the whole run, not just the video on screen.
+      const queue = await getJobQueue();
+      for (const queued of queue.pending) {
+        await store.updateVideoJob(queued.videoId, { status: "cancelled", errorMessage: "ยกเลิกโดยผู้ใช้" });
+      }
+      await setJobQueue({ current: null, pending: [] });
+
+      const existing = await store.getVideo(message.videoId);
+      if (existing?.status === "completed") {
+        sendResponse({ ok: false, error: "วิดีโอนี้สร้างเสร็จแล้ว ยกเลิกไม่ได้" });
+        return;
+      }
       await chrome.storage.local.remove(["activeFlowJob", "pendingVideoJob"]);
       await chrome.storage.local.set({
         jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
       });
-      const result = await callApp(`/api/videos/extension/${message.videoId}/cancel`, {
-        method: "POST",
+      await library.deleteClipsForVideo(message.videoId);
+      const video = await store.updateVideoJob(message.videoId, {
+        status: "cancelled",
+        errorMessage: "ยกเลิกโดยผู้ใช้",
       });
-      sendResponse(result.ok ? { ok: true } : { ok: false, error: result.error });
+      sendResponse(video ? { ok: true } : { ok: false, error: "ไม่พบงาน" });
     })();
     return true;
   }
@@ -410,17 +856,64 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
     return true;
   }
 
+  if (message.type === "GET_SETTINGS") {
+    (async () => {
+      sendResponse({ ok: true, settings: await store.getSettings() });
+    })();
+    return true;
+  }
+
+  if (message.type === "SAVE_SETTINGS") {
+    (async () => {
+      sendResponse({ ok: true, settings: await store.saveSettings(message.settings) });
+    })();
+    return true;
+  }
+
+  if (message.type === "GET_API_KEYS_STATUS") {
+    (async () => {
+      const state = await store.getApiKeyState();
+      const now = Date.now();
+      sendResponse({
+        ok: true,
+        keys: state.keys.map((key) => ({
+          key,
+          masked: key.length > 10 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key,
+          cooldownUntil: state.cooldowns[key] && state.cooldowns[key] > now ? state.cooldowns[key] : null,
+        })),
+      });
+    })();
+    return true;
+  }
+
+  if (message.type === "SAVE_API_KEYS") {
+    (async () => {
+      const state = await store.saveApiKeys(message.keys);
+      sendResponse({ ok: true, count: state.keys.length });
+    })();
+    return true;
+  }
+
+  if (message.type === "RESET_KEY_COOLDOWN") {
+    (async () => {
+      await store.clearKeyCooldown(message.key);
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
   if (message.type === "UPLOAD_VIDEO") {
     (async () => {
       try {
         const bytes = base64ToUint8Array(message.base64);
         sendResponse(
-          await postClipToApp(
+          await saveClip(
             message.videoId,
-            new Blob([bytes as unknown as BlobPart]),
-            message.mimeType,
             message.clipIndex ?? 0,
             message.clipTotal ?? 1,
+            new Blob([bytes as unknown as BlobPart], { type: message.mimeType }),
+            message.mimeType,
+            `data:${message.mimeType};base64,${message.base64}`,
           ),
         );
       } catch (err) {
@@ -432,11 +925,23 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
 
   if (message.type === "IMPORT_TIKTOK_PRODUCTS") {
     (async () => {
-      const result = await callApp("/api/products/extension", {
-        method: "POST",
-        body: JSON.stringify({ products: message.products }),
-      });
-      sendResponse(result.ok ? { ok: true, ...result.body } : { ok: false, error: result.error });
+      const products = await store.importTikTokProducts(message.products);
+      sendResponse({ ok: true, products });
+    })();
+    return true;
+  }
+
+  if (message.type === "GET_TIKTOK_PRODUCTS") {
+    (async () => {
+      sendResponse({ ok: true, products: await store.listProducts() });
+    })();
+    return true;
+  }
+
+  if (message.type === "DELETE_TIKTOK_PRODUCTS") {
+    (async () => {
+      const count = await store.deleteProducts(message.ids);
+      sendResponse({ ok: true, count });
     })();
     return true;
   }
@@ -451,12 +956,13 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
         }
         const blob = await res.blob();
         sendResponse(
-          await postClipToApp(
+          await saveClip(
             message.videoId,
-            blob,
-            "video/mp4",
             message.clipIndex ?? 0,
             message.clipTotal ?? 1,
+            blob,
+            "video/mp4",
+            message.url,
           ),
         );
       } catch (err) {
@@ -465,4 +971,15 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
     })();
     return true;
   }
+});
+
+/**
+ * Makes the toolbar icon open the side panel directly. With this set,
+ * chrome.action.onClicked never fires for the icon click — the side panel
+ * API consumes it instead, per Chrome's documented pattern for MV3 side
+ * panels (there is no reliable way to call sidePanel.open() reactively from
+ * an onClicked listener across all Chrome versions).
+ */
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 });

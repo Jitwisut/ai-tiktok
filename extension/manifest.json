@@ -1,43 +1,41 @@
 {
   "manifest_version": 3,
   "name": "AI Affiliate Studio — Add to Studio",
-  "version": "0.2.0",
-  "description": "Add the product on the current page to AI Affiliate Studio, and generate videos through Google AI Studio.",
+  "version": "0.3.0",
+  "description": "Standalone product-to-video studio: import products, analyze and script them with Gemini, then drive Google AI Studio/Flow to generate the clips — all from one side panel.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "tabs"
+    "tabs",
+    "downloads",
+    "sidePanel",
+    "unlimitedStorage",
+    "offscreen"
   ],
   "host_permissions": [
-    "http://localhost:3000/*",
+    "<all_urls>",
+    "https://generativelanguage.googleapis.com/*",
     "https://aistudio.google.com/*",
     "https://flow.google.com/*"
   ],
   "action": {
-    "default_title": "AI Affiliate Studio",
-    "default_popup": "popup.html"
+    "default_title": "AI Affiliate Studio — เปิด side panel"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "background": {
-    "service_worker": "dist/background.js"
+    "service_worker": "dist/background.js",
+    "type": "module"
   },
-  "options_page": "options.html",
   "content_scripts": [
     {
       "matches": [
         "<all_urls>"
       ],
       "js": [
-        "dist/content.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "http://localhost:3000/*"
-      ],
-      "js": [
-        "dist/app-bridge.js"
+        "dist/content-scraper.js"
       ],
       "run_at": "document_idle"
     },
@@ -58,15 +56,6 @@
       "js": [
         "dist/panel.js",
         "dist/flow-automation.js"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
-        "https://*.tiktok.com/tiktokstudio/*"
-      ],
-      "js": [
-        "dist/tiktok-studio.js"
       ],
       "run_at": "document_idle"
     }

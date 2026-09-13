@@ -53,7 +53,13 @@ function showBanner(text: string, color: string) {
 }
 
 function reportProgress(videoId: string, current: number, total: number, state: string) {
-  chrome.storage.local.set({ jobProgress: { videoId, current, total, state, at: Date.now() } });
+  // See the comment on aiPanelStatus in panel.ts — a reloaded extension
+  // orphans this tab's script, and chrome.storage then throws.
+  try {
+    chrome.storage.local.set({ jobProgress: { videoId, current, total, state, at: Date.now() } }).catch(() => {});
+  } catch {
+    // context already gone
+  }
 }
 
 function setNativeValue(element: HTMLTextAreaElement, value: string) {
@@ -88,6 +94,20 @@ function findQuotaBlock(): string | undefined {
   const text = dialog?.textContent ?? "";
   if (/upgrade to unlock|pay per request|quota|rate limit/i.test(text)) {
     return "AI Studio ขอให้อัปเกรด/โควตาหมด — เปิดหน้า AI Studio แล้วจัดการก่อน แล้วค่อยสั่งใหม่";
+  }
+  return undefined;
+}
+
+/**
+ * "This generation might violate our policies" shows inline instead of
+ * failing the request — the Stop button just disappears with no video ever
+ * appearing, so without this the run polls for one for the full timeout
+ * before giving up with a misleading "couldn't find the result" message.
+ */
+function findPolicyBlock(): string | undefined {
+  const text = document.body.innerText ?? "";
+  if (/might violate our policies|violates? (our |the )?polic(y|ies)/i.test(text)) {
+    return "นโยบาย: AI Studio ปฏิเสธ prompt นี้ (อาจผิดนโยบาย) — ลองแก้ prompt ของฉากนี้แล้วรันใหม่";
   }
   return undefined;
 }
@@ -267,7 +287,7 @@ async function uploadClip(
   video: HTMLVideoElement,
   clipIndex: number,
   clipTotal: number,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; merged?: { ok: boolean; seconds?: number; error?: string; warning?: string } }> {
   const response = await fetch(video.src);
   const blob = await response.blob();
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -276,7 +296,7 @@ async function uploadClip(
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
       { type: "UPLOAD_VIDEO", videoId, base64, mimeType: "video/mp4", clipIndex, clipTotal },
-      (result: { ok: boolean; error?: string }) => resolve(result ?? { ok: false, error: "no response" }),
+      (result: { ok: boolean; error?: string; merged?: { ok: boolean; seconds?: number; error?: string; warning?: string } }) => resolve(result ?? { ok: false, error: "no response" }),
     );
   });
 }
@@ -337,7 +357,7 @@ async function generateClip(
 
   showBanner(`AI Affiliate Studio: ${label} กำลังสร้าง รอสักครู่ — ห้ามปิดแท็บนี้`, "#111827");
   await waitFor(
-    () => (findStopButton() && !findQuotaBlock() ? undefined : true),
+    () => (findStopButton() && !findQuotaBlock() && !findPolicyBlock() ? undefined : true),
     MAX_WAIT_MS,
     POLL_INTERVAL_MS,
   );
@@ -345,6 +365,12 @@ async function generateClip(
   const quotaMessage = findQuotaBlock();
   if (quotaMessage) {
     showBanner(quotaMessage, "#dc2626");
+    return null;
+  }
+
+  const policyMessage = findPolicyBlock();
+  if (policyMessage) {
+    showBanner(policyMessage, "#dc2626");
     return null;
   }
 
@@ -381,6 +407,7 @@ async function runJob(job: StudioVideoJob) {
       : null;
   let previousFilename = "";
 
+  let mergeOutcome: { ok: boolean; seconds?: number; error?: string; warning?: string } | undefined;
   for (const clip of job.clips) {
     if (studioCancelled) {
       showBanner("ยกเลิกงานแล้ว", "#d97706");
@@ -407,6 +434,7 @@ async function runJob(job: StudioVideoJob) {
       reportProgress(job.videoId, clip.index + 1, total, "failed");
       return;
     }
+    mergeOutcome = result.merged ?? mergeOutcome;
 
     // Seed the next clip with this one's final frame so the cuts match.
     if (clip.index < total - 1) {
@@ -420,8 +448,12 @@ async function runJob(job: StudioVideoJob) {
 
   reportProgress(job.videoId, total, total, "done");
   showBanner(
-    total > 1 ? `เสร็จแล้ว ${total} คลิป — แอปกำลังต่อเป็นวิดีโอเดียว ✓` : "อัปโหลดกลับเข้าแอปสำเร็จ ✓",
-    "#16a34a",
+    total > 1
+      ? mergeOutcome?.ok
+        ? `เสร็จแล้ว — ต่อ ${total} คลิปเป็นวิดีโอเดียว ${mergeOutcome.seconds ?? ""} วิ ดูได้ในแท็บคลัง และโฟลเดอร์ Downloads/ai-affiliate ✓${mergeOutcome.warning ? ` (${mergeOutcome.warning})` : ""}`
+        : `เสร็จแล้ว ${total} คลิป แต่ต่อเป็นวิดีโอเดียวไม่สำเร็จ: ${mergeOutcome?.error ?? "ไม่ทราบสาเหตุ"} — กด "ต่อเป็นวิดีโอเดียว" ในแท็บคลังได้`
+      : "บันทึกคลิปแล้ว — ดูได้ในแท็บคลัง และโฟลเดอร์ Downloads/ai-affiliate ✓",
+    mergeOutcome && !mergeOutcome.ok ? "#d97706" : "#16a34a",
   );
 }
 
@@ -441,6 +473,7 @@ function startJob(job: StudioVideoJob) {
     // sessionStorage can be unavailable; the in-memory guard still applies.
   }
 
+  aiPanelClearLog();
   jobRunning = true;
   studioCancelled = false;
   runJob(job)

@@ -2,7 +2,7 @@
   "name": "ai-affiliate-studio-extension",
   "private": true,
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "watch": "tsc --watch"
   },
   "devDependencies": {
