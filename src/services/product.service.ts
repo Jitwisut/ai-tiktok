@@ -58,6 +58,13 @@ export async function deleteProduct(userId: string, productId: string) {
   return count > 0;
 }
 
+export async function deleteProducts(userId: string, productIds: string[]) {
+  const { count } = await prisma.product.deleteMany({
+    where: { id: { in: productIds }, userId },
+  });
+  return count;
+}
+
 export async function addProductImage(
   userId: string,
   productId: string,
