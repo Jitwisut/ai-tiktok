@@ -17,6 +17,12 @@ const DEV_BRIDGE_ALLOWED = new Set([
   "RUN_BATCH",
   "MERGE_VIDEO",
   "PREPARE_TIKTOK_POST",
+  "AUTOPILOT_START",
+  "AUTOPILOT_GET_STATE",
+  "AUTOPILOT_PAUSE",
+  "AUTOPILOT_RESUME",
+  "AUTOPILOT_STOP",
+  "AUTOPILOT_SKIP_CURRENT",
   "SYNC_TIKTOK_SHOWCASE",
   "GET_TIKTOK_PRODUCTS",
   "RUN_JOB_FROM_POPUP",
@@ -24,7 +30,7 @@ const DEV_BRIDGE_ALLOWED = new Set([
   "DEV_RELOAD_EXTENSION",
 ]);
 
-const DEV_BRIDGE_STATE_KEYS = ["jobLog", "jobProgress", "jobStatusText", "activeFlowJob", "pendingVideoJob", "videos", "jobQueue", "pendingTikTokPost", "settings"];
+const DEV_BRIDGE_STATE_KEYS = ["jobLog", "jobProgress", "jobStatusText", "activeFlowJob", "pendingVideoJob", "videos", "jobQueue", "pendingTikTokPost", "settings", "autopilot"];
 
 function devBridgeReply(id: unknown, response: unknown) {
   window.postMessage({ __aiAffiliateDevResponse: true, id, response }, window.location.origin);

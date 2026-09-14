@@ -22,7 +22,16 @@ export interface ScenePromptInput {
   position: number;
   duration: number;
   description: string;
+  /** How the camera moves in this scene, continuing from the one before (newer scene plans only). */
+  cameraMotion?: string;
 }
+
+/** Used when a scene plan has no camera directions: one continuous handheld move per part. */
+const DEFAULT_CAMERA_MOTIONS = [
+  "slow handheld push-in from a medium shot towards the person and the product",
+  "smooth handheld arc around the subject that reveals the product from a new side",
+  "gentle handheld pull-back to a medium shot that settles on the product",
+];
 
 export interface VeoPromptStructured {
   style: string;
@@ -69,6 +78,7 @@ export function buildVeoPrompt(
     `${settings.style}-style short vertical video (${settings.aspectRatio}), ${settings.duration}s total.`,
     `Camera: ${settings.camera}. Lighting: ${settings.lighting}. Spoken language: ${settings.language}.`,
     `Product featured: ${productName}.`,
+    `Video quality: sharp focus, natural motion, no distorted hands or faces, no watermark or logo other than the product itself.`,
     "Shot list:",
     ...timedScenes.map((s) => `[${s.start}-${s.end}s] ${s.action}`),
   ].join("\n");
@@ -100,12 +110,47 @@ export interface PlannedClip {
  * plan written for 8 seconds still produces a sensible 24-second video
  * without forcing the user to re-plan scenes for every length.
  */
+/** Short Thai overlay text written by the script step; either may be missing on older content. */
+export interface OnScreenText {
+  headline?: string;
+  cta?: string;
+}
+
+/**
+ * Veo writes whatever text it likes onto the frame — English titles, or
+ * letters that only look Thai. Giving it the exact short Thai strings to show,
+ * and forbidding anything else, is the most reliable way to get readable Thai.
+ */
+function onScreenTextRule(index: number, clipCount: number, text: OnScreenText | undefined): string {
+  const lines: string[] = [];
+  const isFirst = index === 0;
+  const isLast = index === clipCount - 1;
+  if (isFirst && text?.headline) lines.push(`at the start show the Thai headline 「${text.headline}」`);
+  if (isLast && text?.cta) lines.push(`${lines.length ? "and " : ""}near the end show the Thai call to action 「${text.cta}」`);
+
+  const shown = lines.length
+    ? `On-screen text: ${lines.join(" ")}. Copy these Thai strings character for character, exactly as written between the 「」 marks, with every vowel and tone mark in the right place — do not translate, transliterate, reorder or add characters. Render it as a short static title card: large bold Thai sans-serif block letters, one line, centred, held still (no motion blur, no fast pan across it) against a plain high-contrast background for at least half the shot's length, so the letterforms stay sharp. Show no other on-screen text anywhere else in the frame.`
+    : "On-screen text: none, unless it is in correct Thai.";
+  return [
+    shown,
+    "Every caption, title, sign or label added to the video must be written in Thai script (ภาษาไทย) only — never English words, Latin letters, or made-up or garbled characters that merely look like Thai.",
+    lines.length
+      ? "If you cannot render this exact Thai text sharply and correctly, show no on-screen text at all for this part rather than distorted, misspelled, blurry or reordered Thai characters — incorrect Thai text is worse than no text."
+      : "",
+    "The product's own packaging keeps its real design, colours and logo exactly as in the product photo. Do not attempt to render small or dense printed text on the packaging as sharp legible Thai — keep any large, simple text on the packaging as it appears in the photo, and let the rest read as natural product-photography detail rather than invented legible characters.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function planClips(
   productName: string,
   scenes: ScenePromptInput[],
   settings: VideoSettings,
   targetDuration: number,
   variant?: PlanVariant,
+  text?: OnScreenText,
+  styleOverride?: string,
 ): PlannedClip[] {
   const clipCount = Math.max(1, Math.round(targetDuration / CLIP_SECONDS));
   if (scenes.length === 0) return [];
@@ -123,37 +168,53 @@ export function planClips(
       duration: Math.max(1, Math.round((scene.duration / sliceTotal) * CLIP_SECONDS)),
     }));
 
-    const built = buildVeoPrompt(productName, scaled, { ...settings, duration: CLIP_SECONDS });
+    const built = buildVeoPrompt(productName, scaled, {
+      ...settings,
+      duration: CLIP_SECONDS,
+      style: styleOverride || settings.style,
+    });
 
     // Each clip is rendered by a separate call that sees only its own prompt,
-    // so the story has to be restated every time or the cuts read as
-    // unrelated videos. Separating what must stay identical from what must
-    // change matters: instructions that only ask for sameness produce three
-    // near-copies of the same shot.
-    const story =
-      clipCount > 1
-        ? [
-            `This is part ${index + 1} of ${clipCount} of one continuous ${clipCount * CLIP_SECONDS}-second advert.`,
-            "Keep identical across parts: the same person, wardrobe, room, product and colour grade.",
-            "Change in every part: the action, the camera angle and the framing.",
-          ]
-        : [`This is one complete ${CLIP_SECONDS}-second advert with a hook, the product and a clear ending.`];
+    // so the joins only look seamless when every part says, in the same
+    // structure, what happens next, what must carry over from the part
+    // before, and how the camera keeps moving. Asking only for sameness
+    // produces near-copies of the same shot, so the action is spelled out first.
+    const isFirst = index === 0;
+    const isLast = index === clipCount - 1;
+    const actions = slice.map((scene) => scene.description.trim().replace(/[.。]$/, "")).join(", then ");
+    const motions = slice.map((scene) => scene.cameraMotion?.trim()).filter(Boolean).join(", then ");
+    const motion = motions || DEFAULT_CAMERA_MOTIONS[Math.min(index, DEFAULT_CAMERA_MOTIONS.length - 1)];
+    const look = `${settings.lighting}, the same colour grade and a ${settings.style} ${settings.camera} look`;
 
-    if (index > 0) {
+    const story: string[] = [];
+    if (clipCount > 1) {
+      story.push(`This is part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * CLIP_SECONDS}-second advert that will be joined into a single video.`);
+
       const alreadyShown = scenes
         .slice(0, first)
         .map((scene) => scene.description)
         .join(" / ");
-      if (alreadyShown) {
-        story.push(`Earlier parts already showed: ${alreadyShown}. Do not repeat any of that.`);
-      }
       story.push(
-        "Pick up where the previous part left off and move the story forward with the new action above.",
+        `[Action/Change] ${isFirst ? "Open the advert with" : "Next,"} ${actions}.` +
+          (alreadyShown ? ` Earlier parts already showed: ${alreadyShown} — move the story forward, do not repeat those actions.` : "") +
+          (isLast ? " This is the final part: end on the product looking appealing." : " End this part mid-motion on a clear, steady frame that the next part can continue from."),
       );
-    }
 
-    if (index === clipCount - 1 && clipCount > 1) {
-      story.push("This is the final part — end on the product looking appealing.");
+      story.push(
+        isFirst
+          ? `[Continuity Reinforcement] Establish the look every later part must keep: the same person (face, hair, body), wardrobe, location, product, ${look}.`
+          : `[Continuity Reinforcement] Continue seamlessly from the final frame of part ${index}: identical person (face, hair, body), wardrobe, location, product placement, ${look}, and the same time of day and light direction. No jump cut, no new outfit, no new room.`,
+      );
+
+      story.push(
+        isFirst
+          ? `[Camera Motion] ${motion}; keep the movement smooth so it can carry on in the next part.`
+          : `[Camera Motion] Pick up the camera movement exactly where part ${index} ended — same direction, speed and height — then ${motion}. No sudden cut or reframe at the start.`,
+      );
+    } else {
+      story.push(`This is one complete ${CLIP_SECONDS}-second advert with a hook, the product and a clear ending.`);
+      story.push(`[Action/Change] ${actions}.`);
+      story.push(`[Camera Motion] ${motion}.`);
     }
 
     // Repeated runs of the same content would otherwise come back as
@@ -166,7 +227,7 @@ export function planClips(
 
     return {
       index,
-      prompt: `${built.text}\n${story.join(" ")}`,
+      prompt: `${built.text}\n${story.join("\n")}\n${onScreenTextRule(index, clipCount, text)}`,
       startSecond: index * CLIP_SECONDS,
     };
   });

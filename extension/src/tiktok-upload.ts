@@ -100,7 +100,13 @@ function ttPreviewHasCaption(caption: string): boolean {
   const squash = (s: string) => s.replace(/\s+/g, "");
   const preview = document.querySelector<HTMLElement>('[data-e2e="mobile_preview_container"]')?.innerText ?? "";
   const head = squash(caption).slice(0, 24);
-  return head.length > 0 && squash(preview).includes(head);
+  if (!head || !squash(preview).includes(head)) return false;
+  // The preview can show a stale or cut-off copy, so also check the editor's
+  // own character counter — a wiped editor reads "0/4000" or "1/4000".
+  const counted = Number(
+    document.querySelector<HTMLElement>('[data-e2e="caption_container"]')?.innerText.match(/(\d+)\s*\/\s*4000/)?.[1] ?? NaN,
+  );
+  return !Number.isFinite(counted) || counted >= Array.from(caption.trim()).length * 0.8;
 }
 
 function ttUploadState(): "uploading" | "done" | "failed" {
@@ -179,15 +185,23 @@ async function ttFillCaption(caption: string): Promise<string | null> {
   // Typed through chrome.debugger (real input events): TikTok's DraftJS
   // editor duplicates or drops hashtags on synthetic input, and a later
   // manual edit then crashes the page.
-  const typed = await ttSend<{ ok: boolean; error?: string }>({
-    type: "TIKTOK_TYPE_CAPTION",
-    caption,
-    isMac: /Mac/i.test(navigator.platform),
-  });
-  if (!typed?.ok) return `พิมพ์แคปชันไม่สำเร็จ: ${typed?.error ?? "ไม่ทราบสาเหตุ"}`;
-
-  const shown = await ttWaitFor(() => ttPreviewHasCaption(caption), 8_000);
-  return shown ? null : "ใส่แคปชันแล้วแต่ตัวอย่างโพสต์ไม่แสดงข้อความ — ตรวจช่องคำอธิบายอีกครั้ง";
+  // A second go usually lands when the first was swallowed by a focus change.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const typed = await ttSend<{ ok: boolean; error?: string }>({
+      type: "TIKTOK_TYPE_CAPTION",
+      caption,
+      isMac: /Mac/i.test(navigator.platform),
+    });
+    if (!typed?.ok) return `พิมพ์แคปชันไม่สำเร็จ: ${typed?.error ?? "ไม่ทราบสาเหตุ"}`;
+    if (await ttWaitFor(() => ttPreviewHasCaption(caption), 6_000)) return null;
+    if (attempt === 1) {
+      await aiPanelLog("TikTok: แคปชันไม่ติดในรอบแรก — พิมพ์ใหม่อีกครั้ง");
+      // Close a leftover hashtag suggestion list before retyping.
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await ttSleep(800);
+    }
+  }
+  return "ใส่แคปชันแล้วแต่ตัวอย่างโพสต์ไม่แสดงข้อความ — ตรวจช่องคำอธิบายอีกครั้ง";
 }
 
 async function ttEnableAiLabel(): Promise<string | null> {
@@ -210,6 +224,63 @@ async function ttEnableAiLabel(): Promise<string | null> {
   if (dialog) ttPrimaryButton(dialog)?.click();
   const on = await ttWaitFor(() => toggle.checked, 5_000);
   return on ? null : "เปิดป้าย AI-generated content ไม่สำเร็จ";
+}
+
+const TT_PUBLIC_LABEL = /^(Everyone|Public|ทุกคน|สาธารณะ)$/i;
+
+function ttVisibilityIsPublic(): boolean {
+  const container = document.querySelector<HTMLElement>('[data-e2e="video_visibility_container"]');
+  if (!container) return false;
+  const select = container.querySelector<HTMLSelectElement>("select");
+  if (select) return TT_PUBLIC_LABEL.test(select.selectedOptions[0]?.textContent?.trim() ?? "");
+  return container.innerText.split("\n").some((line) => TT_PUBLIC_LABEL.test(line.trim()));
+}
+
+function ttVisibleOptions(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="option"], [role="menuitem"], [role="menuitemradio"], li')).filter(
+    (el) => el.getClientRects().length > 0,
+  );
+}
+
+/** "Who can see this post" → Everyone. An account set to private can't pick it, which is reported rather than posting privately. */
+async function ttSetVisibilityPublic(): Promise<string | null> {
+  const container = await ttWaitFor(() => document.querySelector<HTMLElement>('[data-e2e="video_visibility_container"]'), 10_000);
+  if (!container) return "ไม่พบช่องตั้งค่าว่าใครดูโพสต์ได้";
+  if (ttVisibilityIsPublic()) return null;
+
+  ttStatus("TikTok: กำลังตั้งค่าให้ทุกคนดูโพสต์ได้ (Everyone)...");
+  container.scrollIntoView({ block: "center" });
+
+  const select = container.querySelector<HTMLSelectElement>("select");
+  if (select) {
+    const option = Array.from(select.options).find((o) => TT_PUBLIC_LABEL.test(o.textContent?.trim() ?? ""));
+    if (!option || option.disabled) return "ตั้งค่าเป็น Everyone ไม่ได้ — บัญชี TikTok อาจเป็นบัญชีส่วนตัว";
+    select.value = option.value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
+    const trigger =
+      container.querySelector<HTMLElement>('[aria-haspopup], [role="combobox"], button') ??
+      Array.from(container.querySelectorAll<HTMLElement>("div")).find((d) => /Followers|Friends|Only you|ผู้ติดตาม|เพื่อน|เฉพาะคุณ/i.test(d.innerText) && d.childElementCount <= 3);
+    if (!trigger) return "ไม่พบเมนูเลือกว่าใครดูโพสต์ได้";
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      trigger.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+    const option = await ttWaitFor(() => ttVisibleOptions().find((el) => TT_PUBLIC_LABEL.test(el.innerText.trim().split("\n")[0])), 5_000);
+    if (!option) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return "ไม่พบตัวเลือก Everyone ในเมนู";
+    }
+    if (option.getAttribute("aria-disabled") === "true") {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return "ตั้งค่าเป็น Everyone ไม่ได้ — บัญชี TikTok อาจเป็นบัญชีส่วนตัว";
+    }
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      option.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+  }
+
+  const ok = await ttWaitFor(() => ttVisibilityIsPublic(), 5_000);
+  return ok ? null : "ตั้งค่าเป็น Everyone ไม่สำเร็จ";
 }
 
 function ttDialogWith(pattern: RegExp): HTMLElement | null {
@@ -298,6 +369,7 @@ async function ttPressPost(job: TtPostJob): Promise<string | null> {
   // Last guards before publishing: never post without the caption we typed or the product link asked for.
   if (job.caption.trim() && !ttPreviewHasCaption(job.caption)) return "แคปชันในตัวอย่างไม่ตรง — ไม่กดโพสต์ให้";
   if (job.productId && !ttProductLinkAttached()) return "ไม่เห็นลิงก์สินค้าติดในโพสต์ — ไม่กดโพสต์ให้";
+  if (!ttVisibilityIsPublic()) return "โพสต์ยังไม่ได้ตั้งเป็น Everyone — ไม่กดโพสต์ให้";
 
   ttStatus("TikTok: กำลังกดโพสต์...");
   post!.click();
@@ -342,6 +414,9 @@ async function ttRunPost(job: TtPostJob) {
     if (linkError) return fail(linkError);
   }
 
+  const visibilityError = await ttSetVisibilityPublic();
+  if (visibilityError) return fail(visibilityError);
+
   if (job.aiLabel) {
     ttStatus("TikTok: กำลังเปิดป้าย AI-generated content...");
     const labelError = await ttEnableAiLabel();
@@ -352,7 +427,7 @@ async function ttRunPost(job: TtPostJob) {
   const preview = document.querySelector<HTMLElement>('[data-e2e="mobile_preview_container"]')?.innerText ?? "";
   const anchorText = document.querySelector<HTMLElement>('[data-e2e="anchor_container"]')?.innerText.replace(/^Add link\s*Add\s*/, "") ?? "";
   const aiOn = document.querySelector<HTMLInputElement>('[data-e2e="aigc_container"] input[role="switch"]')?.checked;
-  await aiPanelLog(`ตรวจฟอร์ม — ตัวอย่างโพสต์: ${preview.replace(/\s+/g, " ").slice(0, 200)} | ลิงก์สินค้า: ${anchorText || "-"} | ป้าย AI: ${aiOn ? "เปิด" : "ปิด"}`);
+  await aiPanelLog(`ตรวจฟอร์ม — ตัวอย่างโพสต์: ${preview.replace(/\s+/g, " ").slice(0, 200)} | ลิงก์สินค้า: ${anchorText || "-"} | ป้าย AI: ${aiOn ? "เปิด" : "ปิด"} | ใครดูได้: ${ttVisibilityIsPublic() ? "Everyone" : (document.querySelector<HTMLElement>('[data-e2e="video_visibility_container"]')?.innerText.replace(/\s+/g, " ") ?? "-")}`);
 
   const post = ttPostButton();
   post?.scrollIntoView({ block: "center" });

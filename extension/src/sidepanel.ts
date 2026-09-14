@@ -4,6 +4,7 @@
 
 import { getClipsForVideo, MERGED_CLIP_INDEX } from "./lib/library.js";
 import { CONTENT_STYLES } from "./lib/analysis-prompts.js";
+import { stepLabel, type AutopilotState } from "./lib/autopilot.js";
 
 /* ---------- shared helpers ---------- */
 
@@ -46,7 +47,7 @@ async function activeTabId(): Promise<number | null> {
 
 /* ---------- tabs ---------- */
 
-const TABS = ["products", "library", "settings"] as const;
+const TABS = ["products", "library", "autopilot", "settings"] as const;
 type TabName = (typeof TABS)[number];
 
 function showTab(name: TabName) {
@@ -55,6 +56,7 @@ function showTab(name: TabName) {
     $(`tab-${tab}`).classList.toggle("active", tab === name);
   }
   if (name === "library") loadLibrary();
+  if (name === "autopilot") loadAutopilot();
 }
 
 for (const tab of TABS) {
@@ -1013,6 +1015,192 @@ chrome.storage.local.get(["jobProgress", "jobStatusText"], (stored) => {
 });
 
 renderQueueInfo();
+
+/* ================= Autopilot tab ================= */
+
+const apSelected = new Set<string>();
+let apProductsLoaded = false;
+
+function apFormatTime(ms: number): string {
+  const d = new Date(ms);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const time = d.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
+  return sameDay ? `วันนี้ ${time}` : `${d.toLocaleDateString("th-TH", { day: "numeric", month: "short" })} ${time}`;
+}
+
+function apUpdateSelectedCount() {
+  $("ap-selected-count").textContent = `เลือกแล้ว ${apSelected.size} ชิ้น`;
+}
+
+function apRenderProducts() {
+  const list = $("ap-products");
+  list.innerHTML = "";
+  if (products.length === 0) {
+    list.innerHTML = `<div class="empty" style="padding:10px">ยังไม่มีสินค้า — ไปแท็บสินค้าแล้วกด "ดึงสินค้าจาก Showcase"</div>`;
+    return;
+  }
+  for (const product of products) {
+    const row = document.createElement("label");
+    row.className = "ap-product";
+    const linkable = !!tiktokIdFromSourceUrl(product.sourceUrl);
+    row.innerHTML = `
+      <input type="checkbox" ${apSelected.has(product.id) ? "checked" : ""} />
+      <img src="${product.images[0] ?? ""}" />
+      <span class="name" title="${escapeHtml(product.name)}">${escapeHtml(product.name)}</span>
+      <span class="ap-tag" style="background:${linkable ? "#14532d" : "#374151"};color:${linkable ? "#86efac" : "#9ca3af"}">${linkable ? "ติดลิงก์ได้" : "ไม่มีลิงก์"}</span>
+    `;
+    row.querySelector("input")!.addEventListener("change", (event) => {
+      if ((event.target as HTMLInputElement).checked) apSelected.add(product.id);
+      else apSelected.delete(product.id);
+      apUpdateSelectedCount();
+    });
+    list.appendChild(row);
+  }
+  apUpdateSelectedCount();
+}
+
+function apSetupOptions() {
+  const style = $("ap-style") as HTMLSelectElement;
+  style.innerHTML =
+    `<option value="rotate">สลับสไตล์ทุกคลิป</option>` + CONTENT_STYLES.map((s) => `<option value="${s}">${s}</option>`).join("");
+  for (const radio of Array.from(document.querySelectorAll<HTMLInputElement>('input[name="ap-mode"]'))) {
+    radio.addEventListener("change", () => {
+      $("ap-schedule-box").hidden = apMode() !== "schedule";
+    });
+  }
+}
+
+function apMode(): "batch" | "schedule" {
+  return document.querySelector<HTMLInputElement>('input[name="ap-mode"]:checked')?.value === "schedule" ? "schedule" : "batch";
+}
+
+const AP_HISTORY_LABELS: Record<string, { text: string; color: string }> = {
+  posted: { text: "โพสต์แล้ว", color: "#4ade80" },
+  ready: { text: "เตรียมโพสต์แล้ว รอกด Post", color: "#fbbf24" },
+  made: { text: "สร้างวิดีโอแล้ว", color: "#93c5fd" },
+  failed: { text: "ไม่สำเร็จ", color: "#f87171" },
+};
+
+function apRender(state: AutopilotState | null) {
+  const running = !!state && state.status !== "idle";
+  $("ap-setup").hidden = running;
+  $("ap-controls").hidden = !running;
+  ($("ap-pause") as HTMLButtonElement).hidden = state?.status !== "running";
+  ($("ap-resume") as HTMLButtonElement).hidden = state?.status !== "paused";
+  ($("ap-skip") as HTMLButtonElement).hidden = !state?.current;
+
+  const status = $("ap-status");
+  if (!state || (state.status === "idle" && !state.message)) {
+    status.style.display = "none";
+  } else {
+    const lines: string[] = [];
+    const label =
+      state.status === "running" ? "🟢 กำลังทำงาน" : state.status === "paused" ? "⏸ หยุดชั่วคราว" : "⚪ ไม่ได้ทำงาน";
+    lines.push(`<div class="ap-state">${label}${state.status !== "idle" ? ` · ${state.mode === "batch" ? "ทำเลยจนครบ" : "ตามเวลา"}` : ""}</div>`);
+    if (state.message) lines.push(`<div style="color:#fbbf24">${escapeHtml(state.message)}</div>`);
+    if (state.current) {
+      const cur = state.current;
+      lines.push(
+        `<div>กำลังทำ: <b>${escapeHtml(cur.productName.slice(0, 50))}</b></div>` +
+          `<div>ขั้นตอน: ${stepLabel(cur.step)}${cur.attempts ? ` (ลองใหม่ครั้งที่ ${cur.attempts + 1})` : ""}${cur.style ? ` · สไตล์ ${escapeHtml(cur.style)}` : ""}</div>`,
+      );
+      if (cur.lastError) lines.push(`<div style="color:#f87171">ผิดพลาดล่าสุด: ${escapeHtml(cur.lastError)}</div>`);
+    }
+    if (state.status !== "idle") {
+      if (state.mode === "batch") lines.push(`<div>เหลืออีก ${state.productIds.length} ชิ้น</div>`);
+      else if (state.nextRunAt) lines.push(`<div>รอบถัดไป: ${apFormatTime(state.nextRunAt)} · หมุนเวียน ${state.productIds.length} ชิ้น · เวลา ${state.times.join(", ")}</div>`);
+      const post = { auto: "โพสต์อัตโนมัติ", prepare: "เตรียมโพสต์รอกดเอง", none: "ไม่โพสต์" }[state.settings.postMode];
+      lines.push(`<div style="color:#9ca3af">${state.settings.targetDuration} วิ · ${post}</div>`);
+    }
+    status.innerHTML = lines.join("");
+    status.style.display = "block";
+  }
+
+  const history = $("ap-history");
+  const entries = state?.history ?? [];
+  history.innerHTML = entries.length ? "" : `<div class="empty">ยังไม่มีประวัติ</div>`;
+  for (const entry of entries.slice(0, 30)) {
+    const meta = AP_HISTORY_LABELS[entry.status];
+    const row = document.createElement("div");
+    row.className = "ap-history-row";
+    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)}${entry.style ? ` · ${escapeHtml(entry.style)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
+    history.appendChild(row);
+  }
+}
+
+async function loadAutopilot() {
+  if (!apProductsLoaded) {
+    const result = await send<{ ok: boolean; products?: AppProduct[] }>({ type: "GET_TIKTOK_PRODUCTS" });
+    if (result?.products) products = result.products;
+    apProductsLoaded = true;
+  }
+  apRenderProducts();
+  const result = await send<{ ok: boolean; state?: AutopilotState | null }>({ type: "AUTOPILOT_GET_STATE" });
+  apRender(result?.state ?? null);
+}
+
+function apCommand(type: string, extra: Record<string, unknown> = {}) {
+  return send<{ ok: boolean; error?: string; state?: AutopilotState | null }>({ type, ...extra }).then((result) => {
+    if (!result?.ok) log(result?.error ?? "คำสั่งไม่สำเร็จ");
+    if (result?.state !== undefined) apRender(result.state);
+    return result;
+  });
+}
+
+$("ap-pick-first").addEventListener("click", () => {
+  const count = Math.max(1, Number(($("ap-count") as HTMLInputElement).value) || 1);
+  apSelected.clear();
+  products.slice(0, count).forEach((p) => apSelected.add(p.id));
+  apRenderProducts();
+});
+$("ap-pick-none").addEventListener("click", () => {
+  apSelected.clear();
+  apRenderProducts();
+});
+
+$("ap-start").addEventListener("click", () => {
+  const productIds = products.filter((p) => apSelected.has(p.id)).map((p) => p.id);
+  const postMode = ($("ap-post-mode") as HTMLSelectElement).value;
+  const mode = apMode();
+  if (productIds.length === 0) {
+    log("เลือกสินค้าอย่างน้อย 1 ชิ้น");
+    return;
+  }
+  const plan =
+    mode === "batch"
+      ? `สร้างวิดีโอ ${productIds.length} ชิ้นต่อกันเลย`
+      : `ทุกวันเวลา ${($("ap-times") as HTMLInputElement).value} ทำ 1 ชิ้น วนสินค้า ${productIds.length} ชิ้นไปเรื่อยๆ`;
+  const warning =
+    postMode === "auto" ? "\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี TikTok จริงโดยไม่ถามอีก" : "";
+  if (!confirm(`${plan}\nใช้เครดิต Flow และโควต้า Gemini ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
+
+  apCommand("AUTOPILOT_START", {
+    mode,
+    productIds,
+    times: ($("ap-times") as HTMLInputElement).value,
+    settings: {
+      targetDuration: Number(($("ap-duration") as HTMLSelectElement).value),
+      style: ($("ap-style") as HTMLSelectElement).value,
+      postMode,
+      site: "flow",
+    },
+  });
+});
+$("ap-pause").addEventListener("click", () => apCommand("AUTOPILOT_PAUSE"));
+$("ap-resume").addEventListener("click", () => apCommand("AUTOPILOT_RESUME"));
+$("ap-skip").addEventListener("click", () => {
+  if (confirm("ข้ามสินค้าที่กำลังทำอยู่แล้วไปชิ้นถัดไป?")) apCommand("AUTOPILOT_SKIP_CURRENT");
+});
+$("ap-stop").addEventListener("click", () => {
+  if (confirm("หยุดระบบอัตโนมัติทั้งหมด?")) apCommand("AUTOPILOT_STOP");
+});
+
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.autopilot) apRender((changes.autopilot.newValue as AutopilotState | undefined) ?? null);
+  if (changes.products) apProductsLoaded = false;
+});
+
+apSetupOptions();
 
 /* ================= Settings tab ================= */
 

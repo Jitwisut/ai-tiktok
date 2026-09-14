@@ -164,6 +164,76 @@
         padding: 2px 8px;
         margin-bottom: 6px;
       }
+      .ap-status {
+        display: none;
+        border: 1px solid #374151;
+        border-radius: 10px;
+        padding: 10px;
+        margin-bottom: 10px;
+        background: #111827;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .ap-status .ap-state {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .ap-inline {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #d1d5db;
+      }
+      .ap-inline input[type="number"] {
+        background: #1f2937;
+        color: #f9fafb;
+        border: 1px solid #374151;
+        border-radius: 6px;
+        padding: 4px 6px;
+      }
+      .ap-products {
+        max-height: 240px;
+        overflow-y: auto;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        margin-bottom: 6px;
+      }
+      .ap-product {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-bottom: 1px solid #1f2937;
+        font-size: 12px;
+      }
+      .ap-product img {
+        width: 30px;
+        height: 30px;
+        object-fit: cover;
+        border-radius: 4px;
+        background: #374151;
+        flex-shrink: 0;
+      }
+      .ap-product .name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ap-tag {
+        font-size: 10px;
+        border-radius: 999px;
+        padding: 1px 6px;
+        flex-shrink: 0;
+      }
+      .ap-history-row {
+        font-size: 11px;
+        padding: 6px 0;
+        border-bottom: 1px solid #1f2937;
+        line-height: 1.5;
+      }
       .clip-parts-label {
         font-size: 11px;
         color: #6b7280;
@@ -269,6 +339,7 @@
     <div id="tabs">
       <button id="tab-products" class="active">สินค้า</button>
       <button id="tab-library">คลัง/งาน</button>
+      <button id="tab-autopilot">อัตโนมัติ</button>
       <button id="tab-settings">ตั้งค่า</button>
     </div>
 
@@ -376,6 +447,68 @@
           line-height: 1.6;
         "
       ></div>
+    </div>
+
+    <div id="view-autopilot" class="view" hidden>
+      <div id="ap-status" class="ap-status"></div>
+
+      <div id="ap-setup">
+        <div class="section-title">1. เลือกสินค้า</div>
+        <div class="row" style="align-items: center">
+          <label class="ap-inline">ทำ <input id="ap-count" type="number" min="1" value="5" style="width: 56px" /> ชิ้นแรก</label>
+          <button id="ap-pick-first" class="btn">เลือก</button>
+          <button id="ap-pick-none" class="btn">ล้าง</button>
+          <span id="ap-selected-count" class="hint" style="margin: 0"></span>
+        </div>
+        <div id="ap-products" class="ap-products"></div>
+
+        <div class="section-title">2. ตั้งค่าวิดีโอและโพสต์</div>
+        <div class="row">
+          <select id="ap-style"></select>
+          <select id="ap-duration">
+            <option value="8" selected>8 วิ · คลิปเดียว</option>
+            <option value="16">16 วิ · ต่อ 2 คลิป</option>
+            <option value="24">24 วิ · ต่อ 3 คลิป</option>
+          </select>
+        </div>
+        <div class="row">
+          <select id="ap-post-mode">
+            <option value="prepare" selected>เตรียมโพสต์ให้ (รอกด Post เอง)</option>
+            <option value="auto">โพสต์อัตโนมัติ (กด Post ให้เลย)</option>
+            <option value="none">สร้างวิดีโออย่างเดียว ไม่โพสต์</option>
+          </select>
+        </div>
+        <div class="hint">
+          โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง
+        </div>
+
+        <div class="section-title">3. เวลาทำงาน</div>
+        <div class="row" style="flex-direction: column; gap: 6px">
+          <label class="ap-inline"><input type="radio" name="ap-mode" value="batch" checked /> ทำเลย — ไล่ทำทีละชิ้นจนครบแล้วหยุด</label>
+          <label class="ap-inline"><input type="radio" name="ap-mode" value="schedule" /> ตามเวลา — ทุกวัน ถึงเวลาทำ 1 ชิ้น วนสินค้าไปเรื่อยๆ</label>
+        </div>
+        <div id="ap-schedule-box" hidden>
+          <input id="ap-times" type="text" placeholder="09:00, 12:30, 19:00" value="09:00, 12:30, 19:00" />
+          <div class="hint">เวลาในเครื่องนี้ ถึงเวลาจะเริ่มสร้างทันทีและโพสต์เมื่อวิดีโอเสร็จ (ประมาณ 5–15 นาทีหลังเวลาที่ตั้ง)</div>
+        </div>
+
+        <div class="row" style="margin-top: 12px">
+          <button id="ap-start" class="btn btn-success">เริ่มระบบอัตโนมัติ</button>
+        </div>
+        <div class="hint">
+          ระหว่างทำงาน เปิด Chrome ค้างไว้และอย่าให้เครื่องหลับ — เบราว์เซอร์ที่ย่อไว้หรือเครื่องที่หลับจะหยุดการอัปโหลดของ Flow/TikTok
+        </div>
+      </div>
+
+      <div id="ap-controls" class="row" hidden>
+        <button id="ap-pause" class="btn">หยุดชั่วคราว</button>
+        <button id="ap-resume" class="btn btn-primary">ทำต่อ</button>
+        <button id="ap-skip" class="btn">ข้ามชิ้นนี้</button>
+        <button id="ap-stop" class="btn btn-danger">หยุดทั้งหมด</button>
+      </div>
+
+      <div class="section-title">ประวัติ</div>
+      <div id="ap-history"></div>
     </div>
 
     <div id="view-settings" class="view" hidden>

@@ -26,6 +26,16 @@ export class GeminiError extends Error {
 /** No RetryInfo in the 429 body usually means the daily quota, not the per-minute one — bench the key for a while rather than hammering it again immediately. */
 const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * `fetch()` here has no built-in timeout, and an MV3 service worker can be
+ * killed mid-request (idle timer, or Chrome reclaiming it) without the
+ * pending `await` ever resolving or rejecting — the call just hangs
+ * forever with no error, which is what stalled autopilot at "วิเคราะห์สินค้า"
+ * with no error logged. An AbortController turns that into an error the
+ * caller (autopilot's retry/skip logic) can actually react to.
+ */
+const GEMINI_FETCH_TIMEOUT_MS = 45_000;
+
 export async function fetchImageAsBase64(imageUrl: string): Promise<ImagePart | null> {
   try {
     const res = await fetch(imageUrl);
@@ -87,21 +97,34 @@ async function callGeminiOnce(model: string, apiKey: string, params: GenerateObj
   ];
 
   return withRetry(async () => {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: params.system }] },
-          contents: [{ role: "user", parts }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: params.schema,
-          },
-        }),
-      },
-    );
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GEMINI_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: params.system }] },
+            contents: [{ role: "user", parts }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: params.schema,
+            },
+          }),
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") {
+        throw new GeminiError(`Gemini ไม่ตอบสนองภายใน ${GEMINI_FETCH_TIMEOUT_MS / 1000} วินาที — เครือข่ายอาจมีปัญหา ลองใหม่อีกครั้ง`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

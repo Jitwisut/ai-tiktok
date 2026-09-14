@@ -4,6 +4,7 @@ import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
 import { DEFAULT_VIDEO_SETTINGS, CLIP_SECONDS, planClips, type PlanVariant } from "./lib/prompt-engine.js";
 import { concatMp4 } from "./lib/mp4-concat.js";
+import { createAutopilot } from "./lib/autopilot.js";
 
 const VEO_MODEL_ID = "veo-3.1-fast-generate-preview";
 const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VEO_MODEL_ID}`;
@@ -248,6 +249,9 @@ async function replanClips(videoId: string, targetDuration: number): Promise<Job
     prompts.toScenePromptInputs(content.scenes),
     DEFAULT_VIDEO_SETTINGS,
     targetDuration,
+    undefined,
+    { headline: content.onScreenText, cta: content.onScreenCta },
+    content.style,
   );
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
@@ -376,6 +380,8 @@ async function createJobForContent(
     DEFAULT_VIDEO_SETTINGS,
     targetDuration,
     variant,
+    { headline: content.onScreenText, cta: content.onScreenCta },
+    content.style,
   );
   const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
   const video = await store.createVideoJob({
@@ -478,6 +484,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 /* ---------- TikTok Studio posting ---------- */
 
+const TIKTOK_CAPTION_EDITOR = '[data-e2e="caption_container"] .public-DraftEditor-content';
 const TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center";
 const TIKTOK_CLAIM_STALE_MS = 10 * 60_000;
 
@@ -691,7 +698,7 @@ function bytesToBase64(bytes: Uint8Array): string {
  * the page receives real input events. TikTok's DraftJS caption editor
  * mangles synthetic input (duplicated hashtags, a crash on the next edit).
  */
-async function typeIntoTab(tabId: number, text: string, isMac: boolean): Promise<void> {
+async function typeIntoTab(tabId: number, text: string, isMac: boolean, editorSelector: string): Promise<void> {
   const target = { tabId };
   await chrome.debugger.attach(target, "1.3");
   const send = (method: string, params: { [key: string]: unknown }) => chrome.debugger.sendCommand(target, method, params);
@@ -700,6 +707,24 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean): Promise
     await send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCode });
   };
   try {
+    // When the side panel (or another window) holds keyboard focus, the page
+    // isn't focused and TikTok's DraftJS editor throws the typed text away —
+    // autopilot runs hit this while the user watched the panel. Make the page
+    // behave as focused and put the caret in the editor with a real click.
+    await send("Page.bringToFront", {});
+    await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    const located = (await send("Runtime.evaluate", {
+      expression: `(() => { const el = document.querySelector(${JSON.stringify(editorSelector)}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return { x: r.left + Math.min(40, r.width / 2), y: r.top + Math.min(12, r.height / 2) }; })()`,
+      returnByValue: true,
+    })) as { result?: { value?: { x: number; y: number } | null } } | undefined;
+    const point = located?.result?.value;
+    if (!point) throw new Error("ไม่พบช่องคำอธิบาย");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
     await press("a", "KeyA", 65, { modifiers: isMac ? 4 : 2, commands: ["selectAll"] });
     await press("Backspace", "Backspace", 8);
     const lines = text.split("\n");
@@ -718,6 +743,130 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean): Promise
     await chrome.debugger.detach(target).catch(() => {});
   }
 }
+
+async function analyzeProduct(productId: string): Promise<store.ProductAnalysis> {
+  const product = await store.getProduct(productId);
+  if (!product) throw new Error("ไม่พบสินค้า");
+  const images = await gemini.loadImages(product.images);
+  const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
+  const analysis = await gemini.generateObject<store.ProductAnalysis>({
+    system,
+    prompt,
+    images,
+    schema: prompts.PRODUCT_ANALYSIS_SCHEMA,
+  });
+  await store.saveAnalysis(product.id, analysis);
+  return analysis;
+}
+
+async function generateContentScenes(
+  productId: string,
+  style: string,
+  targetDuration: number,
+): Promise<{ content: store.Content; scenes: store.Scene[] }> {
+  const product = await store.getProduct(productId);
+  if (!product) throw new Error("ไม่พบสินค้า");
+  const analysis = await store.getAnalysis(product.id);
+  const images = await gemini.loadImages(product.images);
+
+  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, images.length > 0);
+  const contentResult = await gemini.generateObject<{
+    hook: string;
+    script: string;
+    caption: string;
+    cta: string;
+    onScreenText?: string;
+    onScreenCta?: string;
+  }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA });
+
+  const content = await store.createContent({
+    productId: product.id,
+    style,
+    hook: contentResult.hook,
+    script: contentResult.script,
+    caption: contentResult.caption,
+    cta: contentResult.cta,
+    // Short is what actually renders as legible Thai in Veo — anything longer
+    // that Gemini writes despite the prompt's instruction is dropped rather
+    // than risking garbled text on screen.
+    onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, 12),
+    onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, 10),
+  });
+
+  const scenePrompt = prompts.buildScenePrompt(product, contentResult.script, targetDuration, images.length > 0);
+  const sceneResult = await gemini.generateObject<{ scenes: store.Scene[] }>({
+    ...scenePrompt,
+    images,
+    schema: prompts.SCENE_PLAN_SCHEMA,
+  });
+  await store.setScenes(content.id, sceneResult.scenes);
+  return { content, scenes: sceneResult.scenes };
+}
+
+async function prepareTikTokPost(
+  videoId: string,
+  caption: string,
+  autoPost: boolean,
+  productId: string | null,
+): Promise<{ ok: boolean; error?: string; tabId?: number }> {
+  const video = await store.getVideo(videoId);
+  if (!video || video.status !== "completed") return { ok: false, error: "วิดีโอนี้ยังไม่เสร็จ" };
+  const clip = await postableClip(videoId);
+  if (!clip) return { ok: false, error: "ไม่พบไฟล์วิดีโอในคลัง (หรือต่อคลิปไม่สำเร็จ)" };
+
+  // Store the job before the page loads, so its content script always finds it.
+  const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+  const pending: PendingTikTokPost = {
+    tabId: tab.id!,
+    at: Date.now(),
+    job: {
+      videoId,
+      caption,
+      autoPost,
+      aiLabel: true,
+      fileName: `${videoId.slice(0, 8)}-${clip.index === library.MERGED_CLIP_INDEX ? "full" : "clip"}.mp4`,
+      productId,
+    },
+  };
+  await chrome.storage.local.set({ pendingTikTokPost: pending });
+  await chrome.tabs.update(tab.id!, { url: TIKTOK_UPLOAD_URL });
+  await store.updateVideoJob(videoId, { tiktokPost: { status: "preparing", at: Date.now(), error: null } });
+  return { ok: true, tabId: tab.id };
+}
+
+/* ---------- autopilot ---------- */
+
+const autopilot = createAutopilot({
+  analyzeProduct,
+  generateContentScenes,
+  async startVideo(contentId, targetDuration, site) {
+    const { video, clips, imageUrl } = await createJobForContent(contentId, targetDuration);
+    const job = await buildJob({
+      videoId: video.id,
+      clips,
+      duration: video.duration,
+      aspectRatio: video.aspectRatio,
+      imageUrl,
+    });
+    const result = await dispatchJob(job, site);
+    if (!result.ok) {
+      await store.updateVideoJob(video.id, { status: "cancelled", errorMessage: result.error ?? null });
+      throw new Error(result.error ?? "เริ่มสร้างวิดีโอไม่สำเร็จ");
+    }
+    return video.id;
+  },
+  prepareTikTokPost,
+  async isManualJobRunning() {
+    const queue = await getJobQueue();
+    if (queue.current || queue.pending.length) return true;
+    // A single video started from the panel isn't queued, but it still holds the Flow tab.
+    const { jobProgress } = await chrome.storage.local.get("jobProgress");
+    const progress = jobProgress as { state?: string; at?: number } | undefined;
+    return Boolean(
+      progress && (progress.state === "generating" || progress.state === "uploading") && Date.now() - (progress.at ?? 0) < 20 * 60_000,
+    );
+  },
+});
 
 /* ---------- joining clips into one video ---------- */
 
@@ -867,21 +1016,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "ANALYZE_PRODUCT") {
     (async () => {
       try {
-        const product = await store.getProduct(message.productId);
-        if (!product) {
-          sendResponse({ ok: false, error: "ไม่พบสินค้า" });
-          return;
-        }
-        const images = await gemini.loadImages(product.images);
-        const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
-        const analysis = await gemini.generateObject<store.ProductAnalysis>({
-          system,
-          prompt,
-          images,
-          schema: prompts.PRODUCT_ANALYSIS_SCHEMA,
-        });
-        await store.saveAnalysis(product.id, analysis);
-        sendResponse({ ok: true, analysis });
+        sendResponse({ ok: true, analysis: await analyzeProduct(message.productId) });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "วิเคราะห์สินค้าไม่สำเร็จ" });
       }
@@ -892,41 +1027,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "GENERATE_CONTENT_SCENES") {
     (async () => {
       try {
-        const product = await store.getProduct(message.productId);
-        if (!product) {
-          sendResponse({ ok: false, error: "ไม่พบสินค้า" });
-          return;
-        }
-        const analysis = await store.getAnalysis(product.id);
-        const images = await gemini.loadImages(product.images);
-
-        const contentPrompt = prompts.buildContentPrompt(product, analysis, message.style, images.length > 0);
-        const contentResult = await gemini.generateObject<{
-          hook: string;
-          script: string;
-          caption: string;
-          cta: string;
-        }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA });
-
-        const content = await store.createContent({
-          productId: product.id,
-          style: message.style,
-          ...contentResult,
-        });
-
-        const scenePrompt = prompts.buildScenePrompt(
-          product,
-          contentResult.script,
-          message.targetDuration,
-          images.length > 0,
-        );
-        const sceneResult = await gemini.generateObject<{ scenes: store.Scene[] }>({
-          ...scenePrompt,
-          images,
-          schema: prompts.SCENE_PLAN_SCHEMA,
-        });
-        await store.setScenes(content.id, sceneResult.scenes);
-
+        const { content, scenes } = await generateContentScenes(message.productId, message.style, message.targetDuration);
         sendResponse({
           ok: true,
           content: {
@@ -936,7 +1037,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
             caption: content.caption,
             cta: content.cta,
           },
-          scenes: sceneResult.scenes,
+          scenes,
         });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างคอนเทนต์ไม่สำเร็จ" });
@@ -1023,9 +1124,21 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if ((message as { type: string }).type.startsWith("AUTOPILOT_")) {
+    autopilot
+      .handleMessage(message as unknown as { type: string })
+      .then((response) => sendResponse(response ?? { ok: false, error: "unknown autopilot command" }))
+      .catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+
   if (message.type === "RUN_BATCH") {
     (async () => {
       try {
+        if (await autopilot.isBusy()) {
+          sendResponse({ ok: false, error: "ระบบอัตโนมัติกำลังใช้ Flow อยู่ — หยุดชั่วคราวในแท็บอัตโนมัติก่อน" });
+          return;
+        }
         const queue = await getJobQueue();
         const running = queue.current ? await store.getVideo(queue.current) : null;
         if (queue.current && running?.status !== "queued" && running?.status !== "processing") {
@@ -1103,34 +1216,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "PREPARE_TIKTOK_POST") {
     (async () => {
       try {
-        const video = await store.getVideo(message.videoId);
-        if (!video || video.status !== "completed") {
-          sendResponse({ ok: false, error: "วิดีโอนี้ยังไม่เสร็จ" });
-          return;
-        }
-        const clip = await postableClip(message.videoId);
-        if (!clip) {
-          sendResponse({ ok: false, error: "ไม่พบไฟล์วิดีโอในคลัง (หรือต่อคลิปไม่สำเร็จ)" });
-          return;
-        }
-        // Store the job before the page loads, so its content script always finds it.
-        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
-        const pending: PendingTikTokPost = {
-          tabId: tab.id!,
-          at: Date.now(),
-          job: {
-            videoId: message.videoId,
-            caption: message.caption,
-            autoPost: message.autoPost,
-            aiLabel: true,
-            fileName: `${message.videoId.slice(0, 8)}-${clip.index === library.MERGED_CLIP_INDEX ? "full" : "clip"}.mp4`,
-            productId: message.productId,
-          },
-        };
-        await chrome.storage.local.set({ pendingTikTokPost: pending });
-        await chrome.tabs.update(tab.id!, { url: TIKTOK_UPLOAD_URL });
-        await store.updateVideoJob(message.videoId, { tiktokPost: { status: "preparing", at: Date.now(), error: null } });
-        sendResponse({ ok: true });
+        sendResponse(await prepareTikTokPost(message.videoId, message.caption, message.autoPost, message.productId));
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "เปิดหน้าโพสต์ TikTok ไม่สำเร็จ" });
       }
@@ -1178,7 +1264,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         return;
       }
       try {
-        await typeIntoTab(sender.tab.id, caption, isMac);
+        await typeIntoTab(sender.tab.id, caption, isMac, TIKTOK_CAPTION_EDITOR);
         sendResponse({ ok: true });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
@@ -1192,6 +1278,11 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
       const { videoId, status, error } = message as unknown as { videoId: string; status: "ready" | "posted" | "failed"; error?: string };
       await store.updateVideoJob(videoId, { tiktokPost: { status, at: Date.now(), error: error ?? null } });
       sendResponse({ ok: true });
+      // Autopilot opens one upload tab per post; once it's published the tab has done its job.
+      if (status === "posted" && sender.tab?.id && (await autopilot.ownsVideo(videoId))) {
+        const tabId = sender.tab.id;
+        setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 8000);
+      }
     })();
     return true;
   }

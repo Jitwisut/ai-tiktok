@@ -21,6 +21,8 @@ export interface ProductAnalysis {
 export interface Scene {
   duration: number;
   description: string;
+  /** Camera movement for the scene, continuing from the previous one. */
+  cameraMotion?: string;
 }
 
 export interface Content {
@@ -31,6 +33,9 @@ export interface Content {
   script: string;
   caption: string;
   cta: string;
+  /** Short Thai text for Veo to render on screen (missing on content made before it existed). */
+  onScreenText?: string;
+  onScreenCta?: string;
   scenes: Scene[];
 }
 
@@ -315,6 +320,8 @@ export async function createContent(input: {
   script: string;
   caption: string;
   cta: string;
+  onScreenText?: string;
+  onScreenCta?: string;
 }): Promise<Content> {
   const contents = await getAll("contents");
   const content: Content = { id: newId(), scenes: [], ...input };

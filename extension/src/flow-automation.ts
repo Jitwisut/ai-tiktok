@@ -217,6 +217,9 @@ function flowIsGenerating(): boolean {
  * Treat both as not done: a finished clip always has its <img> or <video>.
  */
 function flowTileInProgress(tile: HTMLElement): boolean {
+  // A failed render has no media either, and used to be taken for one still
+  // running — the job then sat on "waiting for Flow" until it timed out.
+  if (flowTileFailed(tile)) return false;
   return /\b\d{1,3}%/.test(tile.innerText ?? "") || !tile.querySelector("img, video");
 }
 
@@ -270,8 +273,35 @@ function flowAgentAnnouncedWithoutStarting(): boolean {
 }
 
 function flowTileFailed(tile: HTMLElement): boolean {
-  return /something went wrong|generation failed|couldn.t generate|try again/i.test(tile.innerText ?? "");
+  return /^\s*Failed\b|might violate|violates? our polic|not been charged|something went wrong|generation failed|couldn.t generate|try again/i.test(
+    tile.innerText ?? "",
+  );
 }
+
+/**
+ * A failed tile carries its own retry (⟳), reuse-prompt (↩) and delete
+ * buttons. Retry re-runs the same prompt and ingredients, and Veo's policy
+ * filter is inconsistent enough that the same request often passes the
+ * second time. The buttons may only render on hover, so hover first.
+ */
+function flowTileRetryButton(tile: HTMLElement): HTMLButtonElement | undefined {
+  const find = () =>
+    Array.from(tile.querySelectorAll<HTMLButtonElement>("button")).find((button) => {
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.innerText}`;
+      return /retry|regenerate|try again|refresh|replay|autorenew/i.test(label) && !/delete|remove|reuse|undo/i.test(label);
+    });
+  let button = find();
+  if (!button) {
+    for (const type of ["pointerover", "pointerenter", "mouseover", "mouseenter"]) {
+      tile.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+    }
+    button = find();
+  }
+  return button;
+}
+
+const FLOW_MAX_TILE_RETRIES = 2;
+const FLOW_TILE_RETRY_SETTLE_MS = 20_000;
 
 /**
  * The clip's file is only on the tile's detail page (/project/…/edit/<id>),
@@ -676,12 +706,12 @@ async function flowSubmitAndWaitOnce(
   // first. Say what to copy from it and what must differ — asking only for a
   // match makes the agent re-render the same shot.
   const continuation = clipAttached
-    ? " The attached video is the previous part. Reuse its person, wardrobe, room, product and colour grade, but this part must be a NEW shot: different camera angle and the new action described above. Do not re-create the attached video."
+    ? " The attached video is the previous part. Start this part as a direct continuation of its LAST frame — same person, wardrobe, location, product, lighting, colour grade and camera position — then follow the [Action/Change] and [Camera Motion] above so the two parts join without a visible cut. Do not replay or copy the attached footage."
     : "";
 
   // Without this the product in the clip is whatever the model imagines from the name.
   const productReference = imageAttached
-    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material, packaging, logo and printed text — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as the video's first frame or background."
+    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. For any small or dense printed text on the packaging, keep the packaging's colours and layout the same but render it as natural soft product-photography detail rather than attempting sharp legible Thai characters, since that text is not the on-screen title and does not need to be readable; only the separate on-screen text described below needs to be sharp and correct. Use the photo only as the product reference, not as the video's first frame or background. No other brand's logo or packaging may appear anywhere in the frame."
     : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
@@ -739,6 +769,9 @@ async function flowSubmitAndWaitOnce(
   let newVideoTile: HTMLElement | undefined;
   let nudges = 0;
   let lastKickAt = Date.now();
+  let tileRetries = 0;
+  let lastTileRetryAt = 0;
+  let policySeenAt = 0;
   const pollForResult = () => {
     // The agent can take a while to think before it asks, and while it
     // thinks its send button shows "stop" — so the pre-wait above can
@@ -752,11 +785,41 @@ async function flowSubmitAndWaitOnce(
     // Until our prompt shows up in the chat, the "latest reply" is still
     // whatever answered the previous one — possibly an old error.
     const promptPosted = document.querySelector(".agent-bubble") === null || flowUserBubbleCount() > userBubblesBefore;
+
+    // Flow's policy filter rejected the render: press the tile's own retry
+    // button before giving up on this prompt.
+    const failedTile = flowLeadingTiles().find(flowTileFailed);
+    if (failedTile && promptPosted && Date.now() - lastTileRetryAt > FLOW_TILE_RETRY_SETTLE_MS) {
+      const retry = tileRetries < FLOW_MAX_TILE_RETRIES ? flowTileRetryButton(failedTile) : undefined;
+      if (retry) {
+        tileRetries += 1;
+        lastTileRetryAt = Date.now();
+        sawGeneration = false;
+        lastKickAt = Date.now();
+        retry.click();
+        flowShowBanner(
+          `AI Affiliate Studio: ${label} Flow บล็อกคลิป (อาจผิดนโยบาย) — กดสร้างใหม่ให้อัตโนมัติ (${tileRetries}/${FLOW_MAX_TILE_RETRIES})...`,
+          "#d97706",
+        );
+        return undefined;
+      }
+    }
+    // Right after a retry the old tile and the agent's old policy reply are still on screen.
+    const settlingAfterRetry = tileRetries > 0 && Date.now() - lastTileRetryAt < FLOW_TILE_RETRY_SETTLE_MS;
+    if (settlingAfterRetry) return undefined;
+
     if (promptPosted) {
       const blocked = flowFindRejectedNotice();
       if (blocked) return blocked;
-      const policyBlocked = flowFindPolicyViolation();
-      if (policyBlocked) return policyBlocked;
+      // Once a tile retry has been used the chat's policy notice is stale — the tile decides.
+      const policyBlocked = tileRetries === 0 ? flowFindPolicyViolation() : undefined;
+      if (policyBlocked) {
+        // The chat can say so a moment before the tile turns into "Failed"
+        // with its retry button — give the tile a chance first.
+        policySeenAt ||= Date.now();
+        if (!failedTile && Date.now() - policySeenAt < FLOW_TILE_RETRY_SETTLE_MS) return undefined;
+        return policyBlocked;
+      }
     }
 
     // Nothing identifies a tile across polls — hovering swaps its <img>
