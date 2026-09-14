@@ -55,11 +55,15 @@ export interface VideoJob {
   /** Set once the clips were joined into one file (library index MERGED_CLIP_INDEX). */
   mergedAt?: number | null;
   mergeError?: string | null;
+  /** Last TikTok Studio posting attempt (tiktok-upload.ts). */
+  tiktokPost?: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
 }
 
 export interface Settings {
   geminiModel: string;
   flowProjectUrl: string;
+  /** Press TikTok's Post button after filling the form, instead of stopping for review. */
+  tiktokAutoPost?: boolean;
 }
 
 /**
@@ -237,27 +241,32 @@ export async function deleteProducts(ids: string[]): Promise<number> {
 
 /** TikTok product IDs round-trip through sourceUrl so re-import is idempotent. */
 export async function importTikTokProducts(
-  items: { tiktokId: string; name: string; price?: number; image?: string }[],
+  items: { tiktokId: string; name: string; price?: number; image?: string; images?: string[]; description?: string }[],
 ): Promise<Product[]> {
   const products = await getAll("products");
   const results: Product[] = [];
 
   for (const item of items) {
     const sourceUrl = `https://www.tiktok.com/tiktokstudio/product/${item.tiktokId}`;
+    const images = item.images?.length ? item.images : item.image ? [item.image] : [];
     const existing = products.find((p) => p.sourceUrl === sourceUrl);
     if (existing) {
+      // Re-importing refreshes what the shop may have changed, without touching the product's id.
+      existing.price = item.price ?? existing.price;
+      if (images.length) existing.images = images;
+      existing.description = item.description ?? existing.description;
       results.push(existing);
       continue;
     }
     const product: Product = {
       id: newId(),
       name: item.name,
-      description: null,
+      description: item.description ?? null,
       price: item.price ?? null,
       currency: "THB",
       source: "tiktok",
       sourceUrl,
-      images: item.image ? [item.image] : [],
+      images,
     };
     products.push(product);
     results.push(product);
@@ -324,7 +333,18 @@ export async function setScenes(contentId: string, scenes: Scene[]): Promise<voi
 
 /* ---------- videos ---------- */
 
-type VideoWithInfo = VideoJob & { productName: string; hook: string; imageUrl: string | null };
+type VideoWithInfo = VideoJob & {
+  productName: string;
+  hook: string;
+  caption: string;
+  imageUrl: string | null;
+  /** Set when the product came from TikTok, so its video can carry a product link. */
+  productTikTokId: string | null;
+};
+
+export function tiktokIdFromSourceUrl(sourceUrl: string | null | undefined): string | null {
+  return sourceUrl?.match(/^https:\/\/www\.tiktok\.com\/tiktokstudio\/product\/(\d+)$/)?.[1] ?? null;
+}
 
 async function listVideosWithInfo(filter: (v: VideoJob) => boolean): Promise<VideoWithInfo[]> {
   const [videos, contents, products] = await Promise.all([getAll("videos"), getAll("contents"), getAll("products")]);
@@ -339,7 +359,9 @@ async function listVideosWithInfo(filter: (v: VideoJob) => boolean): Promise<Vid
         ...v,
         productName: product?.name ?? "-",
         hook: content?.hook ?? "",
+        caption: content?.caption ?? "",
         imageUrl: product?.images[0] ?? null,
+        productTikTokId: tiktokIdFromSourceUrl(product?.sourceUrl),
       };
     });
 }

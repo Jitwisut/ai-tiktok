@@ -73,6 +73,21 @@ interface RunBatchMessage {
   site: GenerationSite;
 }
 
+/** Opens TikTok Studio's upload page and has tiktok-upload.ts fill it for this video. */
+interface PrepareTikTokPostMessage {
+  type: "PREPARE_TIKTOK_POST";
+  videoId: string;
+  caption: string;
+  autoPost: boolean;
+  /** TikTok Shop product ID to link, or null to post without a product link. */
+  productId: string | null;
+}
+
+/** Imports the logged-in TikTok account's showcase products into the product list. */
+interface SyncTikTokShowcaseMessage {
+  type: "SYNC_TIKTOK_SHOWCASE";
+}
+
 /** Joins an already finished video's clips into one file (for videos made before auto-join). */
 interface MergeVideoMessage {
   type: "MERGE_VIDEO";
@@ -194,6 +209,8 @@ type ExtensionMessage =
   | GetCompletedVideosMessage
   | CreateJobMessage
   | RunBatchMessage
+  | PrepareTikTokPostMessage
+  | SyncTikTokShowcaseMessage
   | MergeVideoMessage
   | CancelJobMessage
   | RunJobFromPopupMessage
@@ -454,6 +471,249 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (!progress?.videoId || (progress.state !== "done" && progress.state !== "failed")) return;
   void advanceJobQueue(progress.videoId);
 });
+
+/* ---------- TikTok Studio posting ---------- */
+
+const TIKTOK_UPLOAD_URL = "https://www.tiktok.com/tiktokstudio/upload?from=creator_center";
+const TIKTOK_CLAIM_STALE_MS = 10 * 60_000;
+
+interface PendingTikTokPost {
+  tabId: number;
+  at: number;
+  job: { videoId: string; caption: string; autoPost: boolean; aiLabel: boolean; fileName: string; productId: string | null };
+}
+
+interface ShowcaseProduct {
+  tiktokId: string;
+  name: string;
+  price?: number;
+  image?: string;
+  images?: string[];
+  description?: string;
+}
+
+/**
+ * Runs inside a tiktok.com tab: TikTok Studio's own product picker reads this
+ * endpoint with the page's cookies, which the worker can't send cross-site.
+ * Must be self-contained — it is serialized into the page by executeScript.
+ */
+async function fetchShowcaseInPage(): Promise<{ ok: boolean; products?: ShowcaseProduct[]; error?: string }> {
+  const count = 20;
+  const products: ShowcaseProduct[] = [];
+  for (let offset = 0; offset < 1000; offset += count) {
+    const res = await fetch(
+      `https://shop.tiktok.com/api/v1/streamer_desktop/showcase_product/list?offset=${offset}&count=${count}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) return { ok: false, error: `TikTok ตอบกลับ ${res.status}` };
+    const body = await res.json();
+    if (body.code !== 0) return { ok: false, error: body.message || `TikTok ตอบกลับ code ${body.code}` };
+    const page = (body.data?.products ?? []) as any[];
+    for (const item of page) {
+      const urls = (item.images ?? []).map((img: any) => img?.thumb_url_list?.[0]).filter(Boolean) as string[];
+      const cover = item.cover?.thumb_url_list?.[0] as string | undefined;
+      const price = Number(String(item.format_available_price ?? "").replace(/[^0-9.]/g, ""));
+      const details = [
+        item.seller_info?.shop_name ? `ร้าน: ${item.seller_info.shop_name}` : "",
+        item.category_info?.name ? `หมวด: ${item.category_info.name}` : "",
+        item.affiliate_info?.commission_with_currency ? `ค่าคอม: ${item.affiliate_info.commission_with_currency}` : "",
+      ].filter(Boolean);
+      products.push({
+        tiktokId: String(item.product_id),
+        name: String(item.title ?? ""),
+        price: Number.isFinite(price) && price > 0 ? price : undefined,
+        image: cover ?? urls[0],
+        images: [...new Set([cover, ...urls].filter(Boolean) as string[])].slice(0, 5),
+        description: details.join(" · ") || undefined,
+      });
+    }
+    if (page.length < count || products.length >= (body.data?.total ?? 0)) break;
+  }
+  return { ok: true, products };
+}
+
+const PRODUCT_DETAIL_MAX_IMAGES = 8;
+
+/**
+ * Full product details from the public TikTok Shop product page, which embeds
+ * them as JSON (__MODERN_ROUTER_DATA__): the gallery, the seller's
+ * description, specs, variants, sales and rating. The slug in the URL is
+ * ignored by TikTok, so "x" stands in for it. TikTok sometimes answers with a
+ * captcha page instead; callers then keep the showcase list's summary.
+ */
+async function fetchTikTokProductDetail(tiktokId: string): Promise<{ name: string; images: string[]; description: string; price?: number } | null> {
+  const res = await fetch(`https://shop.tiktok.com/th/pdp/x/${tiktokId}`, { credentials: "omit" });
+  if (!res.ok) return null;
+  const html = await res.text();
+  const json = html.match(/<script[^>]*id="__MODERN_ROUTER_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1];
+  if (!json) return null;
+
+  let info: any = null;
+  const find = (node: any, depth: number) => {
+    if (info || depth > 16 || !node || typeof node !== "object") return;
+    if (node.product_model?.images && String(node.product_model.product_id) === tiktokId) {
+      info = node;
+      return;
+    }
+    for (const value of Object.values(node)) find(value, depth + 1);
+  };
+  find(JSON.parse(json), 0);
+  if (!info) return null;
+
+  const model = info.product_model;
+  const images = ((model.images ?? []) as any[])
+    .map((img) => img?.url_list?.[0])
+    .filter(Boolean)
+    .slice(0, PRODUCT_DETAIL_MAX_IMAGES) as string[];
+
+  let descriptionText: string[] = [];
+  try {
+    descriptionText = (JSON.parse(model.description ?? "[]") as any[])
+      .filter((block) => block.type === "text" && block.text?.trim())
+      .map((block) => String(block.text).trim());
+  } catch {
+    // description is sometimes plain text rather than blocks
+    if (typeof model.description === "string") descriptionText = [model.description];
+  }
+
+  const specs = ((model.product_properties ?? []) as any[])
+    .map((p) => `${p.property_name}: ${(p.property_values ?? []).map((v: any) => v.property_value_name).join(", ")}`)
+    .filter((line) => !line.endsWith(": "));
+  const variants = ((model.sale_properties ?? []) as any[]).map(
+    (p) => `${p.property_name}: ${(p.property_values ?? []).map((v: any) => v.property_value_name).join(", ")}`,
+  );
+  const minPrice = info.promotion_model?.promotion_product_price?.min_price;
+  const priceValue = Number(String(minPrice?.sale_price_decimal ?? minPrice?.real_price?.price_str ?? "").replace(/[^0-9.]/g, ""));
+  const facts = [
+    info.seller_model?.shop_name ? `ร้าน: ${info.seller_model.shop_name}` : "",
+    model.sold_count ? `ขายแล้ว: ${model.sold_count} ชิ้น` : "",
+    info.review_model?.product_overall_score
+      ? `คะแนนรีวิว: ${info.review_model.product_overall_score} (${info.review_model.product_review_count} รีวิว)`
+      : "",
+  ].filter(Boolean);
+
+  const description = [
+    descriptionText.join("\n"),
+    specs.length ? `สเปก:\n${specs.join("\n")}` : "",
+    variants.length ? `ตัวเลือก:\n${variants.join("\n")}` : "",
+    facts.join(" · "),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    name: String(model.name ?? ""),
+    images,
+    description,
+    price: Number.isFinite(priceValue) && priceValue > 0 ? priceValue : undefined,
+  };
+}
+
+/** Merges a showcase row with the product page's details; the summary survives if the page can't be read. */
+async function withProductDetail(item: ShowcaseProduct): Promise<ShowcaseProduct & { detailed: boolean }> {
+  const detail = await fetchTikTokProductDetail(item.tiktokId).catch(() => null);
+  if (!detail) return { ...item, detailed: false };
+  return {
+    ...item,
+    name: item.name || detail.name,
+    price: item.price ?? detail.price,
+    image: detail.images[0] ?? item.image,
+    images: detail.images.length ? detail.images : item.images,
+    // The showcase summary carries the commission, which the product page doesn't.
+    description: [detail.description, item.description].filter(Boolean).join("\n"),
+    detailed: true,
+  };
+}
+
+async function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === "complete") return;
+    await sleep(500);
+  }
+}
+
+async function syncTikTokShowcase(): Promise<{ ok: boolean; added?: number; total?: number; detailed?: number; error?: string }> {
+  let [tab] = await chrome.tabs.query({ url: "https://www.tiktok.com/*" });
+  let opened = false;
+  if (!tab?.id) {
+    tab = await chrome.tabs.create({ url: "https://www.tiktok.com/tiktokstudio", active: false });
+    opened = true;
+    await waitForTabComplete(tab.id!);
+  }
+  try {
+    const [injection] = await chrome.scripting.executeScript({ target: { tabId: tab.id! }, func: fetchShowcaseInPage });
+    const result = injection?.result as Awaited<ReturnType<typeof fetchShowcaseInPage>> | undefined;
+    if (!result?.ok || !result.products) {
+      return { ok: false, error: `ดึงสินค้าไม่สำเร็จ: ${result?.error ?? "ไม่ได้ผลลัพธ์"} — ตรวจว่า login TikTok ใน Chrome นี้แล้ว` };
+    }
+    const detailed = await Promise.all(result.products.map(withProductDetail));
+    const before = (await store.listProducts()).length;
+    await store.importTikTokProducts(detailed);
+    const after = (await store.listProducts()).length;
+    return { ok: true, added: after - before, total: result.products.length, detailed: detailed.filter((p) => p.detailed).length };
+  } finally {
+    if (opened) chrome.tabs.remove(tab.id!).catch(() => {});
+  }
+}
+
+/** The file to post: the joined video when there is one, otherwise the only clip. */
+async function postableClip(videoId: string): Promise<library.StoredClip | null> {
+  const clips = await library.getClipsForVideo(videoId);
+  const merged = clips.find((c) => c.index === library.MERGED_CLIP_INDEX);
+  if (merged) return merged;
+  const parts = clips.filter((c) => c.index >= 0);
+  if (parts.length === 1) return parts[0];
+  if (parts.length > 1) {
+    const result = await mergeVideoClips(videoId);
+    if (!result.ok) return null;
+    return (await library.getClipsForVideo(videoId)).find((c) => c.index === library.MERGED_CLIP_INDEX) ?? null;
+  }
+  return null;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Types into the focused element of a tab through the DevTools protocol, so
+ * the page receives real input events. TikTok's DraftJS caption editor
+ * mangles synthetic input (duplicated hashtags, a crash on the next edit).
+ */
+async function typeIntoTab(tabId: number, text: string, isMac: boolean): Promise<void> {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  const send = (method: string, params: { [key: string]: unknown }) => chrome.debugger.sendCommand(target, method, params);
+  const press = async (key: string, code: string, keyCode: number, extra: { [key: string]: unknown } = {}) => {
+    await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code, windowsVirtualKeyCode: keyCode, ...extra });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: keyCode });
+  };
+  try {
+    await press("a", "KeyA", 65, { modifiers: isMac ? 4 : 2, commands: ["selectAll"] });
+    await press("Backspace", "Backspace", 8);
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        // A hashtag at the end of a line leaves its suggestion list open, and Enter would pick a suggestion.
+        if (/#[^\s#]+$/.test(lines[i - 1])) await send("Input.insertText", { text: " " });
+        await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      }
+      if (lines[i]) await send("Input.insertText", { text: lines[i] });
+    }
+    // Same reason as above, for a caption that ends on a hashtag.
+    if (/#[^\s#]+$/.test(text)) await send("Input.insertText", { text: " " });
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
 
 /* ---------- joining clips into one video ---------- */
 
@@ -731,6 +991,9 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
           seconds: v.clips.length * CLIP_SECONDS,
           mergedAt: v.mergedAt ?? null,
           mergeError: v.mergeError ?? null,
+          caption: v.caption,
+          productTikTokId: v.productTikTokId,
+          tiktokPost: v.tiktokPost ?? null,
         })),
       });
     })();
@@ -796,6 +1059,135 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างงานไม่สำเร็จ" });
       }
+    })();
+    return true;
+  }
+
+  // From the "+ AI Studio" buttons injected into TikTok Studio's product picker (tiktok-upload.ts).
+  if ((message as { type: string }).type === "IMPORT_TIKTOK_PRODUCT_DETAILS") {
+    (async () => {
+      try {
+        const { products: rows } = message as unknown as { products: ShowcaseProduct[] };
+        const detailed = await Promise.all(rows.map(withProductDetail));
+        const imported = await store.importTikTokProducts(detailed);
+        sendResponse({
+          ok: true,
+          products: imported.map((p, i) => ({
+            name: p.name,
+            images: p.images.length,
+            detailed: detailed[i].detailed,
+          })),
+        });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "เพิ่มสินค้าไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "SYNC_TIKTOK_SHOWCASE") {
+    (async () => {
+      try {
+        sendResponse(await syncTikTokShowcase());
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "ดึงสินค้าไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "PREPARE_TIKTOK_POST") {
+    (async () => {
+      try {
+        const video = await store.getVideo(message.videoId);
+        if (!video || video.status !== "completed") {
+          sendResponse({ ok: false, error: "วิดีโอนี้ยังไม่เสร็จ" });
+          return;
+        }
+        const clip = await postableClip(message.videoId);
+        if (!clip) {
+          sendResponse({ ok: false, error: "ไม่พบไฟล์วิดีโอในคลัง (หรือต่อคลิปไม่สำเร็จ)" });
+          return;
+        }
+        // Store the job before the page loads, so its content script always finds it.
+        const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+        const pending: PendingTikTokPost = {
+          tabId: tab.id!,
+          at: Date.now(),
+          job: {
+            videoId: message.videoId,
+            caption: message.caption,
+            autoPost: message.autoPost,
+            aiLabel: true,
+            fileName: `${message.videoId.slice(0, 8)}-${clip.index === library.MERGED_CLIP_INDEX ? "full" : "clip"}.mp4`,
+            productId: message.productId,
+          },
+        };
+        await chrome.storage.local.set({ pendingTikTokPost: pending });
+        await chrome.tabs.update(tab.id!, { url: TIKTOK_UPLOAD_URL });
+        await store.updateVideoJob(message.videoId, { tiktokPost: { status: "preparing", at: Date.now(), error: null } });
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "เปิดหน้าโพสต์ TikTok ไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "CLAIM_TIKTOK_POST") {
+    (async () => {
+      const stored = await chrome.storage.local.get("pendingTikTokPost");
+      const pending = stored.pendingTikTokPost as PendingTikTokPost | undefined;
+      // Only the tab opened for this post may take it — not some other Studio tab the user has open.
+      if (!pending || pending.tabId !== sender.tab?.id || Date.now() - pending.at > TIKTOK_CLAIM_STALE_MS) {
+        sendResponse({ job: null });
+        return;
+      }
+      await chrome.storage.local.remove("pendingTikTokPost");
+      sendResponse({ job: pending.job });
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "GET_TIKTOK_POST_FILE") {
+    (async () => {
+      try {
+        const clip = await postableClip((message as unknown as { videoId: string }).videoId);
+        if (!clip) {
+          sendResponse({ ok: false, error: "ไม่พบไฟล์วิดีโอในคลัง" });
+          return;
+        }
+        const bytes = new Uint8Array(await clip.blob.arrayBuffer());
+        sendResponse({ ok: true, base64: bytesToBase64(bytes), mimeType: clip.mimeType || "video/mp4" });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : "อ่านไฟล์วิดีโอไม่สำเร็จ" });
+      }
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "TIKTOK_TYPE_CAPTION") {
+    (async () => {
+      const { caption, isMac } = message as unknown as { caption: string; isMac: boolean };
+      if (!sender.tab?.id || !/^https:\/\/www\.tiktok\.com\/tiktokstudio\//.test(sender.tab.url ?? "")) {
+        sendResponse({ ok: false, error: "not allowed" });
+        return;
+      }
+      try {
+        await typeIntoTab(sender.tab.id, caption, isMac);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "TIKTOK_POST_RESULT") {
+    (async () => {
+      const { videoId, status, error } = message as unknown as { videoId: string; status: "ready" | "posted" | "failed"; error?: string };
+      await store.updateVideoJob(videoId, { tiktokPost: { status, at: Date.now(), error: error ?? null } });
+      sendResponse({ ok: true });
     })();
     return true;
   }

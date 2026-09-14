@@ -512,6 +512,21 @@ function importJsonFile(file: File) {
 }
 
 $("get-product").addEventListener("click", getProductFromTikTok);
+$("sync-showcase").addEventListener("click", () => {
+  const button = $("sync-showcase") as HTMLButtonElement;
+  button.disabled = true;
+  button.textContent = "กำลังดึง...";
+  send<{ ok: boolean; added?: number; total?: number; error?: string }>({ type: "SYNC_TIKTOK_SHOWCASE" }).then((result) => {
+    button.disabled = false;
+    button.textContent = "ดึงสินค้าจาก Showcase";
+    if (!result?.ok) {
+      log(result?.error ?? "ดึงสินค้าไม่สำเร็จ");
+      return;
+    }
+    log(`ดึงสินค้าจาก Showcase แล้ว ${result.total ?? 0} รายการ (ใหม่ ${result.added ?? 0})`);
+    loadProducts();
+  });
+});
 $("add-current-page").addEventListener("click", addFromCurrentPage);
 $("delete-selected").addEventListener("click", deleteSelected);
 $("reset-selection").addEventListener("click", resetSelection);
@@ -558,6 +573,9 @@ interface CompletedVideo {
   seconds: number;
   mergedAt: number | null;
   mergeError: string | null;
+  caption: string;
+  productTikTokId: string | null;
+  tiktokPost: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
 }
 
 let libraryBusy = false;
@@ -697,10 +715,120 @@ function mergeVideo(video: CompletedVideo, button: HTMLButtonElement) {
   );
 }
 
+const TIKTOK_POST_LABELS: Record<string, string> = {
+  preparing: "กำลังเตรียมโพสต์ในแท็บ TikTok...",
+  ready: "เตรียมโพสต์เสร็จแล้ว — ไปกด Post ในแท็บ TikTok",
+  posted: "โพสต์ขึ้น TikTok แล้ว ✓",
+  failed: "เตรียมโพสต์ไม่สำเร็จ",
+};
+
+function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLElement {
+  const block = document.createElement("div");
+  block.style.marginTop = "10px";
+  block.style.borderTop = "1px solid #1f2937";
+  block.style.paddingTop = "8px";
+  block.innerHTML = `<div class="clip-parts-label" style="margin-top:0;margin-bottom:4px">โพสต์ TikTok</div>`;
+
+  const caption = document.createElement("textarea");
+  caption.rows = 3;
+  caption.value = video.caption;
+  caption.placeholder = "แคปชันและ #แฮชแท็ก";
+  Object.assign(caption.style, {
+    width: "100%",
+    background: "#1f2937",
+    color: "#f9fafb",
+    border: "1px solid #374151",
+    borderRadius: "6px",
+    padding: "6px",
+    fontSize: "12px",
+    resize: "vertical",
+  } satisfies Partial<CSSStyleDeclaration>);
+  block.appendChild(caption);
+
+  // Product link: any product imported from TikTok can be linked, defaulting to the video's own product.
+  const productSelect = document.createElement("select");
+  productSelect.style.marginTop = "6px";
+  const noLink = new Option("ไม่ติดลิงก์สินค้า", "");
+  productSelect.add(noLink);
+  const linkable = products.flatMap((p) => {
+    const tiktokId = tiktokIdFromSourceUrl(p.sourceUrl);
+    return tiktokId ? [{ tiktokId, name: p.name }] : [];
+  });
+  if (video.productTikTokId && !linkable.some((p) => p.tiktokId === video.productTikTokId)) {
+    linkable.unshift({ tiktokId: video.productTikTokId, name: video.productName });
+  }
+  for (const p of linkable) {
+    productSelect.add(new Option(`🛒 ${p.name.slice(0, 40)} (${p.tiktokId})`, p.tiktokId));
+  }
+  productSelect.value = video.productTikTokId ?? "";
+  if (linkable.length === 0) {
+    noLink.text = 'ไม่ติดลิงก์สินค้า — กด "ดึงสินค้าจาก Showcase" ในแท็บสินค้าก่อน';
+  }
+  block.appendChild(productSelect);
+
+  const row = document.createElement("div");
+  row.className = "row";
+  row.style.alignItems = "center";
+  row.style.marginTop = "6px";
+
+  const autoLabel = document.createElement("label");
+  autoLabel.style.fontSize = "11px";
+  autoLabel.style.color = "#d1d5db";
+  autoLabel.style.display = "flex";
+  autoLabel.style.gap = "4px";
+  autoLabel.style.alignItems = "center";
+  const auto = document.createElement("input");
+  auto.type = "checkbox";
+  auto.checked = autoPostDefault;
+  auto.addEventListener("change", () => {
+    send({ type: "SAVE_SETTINGS", settings: { tiktokAutoPost: auto.checked } });
+  });
+  autoLabel.append(auto, "กดโพสต์ให้อัตโนมัติ");
+
+  const button = document.createElement("button");
+  button.className = "btn btn-primary";
+  button.textContent = "เตรียมโพสต์ TikTok";
+  button.addEventListener("click", () => {
+    if (auto.checked && !productSelect.value && !confirm("ยังไม่ได้เลือกลิงก์สินค้า — โพสต์โดยไม่ติดลิงก์ใช่ไหม?")) return;
+    if (auto.checked && !confirm("ระบบจะกด Post ให้เองทันทีที่กรอกเสร็จ — วิดีโอจะขึ้นบัญชี TikTok จริง ยืนยันไหม?")) return;
+    button.disabled = true;
+    button.textContent = "กำลังเปิด TikTok...";
+    send<{ ok: boolean; error?: string }>({
+      type: "PREPARE_TIKTOK_POST",
+      videoId: video.videoId,
+      caption: caption.value,
+      autoPost: auto.checked,
+      productId: productSelect.value || null,
+    }).then((result) => {
+      button.disabled = false;
+      button.textContent = "เตรียมโพสต์ TikTok";
+      log(result?.ok ? "เปิดแท็บ TikTok Studio แล้ว — ระบบกำลังแนบวิดีโอและใส่แคปชัน" : (result?.error ?? "เปิดหน้าโพสต์ไม่สำเร็จ"));
+    });
+  });
+
+  row.append(button, autoLabel);
+  block.appendChild(row);
+
+  if (video.tiktokPost) {
+    const status = document.createElement("div");
+    status.className = "subtitle";
+    status.style.whiteSpace = "normal";
+    status.style.color =
+      video.tiktokPost.status === "failed" ? "#f87171" : video.tiktokPost.status === "posted" ? "#4ade80" : "#fbbf24";
+    status.textContent = `${TIKTOK_POST_LABELS[video.tiktokPost.status] ?? video.tiktokPost.status}${video.tiktokPost.error ? `: ${video.tiktokPost.error}` : ""}`;
+    block.appendChild(status);
+  }
+  return block;
+}
+
 async function renderClips() {
   const container = $("clips-list");
-  const result = await send<{ ok: boolean; videos?: CompletedVideo[] }>({ type: "GET_COMPLETED_VIDEOS" });
+  const [result, settingsResult] = await Promise.all([
+    send<{ ok: boolean; videos?: CompletedVideo[] }>({ type: "GET_COMPLETED_VIDEOS" }),
+    send<{ ok: boolean; settings?: { tiktokAutoPost?: boolean } }>({ type: "GET_SETTINGS" }),
+  ]);
   const videos = result?.videos ?? [];
+  const autoPostDefault = settingsResult?.settings?.tiktokAutoPost ?? false;
 
   container.innerHTML = "";
   if (videos.length === 0) {
@@ -763,6 +891,8 @@ async function renderClips() {
       for (const clip of parts) clipRow.appendChild(clipPlayer(clip.blob, merged ? "80px" : "110px"));
       wrap.appendChild(clipRow);
     }
+
+    if (merged || parts.length === 1) wrap.appendChild(tiktokPostBlock(video, autoPostDefault));
     container.appendChild(wrap);
   }
 }

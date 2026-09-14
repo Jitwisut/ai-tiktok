@@ -11,7 +11,8 @@
     "downloads",
     "sidePanel",
     "unlimitedStorage",
-    "offscreen"
+    "offscreen",
+    "debugger"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -56,6 +57,26 @@
       "js": [
         "dist/panel.js",
         "dist/flow-automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.tiktok.com/tiktokstudio/*"
+      ],
+      "js": [
+        "dist/panel.js",
+        "dist/tiktok-upload.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "dist/dev-bridge.js"
       ],
       "run_at": "document_idle"
     }
