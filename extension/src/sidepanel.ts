@@ -101,6 +101,9 @@ interface GeneratedContent {
 interface GeneratedScene {
   duration: number;
   description: string;
+  clip?: number;
+  dialogue?: string;
+  voiceover?: string;
 }
 
 let products: AppProduct[] = [];
@@ -303,7 +306,14 @@ function renderReview() {
   if (activeScenes.length) {
     parts.push(`<div style="font-weight:700;color:#93c5fd;margin:8px 0 2px">ฉาก (${activeScenes.length})</div>`);
     activeScenes.forEach((scene, i) => {
-      parts.push(`<div>${i + 1}. (${scene.duration}s) ${escapeHtml(scene.description)}</div>`);
+      const clip = Number.isInteger(scene.clip) ? `คลิป ${scene.clip! + 1} · ` : "";
+      parts.push(`<div>${i + 1}. (${clip}${scene.duration}s) ${escapeHtml(scene.description)}</div>`);
+      const speech = scene.dialogue?.trim()
+        ? `🗣️ ${scene.dialogue.trim()}`
+        : scene.voiceover?.trim()
+          ? `🎙️ ${scene.voiceover.trim()}`
+          : "";
+      if (speech) parts.push(`<div style="color:#9ca3af;margin-left:14px">${escapeHtml(speech)}</div>`);
     });
   }
 

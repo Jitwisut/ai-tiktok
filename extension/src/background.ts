@@ -244,15 +244,15 @@ async function replanClips(videoId: string, targetDuration: number): Promise<Job
   if (!content) return null;
   const product = await store.getProduct(content.productId);
 
-  const clips = planClips(
-    product?.name ?? "-",
-    prompts.toScenePromptInputs(content.scenes),
-    DEFAULT_VIDEO_SETTINGS,
+  const clips = planClips({
+    productName: product?.name ?? "-",
+    scenes: prompts.toScenePromptInputs(content.scenes),
+    settings: { ...DEFAULT_VIDEO_SETTINGS, aspectRatio: video.aspectRatio || DEFAULT_VIDEO_SETTINGS.aspectRatio },
     targetDuration,
-    undefined,
-    { headline: content.onScreenText, cta: content.onScreenCta },
-    content.style,
-  );
+    text: { headline: content.onScreenText, cta: content.onScreenCta },
+    style: content.style,
+    castOptions: content.castOptions,
+  });
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
     clips: mapped,
@@ -374,15 +374,16 @@ async function createJobForContent(
   if (!content) throw new Error("ไม่พบคอนเทนต์");
   if (content.scenes.length === 0) throw new Error("ต้องสร้าง Scene ก่อนจึงจะสร้างวิดีโอได้");
   const product = await store.getProduct(content.productId);
-  const planned = planClips(
-    product?.name ?? "-",
-    prompts.toScenePromptInputs(content.scenes),
-    DEFAULT_VIDEO_SETTINGS,
+  const planned = planClips({
+    productName: product?.name ?? "-",
+    scenes: prompts.toScenePromptInputs(content.scenes),
+    settings: DEFAULT_VIDEO_SETTINGS,
     targetDuration,
     variant,
-    { headline: content.onScreenText, cta: content.onScreenCta },
-    content.style,
-  );
+    text: { headline: content.onScreenText, cta: content.onScreenCta },
+    style: content.style,
+    castOptions: content.castOptions,
+  });
   const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
   const video = await store.createVideoJob({
     contentId: content.id,
@@ -769,7 +770,9 @@ async function generateContentScenes(
   const analysis = await store.getAnalysis(product.id);
   const images = await gemini.loadImages(product.images);
 
-  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, images.length > 0);
+  // Rotate angles across generations so repeated runs for one product tell different stories.
+  const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
+  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, images.length > 0, angle);
   const contentResult = await gemini.generateObject<{
     hook: string;
     script: string;
@@ -789,17 +792,18 @@ async function generateContentScenes(
     // Short is what actually renders as legible Thai in Veo — anything longer
     // that Gemini writes despite the prompt's instruction is dropped rather
     // than risking garbled text on screen.
-    onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, 12),
-    onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, 10),
+    onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, prompts.ON_SCREEN_HEADLINE_MAX),
+    onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, prompts.ON_SCREEN_CTA_MAX),
+    angle,
   });
 
-  const scenePrompt = prompts.buildScenePrompt(product, contentResult.script, targetDuration, images.length > 0);
-  const sceneResult = await gemini.generateObject<{ scenes: store.Scene[] }>({
+  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, images.length > 0);
+  const sceneResult = await gemini.generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
     ...scenePrompt,
     images,
     schema: prompts.SCENE_PLAN_SCHEMA,
   });
-  await store.setScenes(content.id, sceneResult.scenes);
+  await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions);
   return { content, scenes: sceneResult.scenes };
 }
 

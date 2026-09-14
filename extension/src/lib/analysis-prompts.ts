@@ -37,36 +37,96 @@ export const CONTENT_GENERATION_SCHEMA: JsonSchema = {
   required: ["hook", "script", "caption", "cta", "onScreenText", "onScreenCta"],
 };
 
+/** Longest overlay Veo is asked to render; the prompt and cleanOnScreenText share these so they cannot drift apart. */
+export const ON_SCREEN_HEADLINE_MAX = 12;
+export const ON_SCREEN_CTA_MAX = 10;
+
 /** Veo renders long or mixed-script overlay text badly; keep what it's asked to show short and Thai-only. */
 export function cleanOnScreenText(text: string | undefined, maxChars: number): string | undefined {
   const cleaned = (text ?? "")
-    .replace(/[^฀-๿0-9\s!?]/g, "") // Thai letters, digits, spaces, ! ?
+    .replace(/[^\u0E00-\u0E7F0-9\s!?]/g, "") // Thai letters, digits, spaces, ! ?
     .replace(/\s+/g, " ")
     .replace(/\s+([!?])/g, "$1")
     .trim();
-  if (!cleaned || !/[฀-๿]/.test(cleaned)) return undefined;
+  if (!cleaned || !/[\u0E00-\u0E7F]/.test(cleaned)) return undefined;
   return Array.from(cleaned).length <= maxChars ? cleaned : undefined;
 }
+
+/** Veo renders at most 8 seconds per generation, so scripts and storyboards are planned in 8-second blocks. */
+const BLOCK_SECONDS = 8;
+
+/**
+ * Rough Thai speaking budget per 8-second block, in characters (vowel and
+ * tone marks included). Leaves room for the visual hook and product beats so
+ * Veo is not forced to rush the line.
+ */
+export const THAI_CHARS_PER_BLOCK = 45;
+
+function blockCount(targetDuration: number): number {
+  return Math.max(1, Math.round(targetDuration / BLOCK_SECONDS));
+}
+
+/** Rotates through the analysis angles so repeated generations for a product tell different stories. */
+export function pickAngle(analysis: ProductAnalysis | null, generationIndex: number): string | undefined {
+  const angles = analysis?.angles?.filter((a) => a.trim()) ?? [];
+  return angles.length ? angles[generationIndex % angles.length] : undefined;
+}
+
+/** Story beats each length has room for — an 8-second video cannot carry a 32-second structure. */
+const SCRIPT_STRUCTURE: Record<number, string> = {
+  1: "hook สั้นมาก + จุดขายหลัก 1 ข้อ + CTA สั้น",
+  2: "hook + จุดขาย/การใช้งาน 2 จังหวะ + CTA",
+  3: "hook + ปัญหา/บริบท + สาธิตการใช้งาน + ประโยชน์ + CTA",
+  4: "hook + บริบท + สาธิตการใช้งาน + ประโยชน์ 2-3 ข้อ + สรุป + CTA",
+};
+
+/** Default speech mode per style; the storyboard may still mix modes where it fits. */
+const STYLE_SPEECH_MODE: Record<string, string> = {
+  UGC: "ส่วนใหญ่เป็น dialogue (คนในภาพพูดกับกล้องแบบเป็นกันเอง)",
+  Review: "dialogue เป็นหลัก แทรก voiceover ได้บางช่วง",
+  "Problem Solution": "ผสม dialogue และ voiceover",
+  Storytelling: "voiceover เป็นหลัก (เล่าเรื่องจากนอกจอ)",
+  "Before After": "voiceover เป็นหลัก",
+  Unboxing: "dialogue สั้นๆ แบบรีแอคชั่นระหว่างแกะกล่อง",
+  Demo: "voiceover เป็นหลัก หรือพูดน้อยที่สุด",
+};
 
 export const SCENE_PLAN_SCHEMA: JsonSchema = {
   type: "object",
   properties: {
-    scenes: {
+    castOptions: {
       type: "array",
       minItems: 1,
-      maxItems: 8,
+      maxItems: 3,
       items: {
         type: "object",
         properties: {
-          duration: { type: "integer", minimum: 1, maximum: 15 },
-          description: { type: "string" },
-          cameraMotion: { type: "string" },
+          person: { type: "string" },
+          setting: { type: "string" },
         },
-        required: ["duration", "description", "cameraMotion"],
+        required: ["person", "setting"],
+      },
+    },
+    scenes: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: {
+        type: "object",
+        properties: {
+          clip: { type: "integer", minimum: 0, maximum: 3 },
+          duration: { type: "integer", minimum: 1, maximum: 8 },
+          description: { type: "string" },
+          visual: { type: "string" },
+          cameraMotion: { type: "string" },
+          dialogue: { type: "string" },
+          voiceover: { type: "string" },
+        },
+        required: ["clip", "duration", "description", "visual", "cameraMotion", "dialogue", "voiceover"],
       },
     },
   },
-  required: ["scenes"],
+  required: ["castOptions", "scenes"],
 };
 
 export function buildAnalysisPrompt(product: Product, hasImages: boolean) {
@@ -90,13 +150,25 @@ export function buildAnalysisPrompt(product: Product, hasImages: boolean) {
   };
 }
 
-export function buildContentPrompt(product: Product, analysis: ProductAnalysis | null, style: string, hasImages: boolean) {
+export function buildContentPrompt(
+  product: Product,
+  analysis: ProductAnalysis | null,
+  style: string,
+  targetDuration: number,
+  hasImages: boolean,
+  angle?: string,
+) {
+  const blocks = blockCount(targetDuration);
+  const seconds = blocks * BLOCK_SECONDS;
+  const speechChars = blocks * THAI_CHARS_PER_BLOCK;
+
   return {
     system: [
       "คุณเป็นนักเขียนสคริปต์ TikTok affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น ใช้ภาษาไทยที่เป็นธรรมชาติ กระชับ เหมาะกับวิดีโอสั้น",
       "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปว่าสินค้าคืออะไร และพูดถึงประโยชน์ที่ตรงกับสินค้าประเภทนั้นจริงๆ",
       "hook ต้องดึงความสนใจได้ภายใน 1-2 วินาทีแรก เลือกใช้เทคนิคอย่างใดอย่างหนึ่ง: ตั้งคำถามที่กลุ่มเป้าหมายอยากรู้คำตอบ, พูดถึงปัญหาที่เจอบ่อยแบบเจาะจง, หรือประโยคที่ทำให้อยากรู้ว่าเกิดอะไรขึ้นต่อ ห้ามขึ้นต้นด้วยการแนะนำตัวหรือแนะนำสินค้าตรงๆ เช่น \"วันนี้จะมารีวิว...\" \"สวัสดีค่ะวันนี้...\"",
-      "script ต้องพูดจบได้จริงภายในความยาววิดีโอสั้น เขียนกระชับแบบพูดปากเปล่า ไม่ใช่บทความ — ประมาณ 2-3 ประโยคสั้นต่อ 8 วินาทีของความยาววิดีโอ",
+      "script คือคำพูดทั้งหมดที่จะได้ยินในวิดีโอ (ทั้งคนในภาพพูดและเสียงบรรยาย) เรียงตามลำดับเวลา ขึ้นต้นด้วย hook และจบด้วย CTA เขียนแบบพูดปากเปล่า ประโยคสั้น ไม่ใช่บทความ",
+      "script ต้องพูดจบได้จริงภายในความยาววิดีโอที่กำหนด โดยไม่ต้องเร่งพูด และเหลือเวลาให้ภาพโชว์สินค้าและรีแอคชั่นด้วย — ห้ามเขียนยาวเกินงบตัวอักษรที่กำหนด",
       "caption ต้องมีโครงสร้าง: บรรทัดแรกเป็น hook สั้นที่ทำให้คนหยุดเลื่อน ตามด้วยจุดขายสั้นๆ 1 ประโยค แล้วปิดท้ายด้วยแฮชแท็ก 4-6 อัน ผสมระหว่างแฮชแท็กกว้าง (หมวดสินค้า) กับแฮชแท็กเจาะจง (ชื่อ/ประเภทสินค้า) ห้ามใช้แฮชแท็กที่ไม่เกี่ยวข้องเพื่อหวังยอดวิว",
       "cta ให้ใช้ภาษาที่คนไทยบน TikTok Shop คุ้นเคย เช่น ชวนกดตะกร้าเหลืองด้านล่าง หรือชวนแชทสอบถาม ห้ามใช้คำที่ฟังดูยัดเยียดหรือเร่งรัดเกินไป",
       "ห้ามเขียน hook, script, caption หรือ cta ที่มีการอ้างสรรพคุณทางการแพทย์ (เช่น รักษาโรค ต้านมะเร็ง ลดความเสี่ยงโรค), การรับประกันผลลัพธ์แบบเกินจริง (เช่น \"ได้ผล 100%\" \"หายขาด\"), หรือถ้อยคำที่อาจถูกมองว่าหลอกลวงผู้บริโภค — เน้นประสบการณ์การใช้งานจริงและความรู้สึกแทนเสมอ",
@@ -113,48 +185,81 @@ export function buildContentPrompt(product: Product, analysis: ProductAnalysis |
             `จุดขาย: ${analysis.sellingPoints.join(", ")}`,
           ].join("\n")
         : "",
+      angle
+        ? `มุมการขายที่เลือก: "${angle}" — สร้าง hook, script และ CTA ทั้งหมดรอบมุมนี้ ห้ามเปลี่ยนไปใช้มุมอื่นกลางคลิป`
+        : "",
+      `ความยาววิดีโอ: ${seconds} วินาที (${blocks} ช่วง ช่วงละ ${BLOCK_SECONDS} วินาที)`,
+      `โครงเรื่องที่เหมาะกับความยาวนี้: ${SCRIPT_STRUCTURE[Math.min(blocks, 4)]}`,
+      `งบคำพูด: script รวมทั้งหมดไม่เกินประมาณ ${speechChars} ตัวอักษรไทย (นับสระและวรรณยุกต์ด้วย) หรือไม่เกิน 1-2 ประโยคสั้นต่อ ${BLOCK_SECONDS} วินาที`,
       "ต้องการ hook (ประโยคเปิดที่ดึงดูด), script (บทพูดเต็ม), caption (แคปชันโพสต์), cta (call to action)",
-      "และ onScreenText: ข้อความพาดหัวที่กลั่นมาจาก hook หรือจุดขายหลัก ให้เห็นแวบเดียวแล้วเข้าใจทันที ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ — ควรเป็นคำเดียวหรือวลีสั้นมาก ไม่เกิน 10 ตัวอักษร (ยิ่งสั้นยิ่งเรนเดอร์เป็นภาษาไทยได้แม่นยำขึ้น) ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น \"สบายสุด\" \"ยืดเยอะ\"",
-      "และ onScreenCta: ข้อความชวนกดตะกร้าเหลืองซื้อตอนท้าย ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ ไม่เกิน 8 ตัวอักษร ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น \"กดเลย\" \"สั่งเลย\"",
+      `และ onScreenText: ข้อความพาดหัวที่กลั่นมาจาก hook หรือจุดขายหลัก ให้เห็นแวบเดียวแล้วเข้าใจทันที ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ — ควรเป็นคำเดียวหรือวลีสั้นมาก ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษรรวมสระและวรรณยุกต์ (ยิ่งสั้นยิ่งเรนเดอร์เป็นภาษาไทยได้แม่นยำขึ้น) ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น "สบายสุด" "ยืดเยอะ"`,
+      `และ onScreenCta: ข้อความชวนกดตะกร้าเหลืองซื้อตอนท้าย ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษรรวมสระและวรรณยุกต์ ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น "กดเลย" "สั่งเลย"`,
     ]
       .filter(Boolean)
       .join("\n"),
   };
+}
+
+export interface ScenePlanContent {
+  style: string;
+  hook: string;
+  script: string;
+  cta: string;
+  angle?: string;
+  onScreenText?: string;
+  onScreenCta?: string;
 }
 
 export function buildScenePrompt(
   product: Product,
-  script: string,
+  content: ScenePlanContent,
   targetDuration: number,
   hasImages: boolean,
 ) {
+  const blocks = blockCount(targetDuration);
+  const lastBlock = blocks - 1;
+
   return {
     system: [
-      "คุณเป็น storyboard artist สำหรับวิดีโอ TikTok affiliate ตอบเป็น JSON ตาม schema เท่านั้น แบ่งสคริปต์เป็นฉากสั้นๆ ที่รวมความยาวเท่ากับเวลาที่กำหนด",
-      "คำบรรยายฉากจะถูกส่งต่อให้โมเดลสร้างวิดีโอโดยตรง จึงต้องบรรยายสิ่งที่เห็นในเฟรมอย่างเป็นรูปธรรม",
-      "แต่ละฉากต้องเป็นช็อตที่ต่างกันชัดเจน ทั้งมุมกล้อง ระยะภาพ และการกระทำ ห้ามให้สองฉากเป็นภาพแบบเดียวกัน",
-      "เรียงฉากให้เป็นลำดับเรื่องที่เดินหน้า เช่น เห็นปัญหา → หยิบสินค้ามาใช้ → เห็นผลลัพธ์ ไม่ใช่โชว์สินค้าซ้ำๆ หลายมุม",
+      "คุณเป็น storyboard artist สำหรับวิดีโอ TikTok affiliate ตอบเป็น JSON ตาม schema เท่านั้น",
+      `โมเดลสร้างวิดีโอเรนเดอร์ได้ครั้งละ ${BLOCK_SECONDS} วินาที วิดีโอจึงถูกสร้างเป็นช่วง (clip) ช่วงละ ${BLOCK_SECONDS} วินาทีแยกกัน แล้วนำมาต่อเป็นวิดีโอเดียว ให้วางแผนฉากตามช่วงเหล่านี้โดยตรง`,
+      `แต่ละฉากต้องระบุ clip (เลขช่วงเริ่มจาก 0) และ duration — ฉากใน clip เดียวกันต้องมี duration รวมกันเท่ากับ ${BLOCK_SECONDS} วินาทีพอดี ใช้ 1-3 ฉากต่อ clip`,
+      "ภายใน clip เดียวกัน กล้องถ่ายต่อเนื่องเป็นเทคเดียว ไม่มีการตัดภาพ ฉากใน clip เดียวกันคือจังหวะต่อเนื่องของการกระทำ (เช่น หยิบสินค้า → เปิดฝา → ลองใช้) ที่เปลี่ยนระยะภาพได้ด้วยการเคลื่อนกล้องเท่านั้น",
+      "ข้าม clip เรื่องต้องเดินหน้า: แต่ละ clip มีการกระทำใหม่ที่ต่างจาก clip ก่อนหน้าชัดเจน ห้ามโชว์สินค้าซ้ำๆ แบบเดิมหรือทำการกระทำเดิมซ้ำ แต่ยังเป็นคนเดิม ชุดเดิม สถานที่เดิม แสงเดิม",
+      "clip ที่ไม่ใช่ช่วงสุดท้ายต้องจบด้วยท่าทางหรือการเคลื่อนไหวที่นิ่งและต่อได้ และ clip ถัดไปต้องเริ่มจากท่านั้น",
+      "เรียงเรื่องให้เดินหน้า เช่น เห็นปัญหา → หยิบสินค้ามาใช้ → เห็นผลลัพธ์ และใช้การเล่าเรื่องด้วยภาพ ไม่ใช่ให้คนถือสินค้ายื่นเข้ากล้องทุกฉาก",
+      "description: สรุปภาพของฉากเป็นภาษาไทยสั้นๆ (ใช้แสดงให้ผู้ใช้ตรวจ)",
+      "visual: บรรยายสิ่งที่เห็นในเฟรมเป็นภาษาอังกฤษอย่างเป็นรูปธรรม (ท่าทาง การใช้สินค้า ระยะภาพ) เพราะจะส่งให้โมเดลสร้างวิดีโอโดยตรง ห้ามมีตัวอักษรไทยใน visual — เรียกคนในภาพว่า \"the person\" ห้ามระบุเพศ อายุ หรือหน้าตาใน visual เพราะลุคของคนถูกกำหนดแยกไว้ใน castOptions",
+      "cameraMotion: การเคลื่อนกล้องเป็นภาษาอังกฤษสั้นๆ ที่ต่อจากฉากก่อนหน้าอย่างลื่นไหล เช่น \"continue the slow push-in, then tilt down to the product\" ห้ามตัดภาพกระโดด",
+      "dialogue: ประโยคภาษาไทยที่คนในภาพพูดในฉากนั้น / voiceover: ประโยคภาษาไทยที่เสียงบรรยายนอกจอพูด — ฉากหนึ่งใช้อย่างใดอย่างหนึ่ง อีกช่องให้เป็นสตริงว่าง หรือว่างทั้งคู่ถ้าเป็นฉากภาพล้วน",
+      "นำ script มาแบ่งใส่ dialogue/voiceover ตามลำดับ ใช้คำตามต้นฉบับ ทุกประโยคต้องปรากฏครั้งเดียวเท่านั้น ห้ามตัด hook หรือ CTA ทิ้ง ห้ามแต่งประโยคพูดเพิ่ม",
+      `คำพูดต้องพูดจบได้ในเวลาของฉาก: ประมาณไม่เกิน ${Math.round(THAI_CHARS_PER_BLOCK / BLOCK_SECONDS)} ตัวอักษรไทยต่อ 1 วินาที และรวมไม่เกินประมาณ ${THAI_CHARS_PER_BLOCK} ตัวอักษรต่อ clip ห้ามใส่ประโยคยาวในฉาก 1-2 วินาที ถ้าเป็น dialogue ให้เห็นหน้าคนพูดตอนเริ่มพูด`,
+      "castOptions: เสนอ 3 ลุคที่ต่างกันชัดเจนสำหรับวิดีโอนี้ เป็นภาษาอังกฤษ แต่ละลุคมี person (เช่น \"Thai woman in her mid-20s, shoulder-length black hair, plain beige oversized T-shirt\" หรือ \"hands only, short clean nails\" ถ้าสินค้าเหมาะกับการถ่ายแค่มือ) และ setting (สถานที่ เวลา ทิศทางแสง เช่น \"bright minimal bedroom desk by a window, late-morning daylight from the left\") ทุกลุคต้องใช้ได้กับทุกฉากที่วางไว้ (ถ้ามีฉากที่มี dialogue หรือเห็นหน้าคน ห้ามเสนอลุคแบบเห็นแค่มือ) และสมเหตุสมผลกับสินค้า ไม่ต้องบรรยายรูปร่างหน้าตาละเอียดเกินจำเป็น",
       "ถ้ามีรูปสินค้าแนบมา ให้บรรยายสินค้าตามหน้าตาจริงในรูป (รูปทรง สี วัสดุ) และให้ฉากเป็นการใช้งานที่สมเหตุสมผลกับสินค้าประเภทนั้นจริงๆ",
       "ห้ามใส่ฉากที่ไม่เข้ากับประเภทสินค้า เช่น ห้ามให้ทาสินค้าที่ไม่ใช่เครื่องสำอางลงบนใบหน้า",
-      "ฉากแรกต้องเป็นภาพที่สื่อถึง hook ของสคริปต์โดยตรง ให้เห็นแวบแรกแล้วรู้สึกอยากดูต่อ",
-      "ห้ามอธิบายตัวหนังสือ ข้อความ หรือคำบรรยายที่จะปรากฏบนจอไว้ใน description เพราะข้อความบนจอถูกกำหนดแยกต่างหากแล้ว ให้ description บรรยายเฉพาะภาพเคลื่อนไหวและการกระทำที่เห็นเท่านั้น",
+      "ห้ามอธิบายตัวหนังสือ ข้อความ หรือคำบรรยายที่จะปรากฏบนจอไว้ใน description หรือ visual เพราะข้อความบนจอถูกกำหนดแยกต่างหากแล้ว",
       "ห้ามบรรยายฉากที่มีความเสี่ยงถูกโมเดลสร้างวิดีโอปฏิเสธ เช่น การกล่าวอ้างทางการแพทย์แบบภาพ (คนหายป่วย บาดแผลหาย), ความรุนแรง, เครื่องดื่มแอลกอฮอล์, เด็กที่ไม่มีผู้ปกครองอยู่ด้วย หรือฉากที่ดูอันตราย",
     ].join("\n"),
     prompt: [
       hasImages ? "รูปสินค้าจริงแนบมา ให้ยึดตามรูป" : "",
-      `สคริปต์: ${script}`,
       `สินค้า: ${product.name}`,
       `รายละเอียดสินค้า: ${product.description ?? "-"}`,
-      `ความยาววิดีโอทั้งหมด: ${targetDuration} วินาที`,
-      "แบ่งเป็นฉากสั้นๆ (3-5 ฉาก) แต่ละฉากมี duration (วินาที), description (บรรยายภาพและการกระทำที่เห็น) และ cameraMotion (การเคลื่อนกล้อง)",
-      "ฉากทั้งหมดจะถูกต่อเป็นวิดีโอเดียว ให้แต่ละฉากต่อเนื่องจากฉากก่อนหน้า: คนเดิม ชุดเดิม สถานที่เดิม แสงเดิม",
-      "cameraMotion ให้เขียนเป็นภาษาอังกฤษสั้นๆ และต้องต่อจากการเคลื่อนกล้องของฉากก่อนหน้าอย่างลื่นไหล เช่น \"continue the slow push-in, then tilt down to the product\" ห้ามตัดภาพกระโดด",
+      `สไตล์: ${content.style} — โหมดเสียงพูดที่แนะนำ: ${STYLE_SPEECH_MODE[content.style] ?? "เลือกให้เหมาะกับฉาก"}`,
+      content.angle ? `มุมการขาย: ${content.angle}` : "",
+      `hook: ${content.hook}`,
+      `script: ${content.script}`,
+      `cta: ${content.cta}`,
+      content.onScreenText
+        ? `ข้อความพาดหัวบนจอ "${content.onScreenText}" จะขึ้นช่วงต้นของ clip 0 — ให้ฉากแรกของ clip 0 เป็นภาพที่สื่อถึง hook และมีพื้นที่ว่างให้ข้อความ`
+        : "ฉากแรกของ clip 0 ต้องเป็นภาพที่สื่อถึง hook ของสคริปต์โดยตรง ให้เห็นแวบแรกแล้วรู้สึกอยากดูต่อ",
+      content.onScreenCta ? `ข้อความ CTA บนจอ "${content.onScreenCta}" จะขึ้นช่วงท้ายของ clip ${lastBlock} — ให้ฉากสุดท้ายจบที่สินค้าดูน่าซื้อ` : "",
+      `ความยาววิดีโอทั้งหมด: ${blocks * BLOCK_SECONDS} วินาที = ${blocks} clip (clip 0 ถึง clip ${lastBlock}) ต้องมีฉากครบทุก clip`,
     ]
       .filter(Boolean)
       .join("\n"),
   };
 }
 
-export function toScenePromptInputs(scenes: Scene[]): { position: number; duration: number; description: string }[] {
+export function toScenePromptInputs(scenes: Scene[]): (Scene & { position: number })[] {
   return scenes.map((scene, position) => ({ position, ...scene }));
 }

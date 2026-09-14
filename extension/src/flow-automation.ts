@@ -617,6 +617,11 @@ const FLOW_NUDGE_AFTER_MS = 75_000;
 const FLOW_MAX_NUDGES = 2;
 const FLOW_MAX_IMAGE_RETRIES = 2;
 
+/** Mirrors describeAspectRatio in lib/prompt-engine (content scripts cannot import modules). */
+function flowOrientation(aspectRatio: string): string {
+  return aspectRatio === "16:9" ? "16:9 landscape (horizontal)" : "9:16 portrait (vertical)";
+}
+
 /**
  * Flow renders whatever its own settings panel says, not what the prompt
  * asks for: with the panel left on 16:9 and x2 a "9:16" job came back
@@ -706,17 +711,17 @@ async function flowSubmitAndWaitOnce(
   // first. Say what to copy from it and what must differ — asking only for a
   // match makes the agent re-render the same shot.
   const continuation = clipAttached
-    ? " The attached video is the previous part. Start this part as a direct continuation of its LAST frame — same person, wardrobe, location, product, lighting, colour grade and camera position — then follow the [Action/Change] and [Camera Motion] above so the two parts join without a visible cut. Do not replay or copy the attached footage."
+    ? " The attached video is the previous part. Start this part as a direct continuation of its LAST frame — same person, wardrobe, location, product, lighting, colour grade and camera position — then follow the [TIMELINE] and [CAMERA] above so the two parts join without a visible cut. Do not replay or copy the attached footage."
     : "";
 
   // Without this the product in the clip is whatever the model imagines from the name.
   const productReference = imageAttached
-    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. For any small or dense printed text on the packaging, keep the packaging's colours and layout the same but render it as natural soft product-photography detail rather than attempting sharp legible Thai characters, since that text is not the on-screen title and does not need to be readable; only the separate on-screen text described below needs to be sharp and correct. Use the photo only as the product reference, not as the video's first frame or background. No other brand's logo or packaging may appear anywhere in the frame."
+    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as the video's first frame or background. No other brand's logo or packaging may appear anywhere in the frame."
     : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
   const written = await flowSetPromptVerified(
-    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${clip.prompt}${productReference}${continuation}`,
+    `Generate exactly one 8-second video (no images) in ${flowOrientation(aspectRatio)} format.\n${clip.prompt}${productReference}${continuation}`,
   );
   if (!written) {
     flowShowBanner(`${label} ใส่ prompt ลงช่องไม่สำเร็จ — มีหน้าต่างอื่นบังอยู่`, "#dc2626");

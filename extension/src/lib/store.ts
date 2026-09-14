@@ -20,9 +20,24 @@ export interface ProductAnalysis {
 
 export interface Scene {
   duration: number;
+  /** Thai summary of the shot, shown in the side panel. */
   description: string;
   /** Camera movement for the scene, continuing from the previous one. */
   cameraMotion?: string;
+  /** English visual direction handed to the video model (older plans only have `description`). */
+  visual?: string;
+  /** Which 8-second clip (0-based) the scene belongs to — the storyboard is planned in render blocks. */
+  clip?: number;
+  /** Thai line spoken on camera by the visible person. */
+  dialogue?: string;
+  /** Thai line spoken by an off-screen narrator. */
+  voiceover?: string;
+}
+
+/** One look for the video — the same person and place are repeated verbatim in every clip so the parts join. */
+export interface CastOption {
+  person: string;
+  setting: string;
 }
 
 export interface Content {
@@ -36,6 +51,10 @@ export interface Content {
   /** Short Thai text for Veo to render on screen (missing on content made before it existed). */
   onScreenText?: string;
   onScreenCta?: string;
+  /** The analysis angle the script was built around. */
+  angle?: string;
+  /** Alternative looks; repeated runs of the same content take the next one. */
+  castOptions?: CastOption[];
   scenes: Scene[];
 }
 
@@ -322,6 +341,7 @@ export async function createContent(input: {
   cta: string;
   onScreenText?: string;
   onScreenCta?: string;
+  angle?: string;
 }): Promise<Content> {
   const contents = await getAll("contents");
   const content: Content = { id: newId(), scenes: [], ...input };
@@ -330,11 +350,18 @@ export async function createContent(input: {
   return content;
 }
 
-export async function setScenes(contentId: string, scenes: Scene[]): Promise<void> {
+/** How many contents a product already has — used to rotate through its analysis angles. */
+export async function countContents(productId: string): Promise<number> {
+  const contents = await getAll("contents");
+  return contents.filter((c) => c.productId === productId).length;
+}
+
+export async function setScenes(contentId: string, scenes: Scene[], castOptions?: CastOption[]): Promise<void> {
   const contents = await getAll("contents");
   const content = contents.find((c) => c.id === contentId);
   if (!content) return;
   content.scenes = scenes;
+  if (castOptions) content.castOptions = castOptions;
   await setAll("contents", contents);
 }
 
