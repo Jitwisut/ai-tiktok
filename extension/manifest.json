@@ -55,6 +55,16 @@
         "https://flow.google.com/*"
       ],
       "js": [
+        "dist/flow-file-picker.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://flow.google.com/*"
+      ],
+      "js": [
         "dist/panel.js",
         "dist/flow-automation.js"
       ],

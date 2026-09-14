@@ -431,25 +431,149 @@ async function flowCloseIngredientMenu() {
   );
 }
 
-async function flowAttachPreviousClip(): Promise<boolean> {
-  await flowClearIngredients();
+interface FlowProductImage {
+  base64: string;
+  mimeType: string;
+  /** Asset name in Flow's library — reused across a job's clips instead of re-uploading. */
+  name: string;
+}
 
-  const addButton = document.querySelector<HTMLButtonElement>(
-    'button[aria-label="Add ingredients to the prompt box"]',
+function flowIngredientChips(): number {
+  return flowComposer()?.querySelectorAll('button[aria-label="Ingredient"]').length ?? 0;
+}
+
+/** The picker's upload button: labelled by aria-label in the compact layout, only by its text in the wide one. */
+function flowUploadMediaButton(): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>(".cdk-overlay-container button")).find(
+    (b) => b.getAttribute("aria-label") === "Upload media" || /Upload media\s*$/.test(b.innerText.trim()),
   );
+}
+
+/** Opens the ingredient picker; resolves once it is showing (an empty project has an upload button but no assets). */
+async function flowOpenIngredientPicker(): Promise<boolean> {
+  const addButton = document.querySelector<HTMLButtonElement>('button[aria-label="Add ingredients to the prompt box"]');
   if (!addButton) return false;
   addButton.click();
-
-  const asset = await flowWaitFor(
-    () => document.querySelector<HTMLElement>(".asset-item") ?? undefined,
+  const open = await flowWaitFor(
+    () => (document.querySelector(".asset-item") || flowUploadMediaButton() ? true : undefined),
     8000,
     300,
   );
-  if (!asset) return false;
+  return open === true;
+}
 
+function flowAssetItems(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".asset-item"));
+}
+
+/**
+ * In the compact layout clicking an asset adds it straight away; in the wide
+ * layout (agent panel open) it only selects it and shows a preview with an
+ * "Add to prompt" button.
+ */
+async function flowPickAsset(asset: HTMLElement) {
   for (const type of ["pointerdown", "mousedown", "mouseup", "click"] as const) {
     asset.dispatchEvent(new MouseEvent(type, { bubbles: true }));
   }
+  const addToPrompt = await flowWaitFor(
+    () =>
+      document.querySelector(".asset-item")
+        ? Array.from(document.querySelectorAll<HTMLButtonElement>(".cdk-overlay-container button")).find(
+            (b) => b.innerText.trim() === "Add to prompt" && b.getAttribute("aria-disabled") !== "true" && !b.disabled,
+          )
+        : true, // picker already closed: the compact layout added it
+    3000,
+    200,
+  );
+  if (addToPrompt && addToPrompt !== true) addToPrompt.click();
+}
+
+function flowBase64ToFile(image: FlowProductImage): File {
+  const binary = atob(image.base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], image.name, { type: image.mimeType });
+}
+
+/**
+ * Attaches the product photo as an ingredient, so Flow renders the actual
+ * product instead of inventing one from the text. Uploads it through Flow's
+ * own "Upload media" button the first time (flow-file-picker.ts keeps the OS
+ * file dialog from opening) and picks the already-uploaded asset afterwards.
+ */
+async function flowAttachProductImage(image: FlowProductImage): Promise<boolean> {
+  const chipsBefore = flowIngredientChips();
+  if (!(await flowOpenIngredientPicker())) return false;
+
+  const byName = () =>
+    flowAssetItems().find((item) => item.innerText.includes(image.name) && !/Generating|Uploading/i.test(item.innerText));
+
+  let asset = byName();
+  if (!asset) {
+    const upload = flowUploadMediaButton();
+    if (!upload) {
+      await flowCloseIngredientMenu();
+      return false;
+    }
+    document.documentElement.setAttribute("data-ai-affiliate-capture-file", "");
+    try {
+      upload.click();
+      const input = await flowWaitFor(
+        () => document.querySelector<HTMLInputElement>("input[data-ai-affiliate-file-input]") ?? undefined,
+        5000,
+        200,
+      );
+      if (!input) {
+        await flowCloseIngredientMenu();
+        return false;
+      }
+      const transfer = new DataTransfer();
+      transfer.items.add(flowBase64ToFile(image));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.removeAttribute("data-ai-affiliate-file-input");
+    } finally {
+      document.documentElement.removeAttribute("data-ai-affiliate-capture-file");
+    }
+    asset = await flowWaitFor(byName, 60000, 500);
+    if (!asset) {
+      await flowCloseIngredientMenu();
+      return false;
+    }
+  }
+
+  await flowPickAsset(asset);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await flowCloseIngredientMenu();
+  // The chip shows busy while Flow processes the image; Run stays disabled until it's done.
+  const attached = await flowWaitFor(
+    () =>
+      flowIngredientChips() > chipsBefore && !flowComposer()?.querySelector('button[aria-label="Ingredient"][aria-busy="true"]')
+        ? true
+        : undefined,
+    30000,
+    500,
+  );
+  return attached === true;
+}
+
+async function flowAttachPreviousClip(): Promise<boolean> {
+  if (!(await flowOpenIngredientPicker())) return false;
+
+  // Newest finished video — the product photo uploaded for this job is an Image and sits above it.
+  const asset = await flowWaitFor(
+    () =>
+      flowAssetItems().find((item) => /\bVideo\s*$/.test(item.innerText.trim()) && !/Generating/i.test(item.innerText)) ??
+      undefined,
+    8000,
+    300,
+  );
+  if (!asset) {
+    await flowCloseIngredientMenu();
+    return false;
+  }
+
+  await flowPickAsset(asset);
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await flowCloseIngredientMenu();
   return true;
@@ -509,6 +633,7 @@ async function flowSubmitAndWaitOnce(
   label: string,
   aspectRatio: string,
   withContinuity = true,
+  productImage: FlowProductImage | null = null,
 ): Promise<string | null> {
   // Flow refuses a new prompt while the last one is still running, so wait
   // for it to go idle rather than typing into a locked composer.
@@ -519,11 +644,26 @@ async function flowSubmitAndWaitOnce(
     await flowWaitFor(() => (flowLeadingTiles().some(flowTileInProgress) ? undefined : true), FLOW_MAX_WAIT_MS, FLOW_POLL_MS);
   }
 
+  // Start from an empty prompt box every time, then add this clip's ingredients.
+  await flowClearIngredients();
+
+  let imageAttached = false;
+  if (productImage) {
+    flowShowBanner(`AI Affiliate Studio: ${label} กำลังแนบรูปสินค้า...`, "#111827");
+    imageAttached = await flowAttachProductImage(productImage);
+    if (!imageAttached) {
+      flowShowBanner(`${label} แนบรูปสินค้าไม่สำเร็จ — หยุดไว้ก่อนเพื่อไม่ให้ได้สินค้าผิด`, "#dc2626");
+      return null;
+    }
+    // A freshly uploaded image is a grid tile too, and is briefly media-less
+    // while it loads — let it settle so it isn't mistaken for our render.
+    await flowWaitFor(() => (flowLeadingTiles().some(flowTileInProgress) ? undefined : true), 30000, 1000);
+  }
+
+  let clipAttached = false;
   if (clip.index > 0 && withContinuity) {
     flowShowBanner(`AI Affiliate Studio: ${label} กำลังแนบคลิปก่อนหน้า...`, "#111827");
-    await flowAttachPreviousClip();
-  } else if (clip.index > 0) {
-    await flowClearIngredients();
+    clipAttached = await flowAttachPreviousClip();
   }
 
 
@@ -535,14 +675,18 @@ async function flowSubmitAndWaitOnce(
   // The previous clip is attached as an ingredient for parts after the
   // first. Say what to copy from it and what must differ — asking only for a
   // match makes the agent re-render the same shot.
-  const continuation =
-    clip.index > 0 && withContinuity
-      ? " The attached video is the previous part. Reuse its person, wardrobe, room, product and colour grade, but this part must be a NEW shot: different camera angle and the new action described above. Do not re-create the attached video."
-      : "";
+  const continuation = clipAttached
+    ? " The attached video is the previous part. Reuse its person, wardrobe, room, product and colour grade, but this part must be a NEW shot: different camera angle and the new action described above. Do not re-create the attached video."
+    : "";
+
+  // Without this the product in the clip is whatever the model imagines from the name.
+  const productReference = imageAttached
+    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material, packaging, logo and printed text — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as the video's first frame or background."
+    : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
   const written = await flowSetPromptVerified(
-    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${clip.prompt}${continuation}`,
+    `Generate exactly one 8-second video (no images) in ${aspectRatio} vertical format. ${clip.prompt}${productReference}${continuation}`,
   );
   if (!written) {
     flowShowBanner(`${label} ใส่ prompt ลงช่องไม่สำเร็จ — มีหน้าต่างอื่นบังอยู่`, "#dc2626");
@@ -696,6 +840,7 @@ async function flowGenerateClip(
   clip: FlowClip,
   label: string,
   aspectRatio: string,
+  productImage: FlowProductImage | null = null,
 ): Promise<string | null> {
   const editor = await flowWaitFor(() => flowFindEditor(), 30000, 500);
   if (!editor) {
@@ -703,22 +848,23 @@ async function flowGenerateClip(
     return null;
   }
 
-  let withContinuity = true;
-  let policyRetried = false;
+  let withContinuity = clip.index > 0;
+  let image = productImage;
   for (let attempt = 1; attempt <= FLOW_MAX_IMAGE_RETRIES; ) {
-    const result = await flowSubmitAndWaitOnce(clip, label, aspectRatio, withContinuity);
+    const result = await flowSubmitAndWaitOnce(clip, label, aspectRatio, withContinuity, image);
 
     // Veo's safety filter is inconsistent, and a clip of a real-looking
     // person attached as a reference trips it far more often than the text
-    // alone. One retry without the attachment usually goes through, instead
-    // of throwing away the parts that already rendered.
-    if (result?.startsWith("นโยบาย") && !policyRetried && !flowCancelled) {
-      policyRetried = true;
-      withContinuity = false;
-      flowShowBanner(
-        `${label} Flow ปฏิเสธ prompt — ลองใหม่อีกครั้ง${clip.index > 0 ? "แบบไม่แนบคลิปก่อนหน้า" : ""}...`,
-        "#d97706",
-      );
+    // alone. Retry without the previous clip first — the product photo is
+    // what keeps the product right, so it is dropped only as a last resort.
+    if (result?.startsWith("นโยบาย") && !flowCancelled && (withContinuity || image)) {
+      if (withContinuity) {
+        withContinuity = false;
+        flowShowBanner(`${label} Flow ปฏิเสธ prompt — ลองใหม่แบบไม่แนบคลิปก่อนหน้า...`, "#d97706");
+      } else {
+        image = null;
+        flowShowBanner(`${label} Flow ปฏิเสธ prompt — ลองใหม่แบบไม่แนบรูปสินค้า (สินค้าในคลิปอาจไม่ตรง)...`, "#d97706");
+      }
       continue;
     }
 
@@ -814,7 +960,15 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
-    const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16");
+    const productImage: FlowProductImage | null = job.imageBase64
+      ? {
+          base64: job.imageBase64,
+          // CDNs sometimes label images as octet-stream; Flow's upload only accepts image types.
+          mimeType: /^image\/(png|jpeg|webp|gif)/.test(job.imageMimeType ?? "") ? job.imageMimeType!.split(";")[0] : "image/jpeg",
+          name: `product-${job.videoId.slice(0, 8)}.${/png/.test(job.imageMimeType ?? "") ? "png" : /webp/.test(job.imageMimeType ?? "") ? "webp" : "jpg"}`,
+        }
+      : null;
+    const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16", productImage);
     if (!src) {
       flowReportProgress(job.videoId, clip.index + 1, total, "failed");
       await flowClearActiveJob();

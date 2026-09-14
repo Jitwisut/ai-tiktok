@@ -319,6 +319,10 @@ async function sendJobToTab(
   try {
     return (await chrome.tabs.sendMessage(tabId, { type: "RUN_VIDEO_JOB", job })) ?? { ok: true };
   } catch {
+    if (site === "flow") {
+      // Page-world half of the product-photo upload (see flow-file-picker.ts).
+      await chrome.scripting.executeScript({ target: { tabId }, files: ["dist/flow-file-picker.js"], world: "MAIN" });
+    }
     await chrome.scripting.executeScript({ target: { tabId }, files: SITE_SCRIPTS[site] });
     return (await chrome.tabs.sendMessage(tabId, { type: "RUN_VIDEO_JOB", job })) ?? { ok: true };
   }
