@@ -1141,7 +1141,7 @@ const flowOnProjectPage = /^\/project\//.test(window.location.pathname);
 
 if (flowOnProjectPage) flowShowBanner("AI Affiliate Studio: กำลังตรวจสอบงานที่ค้างอยู่...", "#111827");
 
-if (flowOnProjectPage) chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB" }, (result: { job: FlowVideoJob | null }) => {
+if (flowOnProjectPage) chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "flow" }, (result: { job: FlowVideoJob | null }) => {
   if (result?.job) {
     flowStartJob(result.job);
     return;

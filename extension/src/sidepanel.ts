@@ -4,6 +4,7 @@
 
 import { getClipsForVideo, MERGED_CLIP_INDEX } from "./lib/library.js";
 import { CONTENT_STYLES } from "./lib/analysis-prompts.js";
+import { clipCountFor, clipSecondsForSite, durationOptions } from "./lib/prompt-engine.js";
 import { stepLabel, type AutopilotState } from "./lib/autopilot.js";
 
 /* ---------- shared helpers ---------- */
@@ -118,6 +119,29 @@ function escapeHtml(text: string): string {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+/**
+ * Lengths depend on the site's clip length (8s Flow/AI Studio, 10s Gemini),
+ * so rebuild the list when the site changes — keeping the same clip count.
+ */
+function renderDurationOptions(durationSelect: HTMLSelectElement, site: string) {
+  const previous = Number(durationSelect.value);
+  const previousSeconds = Number(durationSelect.dataset.clipSeconds) || 8;
+  const clipsBefore = previous ? clipCountFor(previous, previousSeconds) : 0;
+  const seconds = clipSecondsForSite(site);
+  durationSelect.innerHTML = durationOptions(site)
+    .map((value, i) => `<option value="${value}">${value} วิ · ${i === 0 ? "คลิปเดียว" : `ต่อ ${i + 1} คลิป`}</option>`)
+    .join("");
+  durationSelect.dataset.clipSeconds = String(seconds);
+  if (clipsBefore) durationSelect.value = String(clipsBefore * seconds);
+}
+
+function bindDurationToSite(durationId: string, siteId: string) {
+  const durationSelect = $(durationId) as HTMLSelectElement;
+  const siteSelect = $(siteId) as HTMLSelectElement;
+  renderDurationOptions(durationSelect, siteSelect.value);
+  siteSelect.addEventListener("change", () => renderDurationOptions(durationSelect, siteSelect.value));
 }
 
 function populateStyles() {
@@ -363,6 +387,7 @@ function generateScenesSelected() {
 
   const style = ($("style") as HTMLSelectElement).value || CONTENT_STYLES[0];
   const targetDuration = Number(($("duration") as HTMLSelectElement).value ?? 24);
+  const site = ($("site") as HTMLSelectElement).value;
 
   const button = $("generate-scenes") as HTMLButtonElement;
   button.disabled = true;
@@ -374,6 +399,7 @@ function generateScenesSelected() {
     productId,
     style,
     targetDuration,
+    site,
   }).then((result) => {
     button.disabled = false;
     button.textContent = "2. สร้างฉาก";
@@ -393,12 +419,12 @@ function selectedRunOptions() {
   return {
     targetDuration: Number(($("duration") as HTMLSelectElement).value || 24),
     count: Number(($("repeat") as HTMLSelectElement).value || 1),
-    site: (($("site") as HTMLSelectElement).value || "flow") as "aistudio" | "flow",
+    site: (($("site") as HTMLSelectElement).value || "flow") as "aistudio" | "flow" | "gemini",
   };
 }
 
-function describeRun(targetDuration: number, count: number): string {
-  const clips = Math.max(1, Math.round(targetDuration / 8));
+function describeRun(targetDuration: number, count: number, site: string): string {
+  const clips = clipCountFor(targetDuration, clipSecondsForSite(site));
   const shape = clips > 1 ? `วิดีโอ ${targetDuration} วิ (ต่อ ${clips} คลิป)` : `คลิปเดียว ${targetDuration} วิ`;
   return count > 1 ? `${shape} × ${count} วิดีโอ รันต่อกันอัตโนมัติ` : shape;
 }
@@ -413,7 +439,7 @@ function startBatch(contentId: string, button: HTMLButtonElement, idleLabel: str
 
   button.disabled = true;
   button.textContent = "กำลังเริ่ม...";
-  log(`กำลังเริ่ม: ${describeRun(targetDuration, count)}`);
+  log(`กำลังเริ่ม: ${describeRun(targetDuration, count, site)}`);
 
   send<{ ok: boolean; opened?: boolean; error?: string; videoIds?: string[] }>({
     type: "RUN_BATCH",
@@ -670,7 +696,7 @@ function runJob(job: LibraryJob, button: HTMLButtonElement) {
     return;
   }
   const targetDuration = Number(($("duration") as HTMLSelectElement).value ?? 24);
-  const site = (($("site") as HTMLSelectElement).value ?? "flow") as "aistudio" | "flow";
+  const site = (($("site") as HTMLSelectElement).value ?? "flow") as "aistudio" | "flow" | "gemini";
 
   setBusy(true, job.videoId);
   button.disabled = true;
@@ -1182,7 +1208,9 @@ $("ap-start").addEventListener("click", () => {
       : `ทุกวันเวลา ${($("ap-times") as HTMLInputElement).value} ทำ 1 ชิ้น วนสินค้า ${productIds.length} ชิ้นไปเรื่อยๆ`;
   const warning =
     postMode === "auto" ? "\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี TikTok จริงโดยไม่ถามอีก" : "";
-  if (!confirm(`${plan}\nใช้เครดิต Flow และโควต้า Gemini ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
+  const siteSelect = $("ap-site") as HTMLSelectElement;
+  const siteName = siteSelect.selectedOptions[0]?.textContent ?? "Flow";
+  if (!confirm(`${plan}\nใช้เครดิต/โควต้าวิดีโอของ ${siteName} และโควต้า Gemini API ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
 
   apCommand("AUTOPILOT_START", {
     mode,
@@ -1192,7 +1220,7 @@ $("ap-start").addEventListener("click", () => {
       targetDuration: Number(($("ap-duration") as HTMLSelectElement).value),
       style: ($("ap-style") as HTMLSelectElement).value,
       postMode,
-      site: "flow",
+      site: ($("ap-site") as HTMLSelectElement).value,
     },
   });
 });
@@ -1307,5 +1335,7 @@ $("save-settings").addEventListener("click", () => {
 /* ---------- boot ---------- */
 
 populateStyles();
+bindDurationToSite("duration", "site");
+bindDurationToSite("ap-duration", "ap-site");
 loadProducts();
 loadSettings();

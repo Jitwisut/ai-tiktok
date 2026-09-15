@@ -17,9 +17,10 @@
 
 import * as store from "./store.js";
 import { CONTENT_STYLES } from "./analysis-prompts.js";
+import { durationOptions } from "./prompt-engine.js";
 
 export type AutopilotPostMode = "auto" | "prepare" | "none";
-export type AutopilotSite = "flow" | "aistudio";
+export type AutopilotSite = "flow" | "aistudio" | "gemini";
 
 export interface AutopilotSettings {
   targetDuration: number;
@@ -77,7 +78,7 @@ export interface AutopilotState {
 
 export interface AutopilotDeps {
   analyzeProduct(productId: string): Promise<unknown>;
-  generateContentScenes(productId: string, style: string, targetDuration: number): Promise<{ content: store.Content }>;
+  generateContentScenes(productId: string, style: string, targetDuration: number, site: AutopilotSite): Promise<{ content: store.Content }>;
   startVideo(contentId: string, targetDuration: number, site: AutopilotSite): Promise<string>;
   prepareTikTokPost(videoId: string, caption: string, autoPost: boolean, productId: string | null): Promise<{ ok: boolean; error?: string }>;
   isManualJobRunning(): Promise<boolean>;
@@ -275,7 +276,7 @@ export function createAutopilot(deps: AutopilotDeps) {
         cur.style ??= pickStyle(state);
         await save(state);
         try {
-          const { content } = await deps.generateContentScenes(cur.productId, cur.style, state.settings.targetDuration);
+          const { content } = await deps.generateContentScenes(cur.productId, cur.style, state.settings.targetDuration, state.settings.site);
           cur.contentId = content.id;
           cur.caption = content.caption;
           advance(cur, "video");
@@ -433,15 +434,17 @@ export function createAutopilot(deps: AutopilotDeps) {
         const times = mode === "schedule" ? parseTimes(String(message.times ?? "")) : [];
         if (mode === "schedule" && times.length === 0) return { ok: false, error: "ใส่เวลาอย่างน้อย 1 เวลา เช่น 09:00, 19:30" };
         const settings = message.settings as AutopilotSettings;
+        const site: AutopilotSite = ["aistudio", "gemini"].includes(settings?.site) ? settings.site : "flow";
+        const lengths = durationOptions(site);
         const now = Date.now();
         const state: AutopilotState = {
           status: "running",
           mode,
           settings: {
-            targetDuration: [8, 16, 24].includes(Number(settings?.targetDuration)) ? Number(settings.targetDuration) : 8,
+            targetDuration: lengths.includes(Number(settings?.targetDuration)) ? Number(settings.targetDuration) : lengths[0],
             style: settings?.style || "rotate",
             postMode: ["auto", "prepare", "none"].includes(settings?.postMode) ? settings.postMode : "prepare",
-            site: settings?.site === "aistudio" ? "aistudio" : "flow",
+            site,
           },
           times,
           productIds,

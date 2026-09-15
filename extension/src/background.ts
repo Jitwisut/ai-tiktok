@@ -2,26 +2,38 @@ import * as store from "./lib/store.js";
 import * as gemini from "./lib/gemini.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
-import { DEFAULT_VIDEO_SETTINGS, CLIP_SECONDS, planClips, type PlanVariant } from "./lib/prompt-engine.js";
+import {
+  DEFAULT_VIDEO_SETTINGS,
+  CLIP_SECONDS,
+  clipCountFor,
+  clipSecondsForSite,
+  planClips,
+  type GenerationSite,
+  type PlanVariant,
+} from "./lib/prompt-engine.js";
 import { concatMp4 } from "./lib/mp4-concat.js";
 import { createAutopilot } from "./lib/autopilot.js";
 
 const VEO_MODEL_ID = "veo-3.1-fast-generate-preview";
 const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VEO_MODEL_ID}`;
 
-type GenerationSite = "aistudio" | "flow";
+
+const GEMINI_VIDEOS_URL = "https://gemini.google.com/videos";
 
 /** Only a project page has the prompt box — Flow's home page has nothing to drive. */
 const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/project\//;
 
 async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
   if (site === "aistudio") return VEO_STUDIO_URL;
+  if (site === "gemini") return GEMINI_VIDEOS_URL;
   const { flowProjectUrl } = await store.getSettings();
   return FLOW_PROJECT_URL.test(flowProjectUrl) ? flowProjectUrl : null;
 }
 
 function siteMatchesTab(site: GenerationSite, url: string): boolean {
-  return site === "aistudio" ? url.includes("aistudio.google.com") : FLOW_PROJECT_URL.test(url);
+  if (site === "aistudio") return url.includes("aistudio.google.com");
+  if (site === "gemini") return url.startsWith("https://gemini.google.com/");
+  return FLOW_PROJECT_URL.test(url);
 }
 
 interface JobClip {
@@ -63,6 +75,7 @@ interface CreateJobMessage {
   type: "CREATE_JOB";
   contentId: string;
   targetDuration: number;
+  site?: GenerationSite;
 }
 
 /** Creates `count` separate videos from one content and runs them one after another. */
@@ -174,10 +187,14 @@ interface GenerateContentScenesMessage {
   productId: string;
   style: string;
   targetDuration: number;
+  /** Plans the storyboard in this site's clip length. */
+  site?: GenerationSite;
 }
 
 interface GetPendingVideoJobMessage {
   type: "GET_PENDING_VIDEO_JOB";
+  /** The asking script's site; a job stashed for another site is left for that site's tab. */
+  site?: GenerationSite;
 }
 
 interface GetSettingsMessage {
@@ -227,7 +244,15 @@ type ExtensionMessage =
   | SaveSettingsMessage
   | GetApiKeysStatusMessage
   | SaveApiKeysMessage
-  | ResetKeyCooldownMessage;
+  | ResetKeyCooldownMessage
+  | TrustedClickMessage;
+
+/** Clicks an element in the sender's tab with a real (trusted) mouse event — Gemini ignores synthetic clicks on send. */
+interface TrustedClickMessage {
+  type: "TRUSTED_CLICK";
+  selector: string;
+  bringToFront?: boolean;
+}
 
 function base64ToUint8Array(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -237,7 +262,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
 }
 
 /** Asks the local planner to re-plan the job's clips when the panel picked a different length. */
-async function replanClips(videoId: string, targetDuration: number): Promise<JobClip[] | null> {
+async function replanClips(videoId: string, targetDuration: number, site: GenerationSite): Promise<JobClip[] | null> {
   const video = await store.getVideo(videoId);
   if (!video) return null;
   const content = await store.getContent(video.contentId);
@@ -249,6 +274,7 @@ async function replanClips(videoId: string, targetDuration: number): Promise<Job
     scenes: prompts.toScenePromptInputs(content.scenes),
     settings: { ...DEFAULT_VIDEO_SETTINGS, aspectRatio: video.aspectRatio || DEFAULT_VIDEO_SETTINGS.aspectRatio },
     targetDuration,
+    clipSeconds: clipSecondsForSite(site),
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
@@ -256,24 +282,27 @@ async function replanClips(videoId: string, targetDuration: number): Promise<Job
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
     clips: mapped,
-    duration: clips.length * CLIP_SECONDS,
+    duration: clips.length * clipSecondsForSite(site),
     targetDuration,
   });
   return mapped;
 }
 
-async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Promise<VideoJob> {
+async function buildJob(incoming: IncomingVideoJob, targetDuration?: number, site: GenerationSite = "flow"): Promise<VideoJob> {
   const image = incoming.imageUrl ? await gemini.fetchImageAsBase64(incoming.imageUrl) : null;
 
+  // Re-plan when the panel's length needs a different clip count, or the
+  // site renders a different clip length than the job was planned for.
   let clips = incoming.clips;
-  if (targetDuration && targetDuration !== incoming.clips.length * CLIP_SECONDS) {
-    clips = (await replanClips(incoming.videoId, targetDuration)) ?? clips;
+  const clipSeconds = clipSecondsForSite(site);
+  if (targetDuration && (clipCountFor(targetDuration, clipSeconds) !== incoming.clips.length || incoming.duration !== incoming.clips.length * clipSeconds)) {
+    clips = (await replanClips(incoming.videoId, targetDuration, site)) ?? clips;
   }
 
   return {
     videoId: incoming.videoId,
     clips,
-    duration: incoming.duration ?? clips.length * CLIP_SECONDS,
+    duration: clips === incoming.clips ? (incoming.duration ?? clips.length * clipSeconds) : clips.length * clipSeconds,
     aspectRatio: incoming.aspectRatio ?? DEFAULT_VIDEO_SETTINGS.aspectRatio,
     modelId: VEO_MODEL_ID,
     imageBase64: image?.base64,
@@ -284,11 +313,13 @@ async function buildJob(incoming: IncomingVideoJob, targetDuration?: number): Pr
 const SITE_TAB_PATTERNS: Record<GenerationSite, string> = {
   aistudio: "https://aistudio.google.com/*",
   flow: "https://flow.google.com/project/*",
+  gemini: "https://gemini.google.com/*",
 };
 
 const SITE_SCRIPTS: Record<GenerationSite, string[]> = {
   aistudio: ["dist/panel.js", "dist/ai-studio-automation.js"],
   flow: ["dist/panel.js", "dist/flow-automation.js"],
+  gemini: ["dist/panel.js", "dist/gemini-automation.js"],
 };
 
 /**
@@ -338,7 +369,42 @@ async function sendJobToTab(
  */
 type DispatchResult = { ok: boolean; error?: string; opened?: boolean };
 
+/**
+ * Every Gemini job starts on a fresh /videos page, so earlier clips are not
+ * in the chat. Reuse a tab already sitting on /videos, else the tab the last
+ * Gemini job ran in; never navigate away from a chat the user is reading.
+ */
+async function dispatchGeminiJob(job: VideoJob): Promise<DispatchResult> {
+  const tabs = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS.gemini })).filter((tab) => tab.id);
+  const onVideos = tabs.find((tab) => new URL(tab.url ?? "https://x/").pathname.startsWith("/videos"));
+  if (onVideos?.id) {
+    try {
+      const result = await sendJobToTab(onVideos.id, "gemini", job);
+      if (result.ok) {
+        await chrome.tabs.update(onVideos.id, { active: true });
+        await chrome.storage.local.set({ geminiJobTabId: onVideos.id });
+        return result;
+      }
+      if (/มีงานกำลังทำอยู่/.test(result.error ?? "")) return result;
+    } catch {
+      // fall through to a fresh page load
+    }
+  }
+
+  await chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: "gemini" });
+  const { geminiJobTabId } = await chrome.storage.local.get("geminiJobTabId");
+  const reusable = tabs.find((tab) => tab.id === geminiJobTabId);
+  if (reusable?.id) {
+    await chrome.tabs.update(reusable.id, { url: GEMINI_VIDEOS_URL, active: true });
+    return { ok: true, opened: true };
+  }
+  const created = await chrome.tabs.create({ url: GEMINI_VIDEOS_URL });
+  await chrome.storage.local.set({ geminiJobTabId: created.id });
+  return { ok: true, opened: true };
+}
+
 async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<DispatchResult> {
+  if (site === "gemini") return dispatchGeminiJob(job);
   const tab = await findSiteTab(site);
 
   if (tab?.id) {
@@ -358,7 +424,7 @@ async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<Dispatc
       error: "ตั้งค่า Google Flow Project URL (https://flow.google.com/project/...) ในแท็บ Settings ก่อน หรือเปิดหน้าโปรเจกต์ Flow ไว้แล้วกดใหม่",
     };
   }
-  await chrome.storage.local.set({ pendingVideoJob: job });
+  await chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: site });
   await chrome.tabs.create({ url });
   return { ok: true, opened: true };
 }
@@ -368,6 +434,7 @@ async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<Dispatc
 async function createJobForContent(
   contentId: string,
   targetDuration: number,
+  site: GenerationSite,
   variant?: PlanVariant,
 ): Promise<{ video: store.VideoJob; clips: JobClip[]; imageUrl: string | null }> {
   const content = await store.getContent(contentId);
@@ -379,6 +446,7 @@ async function createJobForContent(
     scenes: prompts.toScenePromptInputs(content.scenes),
     settings: DEFAULT_VIDEO_SETTINGS,
     targetDuration,
+    clipSeconds: clipSecondsForSite(site),
     variant,
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
@@ -388,7 +456,7 @@ async function createJobForContent(
   const video = await store.createVideoJob({
     contentId: content.id,
     clips,
-    duration: clips.length * CLIP_SECONDS,
+    duration: clips.length * clipSecondsForSite(site),
     aspectRatio: DEFAULT_VIDEO_SETTINGS.aspectRatio,
     targetDuration,
   });
@@ -422,7 +490,7 @@ async function setJobQueue(queue: JobQueue): Promise<void> {
   else await chrome.storage.local.set({ jobQueue: queue });
 }
 
-async function jobFromStore(videoId: string): Promise<VideoJob | null> {
+async function jobFromStore(videoId: string, site: GenerationSite): Promise<VideoJob | null> {
   const video = await store.getVideo(videoId);
   if (!video) return null;
   const content = await store.getContent(video.contentId);
@@ -433,7 +501,7 @@ async function jobFromStore(videoId: string): Promise<VideoJob | null> {
     duration: video.duration,
     aspectRatio: video.aspectRatio,
     imageUrl: product?.images[0] ?? null,
-  });
+  }, undefined, site);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -458,7 +526,7 @@ async function advanceJobQueue(finishedVideoId: string) {
       await setJobQueue(queue);
 
       await sleep(QUEUE_START_DELAY_MS);
-      const job = await jobFromStore(next.videoId);
+      const job = await jobFromStore(next.videoId, next.site);
       let result: DispatchResult = { ok: false, error: "ไม่พบงานในคิว" };
       for (let attempt = 0; job && attempt < QUEUE_BUSY_RETRIES; attempt++) {
         result = await dispatchJob(job, next.site);
@@ -695,6 +763,33 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * Clicks the centre of `selector` through the DevTools protocol, so the page
+ * receives a trusted mouse event.
+ */
+async function clickInTab(tabId: number, selector: string, bringToFront: boolean): Promise<void> {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  const send = (method: string, params: { [key: string]: unknown }) => chrome.debugger.sendCommand(target, method, params);
+  try {
+    if (bringToFront) {
+      await send("Page.bringToFront", {});
+      await send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    }
+    const located = (await send("Runtime.evaluate", {
+      expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({ block: "center" }); const r = el.getBoundingClientRect(); return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; })()`,
+      returnByValue: true,
+    })) as { result?: { value?: { x: number; y: number } | null } } | undefined;
+    const point = located?.result?.value;
+    if (!point) throw new Error("ไม่พบปุ่มบนหน้าเว็บ");
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await send("Input.dispatchMouseEvent", { type, x: point.x, y: point.y, button: "left", clickCount: type === "mouseMoved" ? 0 : 1 });
+    }
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+/**
  * Types into the focused element of a tab through the DevTools protocol, so
  * the page receives real input events. TikTok's DraftJS caption editor
  * mangles synthetic input (duplicated hashtags, a crash on the next edit).
@@ -764,7 +859,9 @@ async function generateContentScenes(
   productId: string,
   style: string,
   targetDuration: number,
+  site: GenerationSite = "flow",
 ): Promise<{ content: store.Content; scenes: store.Scene[] }> {
+  const clipSeconds = clipSecondsForSite(site);
   const product = await store.getProduct(productId);
   if (!product) throw new Error("ไม่พบสินค้า");
   const analysis = await store.getAnalysis(product.id);
@@ -772,7 +869,7 @@ async function generateContentScenes(
 
   // Rotate angles across generations so repeated runs for one product tell different stories.
   const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
-  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, images.length > 0, angle);
+  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
   const contentResult = await gemini.generateObject<{
     hook: string;
     script: string;
@@ -797,7 +894,7 @@ async function generateContentScenes(
     angle,
   });
 
-  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, images.length > 0);
+  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0);
   const sceneResult = await gemini.generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
     ...scenePrompt,
     images,
@@ -844,7 +941,7 @@ const autopilot = createAutopilot({
   analyzeProduct,
   generateContentScenes,
   async startVideo(contentId, targetDuration, site) {
-    const { video, clips, imageUrl } = await createJobForContent(contentId, targetDuration);
+    const { video, clips, imageUrl } = await createJobForContent(contentId, targetDuration, site);
     const job = await buildJob({
       videoId: video.id,
       clips,
@@ -918,7 +1015,7 @@ async function mergeVideoClips(videoId: string): Promise<MergeResult> {
   try {
     const merged = concatMp4(await Promise.all(clips.map((c) => c.blob.arrayBuffer())));
     await library.putClip(videoId, library.MERGED_CLIP_INDEX, new Blob([merged as BlobPart], { type: "video/mp4" }), "video/mp4");
-    seconds = clips.length * CLIP_SECONDS;
+    seconds = video.duration || clips.length * CLIP_SECONDS;
     await store.updateVideoJob(videoId, { mergedAt: Date.now(), mergeError: null });
   } catch (err) {
     const error = `ต่อคลิปไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`;
@@ -1008,7 +1105,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     (async () => {
       try {
         const site = message.site ?? "aistudio";
-        const job = await buildJob(message.job, message.targetDuration);
+        const job = await buildJob(message.job, message.targetDuration, message.site ?? "aistudio");
         sendResponse(await dispatchJob(job, site));
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "เริ่มสร้างวิดีโอไม่สำเร็จ" });
@@ -1031,7 +1128,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "GENERATE_CONTENT_SCENES") {
     (async () => {
       try {
-        const { content, scenes } = await generateContentScenes(message.productId, message.style, message.targetDuration);
+        const { content, scenes } = await generateContentScenes(message.productId, message.style, message.targetDuration, message.site);
         sendResponse({
           ok: true,
           content: {
@@ -1097,7 +1194,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
           hook: v.hook,
           imageUrl: v.imageUrl,
           clipCount: v.clips.length,
-          seconds: v.clips.length * CLIP_SECONDS,
+          seconds: v.duration || v.clips.length * CLIP_SECONDS,
           mergedAt: v.mergedAt ?? null,
           mergeError: v.mergeError ?? null,
           caption: v.caption,
@@ -1112,7 +1209,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "CREATE_JOB") {
     (async () => {
       try {
-        const { video, clips, imageUrl } = await createJobForContent(message.contentId, message.targetDuration);
+        const { video, clips, imageUrl } = await createJobForContent(message.contentId, message.targetDuration, message.site ?? "flow");
         sendResponse({
           ok: true,
           video: { id: video.id },
@@ -1155,7 +1252,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         const count = Math.min(10, Math.max(1, Math.round(message.count || 1)));
         const created = [];
         for (let i = 0; i < count; i++) {
-          created.push(await createJobForContent(message.contentId, message.targetDuration, { index: i, total: count }));
+          created.push(await createJobForContent(message.contentId, message.targetDuration, message.site, { index: i, total: count }));
         }
 
         const [first, ...rest] = created;
@@ -1322,7 +1419,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         sendResponse({ ok: false, error: "วิดีโอนี้สร้างเสร็จแล้ว ยกเลิกไม่ได้" });
         return;
       }
-      await chrome.storage.local.remove(["activeFlowJob", "pendingVideoJob"]);
+      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "pendingVideoJob", "pendingVideoJobSite"]);
       await chrome.storage.local.set({
         jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
       });
@@ -1336,12 +1433,34 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "TRUSTED_CLICK") {
+    (async () => {
+      const tabId = sender.tab?.id;
+      if (!tabId) {
+        sendResponse({ ok: false, error: "no tab" });
+        return;
+      }
+      try {
+        await clickInTab(tabId, message.selector, !!message.bringToFront);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
   if (message.type === "GET_PENDING_VIDEO_JOB") {
     (async () => {
-      const stored = await chrome.storage.local.get("pendingVideoJob");
+      const stored = await chrome.storage.local.get(["pendingVideoJob", "pendingVideoJobSite"]);
       const job = (stored.pendingVideoJob as VideoJob | undefined) ?? null;
+      const forSite = stored.pendingVideoJobSite as GenerationSite | undefined;
+      if (job && forSite && message.site && forSite !== message.site) {
+        sendResponse({ job: null });
+        return;
+      }
       // Clear before responding so a second asker can't claim the same job.
-      if (job) await chrome.storage.local.remove("pendingVideoJob");
+      if (job) await chrome.storage.local.remove(["pendingVideoJob", "pendingVideoJobSite"]);
       sendResponse({ job });
     })();
     return true;

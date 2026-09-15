@@ -52,6 +52,6 @@ function aiPanelStatus(text: string, color = "#e5e7eb") {
   aiPanelLog(text);
 }
 
-function aiPanelMount(_config: { site: "aistudio" | "flow"; siteLabel: string }) {
+function aiPanelMount(_config: { site: "aistudio" | "flow" | "gemini"; siteLabel: string }) {
   // No in-page UI to mount anymore — the side panel is the control surface.
 }

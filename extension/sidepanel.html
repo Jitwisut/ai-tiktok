@@ -365,7 +365,7 @@
       <div class="section-title">รีวิวและสร้างวิดีโอ</div>
       <div class="row">
         <select id="style"></select>
-        <select id="duration" title="ความยาววิดีโอ — Flow สร้างได้ครั้งละ 8 วิ เกินกว่านั้นจะต่อหลายคลิปให้เป็นวิดีโอเดียว">
+        <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ, Gemini ครั้งละ 10 วิ เกินกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ให้เป็นวิดีโอเดียว">
           <option value="8">8 วิ · คลิปเดียว</option>
           <option value="16">16 วิ · ต่อ 2 คลิป</option>
           <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
@@ -380,6 +380,7 @@
         <select id="site">
           <option value="aistudio">AI Studio</option>
           <option value="flow" selected>Google Flow</option>
+          <option value="gemini">Gemini</option>
         </select>
       </div>
       <div class="row">
@@ -469,6 +470,11 @@
             <option value="8" selected>8 วิ · คลิปเดียว</option>
             <option value="16">16 วิ · ต่อ 2 คลิป</option>
             <option value="24">24 วิ · ต่อ 3 คลิป</option>
+          </select>
+          <select id="ap-site" title="เว็บที่ใช้สร้างวิดีโอ">
+            <option value="flow" selected>Google Flow</option>
+            <option value="gemini">Gemini</option>
+            <option value="aistudio">AI Studio</option>
           </select>
         </div>
         <div class="row">

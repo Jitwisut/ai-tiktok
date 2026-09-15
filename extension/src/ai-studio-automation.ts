@@ -502,6 +502,6 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: StudioVideo
 // Triggered by the app opening this tab with a job already queued.
 aiPanelMount({ site: "aistudio", siteLabel: "AI Studio" });
 
-chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB" }, (result: { job: StudioVideoJob | null }) => {
+chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "aistudio" }, (result: { job: StudioVideoJob | null }) => {
   if (result?.job) startJob(result.job);
 });

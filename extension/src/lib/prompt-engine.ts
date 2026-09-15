@@ -46,24 +46,41 @@ const DEFAULT_CAMERA_MOTIONS = [
   "gentle handheld pull-back to a medium shot that settles on the product",
 ];
 
-/** Veo renders at most 8 seconds per generation. */
+/** Flow and AI Studio render 8 seconds per generation. */
 export const CLIP_SECONDS = 8;
 
-export const SUPPORTED_TARGET_DURATIONS = [8, 16, 24, 32] as const;
+/** A video is joined from at most this many clips. */
+export const MAX_CLIPS = 3;
+
+export type GenerationSite = "aistudio" | "flow" | "gemini";
+
+/** Seconds one generation renders on each site — Gemini's video tool makes 10-second clips. */
+export function clipSecondsForSite(site: string | undefined): number {
+  return site === "gemini" ? 10 : CLIP_SECONDS;
+}
+
+/** The lengths a site can make: one, two or three joined clips. */
+export function durationOptions(site: string | undefined): number[] {
+  const seconds = clipSecondsForSite(site);
+  return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * seconds);
+}
+
+export function clipCountFor(targetDuration: number, clipSeconds: number): number {
+  return Math.min(MAX_CLIPS, Math.max(1, Math.round(targetDuration / clipSeconds)));
+}
 
 /**
- * Speech longer than this in one 8-second clip makes Veo rush or cut the
- * line off; when a re-plan squeezes several clips' worth of lines into one,
- * later lines are dropped instead.
+ * Speech longer than this in one clip makes the model rush or cut the line
+ * off; when a re-plan squeezes several clips' worth of lines into one, later
+ * lines are dropped instead.
  */
-const MAX_SPEECH_CHARS_PER_CLIP = 80;
+const MAX_SPEECH_CHARS_PER_SECOND = 10;
 
 /** Which run this is when the same content is generated several times in a row. */
 export interface PlanVariant {
   index: number;
   total: number;
 }
-export type TargetDuration = (typeof SUPPORTED_TARGET_DURATIONS)[number];
 
 export interface PlannedClip {
   index: number;
@@ -165,16 +182,16 @@ function groupScenes(scenes: ScenePromptInput[], clipCount: number): ClipGroup[]
 /**
  * Rescales scene lengths to fill one clip. Rounding the running boundaries
  * (to half seconds) rather than each duration keeps the last beat ending at
- * exactly CLIP_SECONDS — per-scene rounding could list "[6-9s]" in an 8s clip.
+ * exactly clipSeconds — per-scene rounding could list "[6-9s]" in an 8s clip.
  */
-function timeline(scenes: ScenePromptInput[]): { start: number; end: number; scene: ScenePromptInput }[] {
+function timeline(scenes: ScenePromptInput[], clipSeconds: number): { start: number; end: number; scene: ScenePromptInput }[] {
   const total = scenes.reduce((sum, scene) => sum + Math.max(0, scene.duration), 0);
   let running = 0;
   let previousEnd = 0;
   return scenes.map((scene, i) => {
     running += total > 0 ? Math.max(0, scene.duration) : 1;
     const share = running / (total > 0 ? total : scenes.length);
-    const end = i === scenes.length - 1 ? CLIP_SECONDS : Math.round(share * CLIP_SECONDS * 2) / 2;
+    const end = i === scenes.length - 1 ? clipSeconds : Math.round(share * clipSeconds * 2) / 2;
     const start = previousEnd;
     previousEnd = end;
     return { start, end, scene };
@@ -185,8 +202,9 @@ function visualOf(scene: ScenePromptInput): string {
   return (scene.visual?.trim() || scene.description.trim()).replace(/[.。]$/, "");
 }
 
-/** Spoken lines for one clip, in order, trimmed to what fits in 8 seconds. */
-function speechLines(beats: ReturnType<typeof timeline>): string[] {
+/** Spoken lines for one clip, in order, trimmed to what fits in the clip. */
+function speechLines(beats: ReturnType<typeof timeline>, clipSeconds: number): string[] {
+  const budget = MAX_SPEECH_CHARS_PER_SECOND * clipSeconds;
   const lines: string[] = [];
   let used = 0;
   for (const { start, end, scene } of beats) {
@@ -194,7 +212,7 @@ function speechLines(beats: ReturnType<typeof timeline>): string[] {
       const line = raw?.trim();
       if (!line) continue;
       const length = Array.from(line).length;
-      if (lines.length > 0 && used + length > MAX_SPEECH_CHARS_PER_CLIP) return lines;
+      if (lines.length > 0 && used + length > budget) return lines;
       used += length;
       lines.push(
         kind === "dialogue"
@@ -211,6 +229,8 @@ export interface PlanClipsInput {
   scenes: ScenePromptInput[];
   settings: VideoSettings;
   targetDuration: number;
+  /** Seconds the generation site renders per clip (clipSecondsForSite). */
+  clipSeconds?: number;
   variant?: PlanVariant;
   text?: OnScreenText;
   /** The content's style (UGC, Demo, …); falls back to settings.style. */
@@ -227,7 +247,8 @@ export interface PlanClipsInput {
  */
 export function planClips(input: PlanClipsInput): PlannedClip[] {
   const { productName, scenes, settings, targetDuration, variant, text } = input;
-  const clipCount = Math.max(1, Math.round(targetDuration / CLIP_SECONDS));
+  const clipSeconds = input.clipSeconds ?? CLIP_SECONDS;
+  const clipCount = clipCountFor(targetDuration, clipSeconds);
   if (scenes.length === 0) return [];
 
   const style = input.style || settings.style;
@@ -239,13 +260,13 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
   return groups.map((group, index) => {
     const isFirst = index === 0;
     const isLast = index === clipCount - 1;
-    const beats = timeline(group.scenes);
+    const beats = timeline(group.scenes, clipSeconds);
     const sections: string[] = [];
 
     sections.push(
       clipCount > 1
-        ? `[GOAL] Create exactly one ${CLIP_SECONDS}-second video segment: part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * CLIP_SECONDS}-second ${style}-style TikTok advert that will be joined into a single video.`
-        : `[GOAL] Create exactly one complete ${CLIP_SECONDS}-second ${style}-style TikTok advert with a hook, the product and a clear ending.`,
+        ? `[GOAL] Create exactly one ${clipSeconds}-second video segment: part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * clipSeconds}-second ${style}-style TikTok advert that will be joined into a single video.`
+        : `[GOAL] Create exactly one complete ${clipSeconds}-second ${style}-style TikTok advert with a hook, the product and a clear ending.`,
     );
     sections.push(
       `[FORMAT] ${describeAspectRatio(settings.aspectRatio)} video. ${look}. Sharp focus, natural motion, realistic hands and faces.`,
@@ -283,7 +304,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     );
 
     // A continuation clip does not re-speak the lines its first stage already said.
-    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats);
+    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats, clipSeconds);
     sections.push(
       speech.length
         ? [
@@ -326,7 +347,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     return {
       index,
       prompt: sections.join("\n"),
-      startSecond: index * CLIP_SECONDS,
+      startSecond: index * clipSeconds,
     };
   });
 }
