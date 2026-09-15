@@ -122,19 +122,23 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Lengths depend on the site's clip length (8s Flow/AI Studio, 10s Gemini),
- * so rebuild the list when the site changes — keeping the same clip count.
+ * Lengths depend on the site (joined 8s clips on Flow/AI Studio, one
+ * generation of the whole length on Gemini), so rebuild the list when the
+ * site changes — keeping the closest length to what was picked.
  */
 function renderDurationOptions(durationSelect: HTMLSelectElement, site: string) {
   const previous = Number(durationSelect.value);
-  const previousSeconds = Number(durationSelect.dataset.clipSeconds) || 8;
-  const clipsBefore = previous ? clipCountFor(previous, previousSeconds) : 0;
-  const seconds = clipSecondsForSite(site);
-  durationSelect.innerHTML = durationOptions(site)
-    .map((value, i) => `<option value="${value}">${value} วิ · ${i === 0 ? "คลิปเดียว" : `ต่อ ${i + 1} คลิป`}</option>`)
+  const options = durationOptions(site);
+  durationSelect.innerHTML = options
+    .map((value) => {
+      const clips = clipCountFor(value, clipSecondsForSite(site, value));
+      return `<option value="${value}">${value} วิ · ${clips === 1 ? "คลิปเดียว" : `ต่อ ${clips} คลิป`}</option>`;
+    })
     .join("");
-  durationSelect.dataset.clipSeconds = String(seconds);
-  if (clipsBefore) durationSelect.value = String(clipsBefore * seconds);
+  if (previous) {
+    const closest = options.reduce((best, v) => (Math.abs(v - previous) < Math.abs(best - previous) ? v : best));
+    durationSelect.value = String(closest);
+  }
 }
 
 function bindDurationToSite(durationId: string, siteId: string) {
@@ -424,7 +428,7 @@ function selectedRunOptions() {
 }
 
 function describeRun(targetDuration: number, count: number, site: string): string {
-  const clips = clipCountFor(targetDuration, clipSecondsForSite(site));
+  const clips = clipCountFor(targetDuration, clipSecondsForSite(site, targetDuration));
   const shape = clips > 1 ? `วิดีโอ ${targetDuration} วิ (ต่อ ${clips} คลิป)` : `คลิปเดียว ${targetDuration} วิ`;
   return count > 1 ? `${shape} × ${count} วิดีโอ รันต่อกันอัตโนมัติ` : shape;
 }
@@ -1246,14 +1250,16 @@ interface KeyStatus {
   key: string;
   masked: string;
   cooldownUntil: number | null;
+  lastError: { status?: number; message: string; at: number } | null;
 }
 
 function loadSettings() {
-  send<{ ok: boolean; settings?: { geminiModel: string; flowProjectUrl: string } }>({
+  send<{ ok: boolean; settings?: { geminiModel: string; flowProjectUrl: string; textSource?: string } }>({
     type: "GET_SETTINGS",
   }).then((result) => {
     const settings = result?.settings;
     if (!settings) return;
+    ($("text-source") as HTMLSelectElement).value = settings.textSource === "api" ? "api" : "gemini-web";
     ($("gemini-model") as HTMLInputElement).value = settings.geminiModel;
     ($("flow-project-url") as HTMLInputElement).value = settings.flowProjectUrl;
   });
@@ -1288,13 +1294,35 @@ function renderKeyStatus() {
       const row = document.createElement("div");
       row.className = "card";
       const onCooldown = !!k.cooldownUntil;
+      // A broken key (denied project, invalid key) says why instead of a countdown.
+      const status = k.lastError
+        ? `ใช้ไม่ได้${k.lastError.status ? ` (${k.lastError.status})` : ""}: ${k.lastError.message}`
+        : onCooldown
+          ? formatCooldown(k.cooldownUntil!)
+          : "พร้อมใช้งาน";
+      const color = k.lastError || onCooldown ? "#f87171" : "#4ade80";
       row.innerHTML = `
         <div class="info">
           <div class="title" style="font-family:monospace">${escapeHtml(k.masked)}</div>
-          <div class="subtitle" style="color:${onCooldown ? "#f87171" : "#4ade80"}">${onCooldown ? formatCooldown(k.cooldownUntil!) : "พร้อมใช้งาน"}</div>
+          <div class="subtitle" style="color:${color};white-space:normal">${escapeHtml(status)}</div>
         </div>
       `;
-      if (onCooldown) {
+
+      const testBtn = document.createElement("button");
+      testBtn.className = "btn";
+      testBtn.textContent = "ทดสอบ";
+      testBtn.style.flexShrink = "0";
+      testBtn.addEventListener("click", () => {
+        testBtn.disabled = true;
+        testBtn.textContent = "กำลังทดสอบ...";
+        send<{ ok: boolean; status?: number; error?: string }>({ type: "TEST_API_KEY", key: k.key }).then((result) => {
+          log(result?.ok ? `key ${k.masked} ใช้งานได้ ✓` : `key ${k.masked} ใช้ไม่ได้${result?.status ? ` (${result.status})` : ""}: ${result?.error ?? "ไม่ทราบสาเหตุ"}`);
+          renderKeyStatus();
+        });
+      });
+      row.appendChild(testBtn);
+
+      if (onCooldown || k.lastError) {
         const resetBtn = document.createElement("button");
         resetBtn.className = "btn";
         resetBtn.textContent = "รีเซ็ต";
@@ -1319,6 +1347,7 @@ $("save-settings").addEventListener("click", () => {
   const settings = {
     geminiModel: ($("gemini-model") as HTMLInputElement).value.trim() || "gemini-flash-latest",
     flowProjectUrl: ($("flow-project-url") as HTMLInputElement).value.trim(),
+    textSource: ($("text-source") as HTMLSelectElement).value === "api" ? "api" : "gemini-web",
   };
 
   Promise.all([send({ type: "SAVE_SETTINGS", settings }), send({ type: "SAVE_API_KEYS", keys: uniqueKeys })]).then(

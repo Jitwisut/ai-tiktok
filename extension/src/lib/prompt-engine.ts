@@ -54,15 +54,33 @@ export const MAX_CLIPS = 3;
 
 export type GenerationSite = "aistudio" | "flow" | "gemini";
 
-/** Seconds one generation renders on each site — Gemini's video tool makes 10-second clips. */
-export function clipSecondsForSite(site: string | undefined): number {
-  return site === "gemini" ? 10 : CLIP_SECONDS;
+/**
+ * Gemini's video tool renders the whole advert in one generation when the
+ * prompt asks for its length, so it is never split into joined parts.
+ */
+export const GEMINI_DURATIONS = [10, 20];
+
+/**
+ * Seconds one generation renders on each site. Flow and AI Studio always make
+ * 8-second clips; on Gemini one generation is the whole video, so it is the
+ * requested length (snapped to a length Gemini makes).
+ */
+export function clipSecondsForSite(site: string | undefined, targetDuration?: number): number {
+  if (site !== "gemini") return CLIP_SECONDS;
+  const wanted = targetDuration || GEMINI_DURATIONS[0];
+  return GEMINI_DURATIONS.reduce((best, s) => (Math.abs(s - wanted) < Math.abs(best - wanted) ? s : best));
 }
 
-/** The lengths a site can make: one, two or three joined clips. */
+/** The lengths a site can make: one, two or three joined clips — or on Gemini, one generation of each length. */
 export function durationOptions(site: string | undefined): number[] {
-  const seconds = clipSecondsForSite(site);
-  return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * seconds);
+  if (site === "gemini") return [...GEMINI_DURATIONS];
+  return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * CLIP_SECONDS);
+}
+
+/** The closest length the site can make — e.g. an older 30-second Gemini setting becomes 20. */
+export function snapDuration(site: string | undefined, targetDuration: number): number {
+  const options = durationOptions(site);
+  return options.reduce((best, v) => (Math.abs(v - targetDuration) < Math.abs(best - targetDuration) ? v : best));
 }
 
 export function clipCountFor(targetDuration: number, clipSeconds: number): number {
@@ -107,7 +125,7 @@ export function describeAspectRatio(aspectRatio: string): string {
  * letters that only look Thai. Giving it the exact short Thai strings to show,
  * and forbidding anything else, is the most reliable way to get readable Thai.
  */
-function onScreenTextRule(index: number, clipCount: number, text: OnScreenText | undefined): string {
+function onScreenTextRule(index: number, clipCount: number, text: OnScreenText | undefined, clipSeconds: number): string {
   const lines: string[] = [];
   const isFirst = index === 0;
   const isLast = index === clipCount - 1;
@@ -123,9 +141,9 @@ function onScreenTextRule(index: number, clipCount: number, text: OnScreenText |
   return [
     `[ON-SCREEN TEXT] ${lines.join(" ")}.`,
     "Copy these Thai strings character for character, exactly as written between the 「」 marks, with every vowel and tone mark in the right place — do not translate, transliterate, reorder or add characters.",
-    "Render it as a short static title card: large bold Thai sans-serif block letters, one line, centred, held still (no motion blur, no fast pan across it) against a plain high-contrast background for at least half the shot's length, so the letterforms stay sharp.",
+    `Render it as a short static title card: large bold Thai sans-serif block letters, one line, centred, held still (no motion blur, no fast pan across it) against a plain high-contrast background ${clipSeconds > 10 ? "for about 2-3 seconds each" : "for at least half the shot's length"}, so the letterforms stay sharp.`,
     "Show no other on-screen text anywhere else in the frame, and never English words or garbled characters that merely look like Thai.",
-    "If you cannot render this exact Thai text sharply and correctly, show no on-screen text at all for this part — incorrect Thai text is worse than no text.",
+    `If you cannot render this exact Thai text sharply and correctly, show no on-screen text at all for this ${clipCount === 1 ? "video" : "part"} — incorrect Thai text is worse than no text.`,
     packaging,
   ].join(" ");
 }
@@ -240,7 +258,8 @@ export interface PlanClipsInput {
 }
 
 /**
- * Turns a scene plan into one self-contained prompt per 8-second clip. Each
+ * Turns a scene plan into one self-contained prompt per clip (8 seconds on
+ * Flow/AI Studio; on Gemini a single clip is the whole video). Each
  * clip is rendered by a separate call that sees only its own prompt, so every
  * part repeats what must stay identical (cast, setting, look), states what
  * happens now, and says how it joins the part before.
@@ -260,13 +279,15 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
   return groups.map((group, index) => {
     const isFirst = index === 0;
     const isLast = index === clipCount - 1;
+    // A whole advert rendered in one generation that is longer than a single shot (Gemini's 20 seconds).
+    const longTake = clipCount === 1 && clipSeconds > 10;
     const beats = timeline(group.scenes, clipSeconds);
     const sections: string[] = [];
 
     sections.push(
       clipCount > 1
         ? `[GOAL] Create exactly one ${clipSeconds}-second video segment: part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * clipSeconds}-second ${style}-style TikTok advert that will be joined into a single video.`
-        : `[GOAL] Create exactly one complete ${clipSeconds}-second ${style}-style TikTok advert with a hook, the product and a clear ending.`,
+        : `[GOAL] Create ONE complete ${clipSeconds}-second ${style}-style TikTok advert as a single video that runs the full ${clipSeconds} seconds from start to finish — not a shorter clip, not split into parts. An attention-grabbing hook in the first 2 seconds, then the product in use, then a clear ending on the product.`,
     );
     sections.push(
       `[FORMAT] ${describeAspectRatio(settings.aspectRatio)} video. ${look}. Sharp focus, natural motion, realistic hands and faces.`,
@@ -276,6 +297,8 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     if (cast) {
       sections.push(`[CAST] ${cast.person}. Exactly this person and wardrobe in every part — same face, hair, body and clothes.`);
       sections.push(`[SETTING] ${cast.setting}. Same location, time of day and light direction in every part.`);
+    } else if (longTake) {
+      sections.push("[CAST & SETTING] One person, one wardrobe and one location for the whole video — face, hair, clothes, time of day and light direction never change.");
     } else if (clipCount > 1) {
       sections.push(
         isFirst
@@ -299,7 +322,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     if (clipCount > 1 && story.length) sections.push(`[STORY SO FAR] ${story.join(" ")}`);
 
     sections.push(
-      `[TIMELINE] ${beats.map(({ start, end, scene }) => `[${start}-${end}s] ${visualOf(scene)}.`).join(" ")}` +
+      `[TIMELINE] ${clipCount === 1 ? `Follow these beats in order, filling all ${clipSeconds} seconds: ` : ""}${beats.map(({ start, end, scene }) => `[${start}-${end}s] ${visualOf(scene)}.`).join(" ")}` +
         (clipCount === 1 || isLast ? " End on the product looking appealing." : " End mid-motion on a clear, steady frame that the next part can continue from."),
     );
 
@@ -321,9 +344,12 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     );
 
     const motions = group.scenes.map((scene) => scene.cameraMotion?.trim()).filter(Boolean).join(", then ");
-    const motion = motions || DEFAULT_CAMERA_MOTIONS[Math.min(index, DEFAULT_CAMERA_MOTIONS.length - 1)];
+    const motion =
+      motions || (longTake ? DEFAULT_CAMERA_MOTIONS.join(", then ") : DEFAULT_CAMERA_MOTIONS[Math.min(index, DEFAULT_CAMERA_MOTIONS.length - 1)]);
     sections.push(
-      isFirst || clipCount === 1
+      longTake
+        ? `[CAMERA] ${motion}. Smooth, motivated camera moves; a clean cut between beats is fine, but no jarring jump cuts, and the person, product, location and lighting look identical in every shot.`
+        : isFirst || clipCount === 1
         ? `[CAMERA] One continuous take with no cuts: ${motion}.`
         : `[CAMERA] Pick up the camera exactly where part ${index} ended — same position, direction, speed and height, no cut or reframe at the start — then ${motion}. One continuous take.`,
     );
@@ -337,10 +363,11 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       );
     }
 
-    sections.push(onScreenTextRule(index, clipCount, text));
+    sections.push(onScreenTextRule(index, clipCount, text, clipSeconds));
     sections.push(
       "[AVOID] Product changing shape or colour, duplicate products, deformed hands or extra fingers, sudden face, clothing, location or lighting change" +
         (isFirst ? "" : ", a jump cut at the start") +
+        (clipCount === 1 ? `, ending before ${clipSeconds} seconds, looping or replaying the opening` : "") +
         ", fake logos, watermarks, random English text.",
     );
 

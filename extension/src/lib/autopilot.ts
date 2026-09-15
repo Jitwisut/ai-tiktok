@@ -175,6 +175,22 @@ export function createAutopilot(deps: AutopilotDeps) {
     }
   }
 
+  /**
+   * The Flow/Gemini tab keeps its job in storage so it can resume after the
+   * page reloads. A skipped or stopped item must not resume: refreshing the
+   * tab would submit its prompt again and spend credits on a video nobody
+   * waits for any more.
+   */
+  async function forgetTabJob(videoId: string | undefined) {
+    if (!videoId) return;
+    const stored = await chrome.storage.local.get(["activeFlowJob", "activeGeminiJob", "pendingVideoJob"]);
+    const stale = (["activeFlowJob", "activeGeminiJob"] as const).filter(
+      (key) => (stored[key] as { job?: { videoId?: string } } | undefined)?.job?.videoId === videoId,
+    ) as string[];
+    if ((stored.pendingVideoJob as { videoId?: string } | undefined)?.videoId === videoId) stale.push("pendingVideoJob", "pendingVideoJobSite");
+    if (stale.length) await chrome.storage.local.remove(stale);
+  }
+
   /** A failed step is retried after a pause; the product is given up on after MAX_ATTEMPTS. */
   function failStep(state: AutopilotState, err: unknown) {
     const cur = state.current!;
@@ -305,15 +321,30 @@ export function createAutopilot(deps: AutopilotDeps) {
         const video = await store.getVideo(cur.videoId);
         // The generation tab reports failure through jobProgress, not the video record.
         const { jobProgress } = await chrome.storage.local.get("jobProgress");
-        const progress = jobProgress as { videoId?: string; state?: string } | undefined;
+        const progress = jobProgress as { videoId?: string; state?: string; error?: string } | undefined;
         if (video?.status === "completed") {
           if (state.settings.postMode === "none") finish(state, "made", null);
           else advance(cur, "post");
           await save(state);
           return true;
         }
+        const progressError = progress?.videoId === cur.videoId ? progress.error : undefined;
+        // Out of video allowance every retry and every next product fails the
+        // same way — pause on this product instead, so "ทำต่อ" picks it up
+        // once the allowance is back (analysis and script are kept).
+        if (progressError?.startsWith("โควต้า")) {
+          if (video) await store.updateVideoJob(video.id, { status: "failed", errorMessage: progressError });
+          cur.videoId = undefined;
+          cur.attempts = 0;
+          cur.leaseUntil = 0;
+          cur.lastError = progressError;
+          state.status = "paused";
+          state.message = `หยุดไว้ก่อน — ${progressError} แล้วกด "ทำต่อ" เพื่อสร้างวิดีโอชิ้นนี้ต่อ`;
+          await save(state);
+          return false;
+        }
         if (!video || video.status === "failed" || video.status === "cancelled" || (progress?.videoId === cur.videoId && progress.state === "failed")) {
-          failStep(state, video?.errorMessage ?? "สร้างวิดีโอไม่สำเร็จ — ดูบันทึกขั้นตอนงานในแท็บคลัง");
+          failStep(state, progressError ?? video?.errorMessage ?? "สร้างวิดีโอไม่สำเร็จ — ดูบันทึกขั้นตอนงานในแท็บคลัง");
           await save(state);
           return true;
         }
@@ -482,6 +513,7 @@ export function createAutopilot(deps: AutopilotDeps) {
       case "AUTOPILOT_STOP": {
         const state = await load();
         if (!state) return { ok: true, state: null };
+        await forgetTabJob(state.current?.videoId);
         state.status = "idle";
         state.current = null;
         state.nextRunAt = null;
@@ -495,6 +527,7 @@ export function createAutopilot(deps: AutopilotDeps) {
       case "AUTOPILOT_SKIP_CURRENT": {
         const state = await load();
         if (!state?.current) return { ok: false, error: "ไม่มีสินค้าที่กำลังทำ" };
+        await forgetTabJob(state.current.videoId);
         finish(state, "failed", "ข้ามโดยผู้ใช้");
         state.consecutiveFailures = 0;
         await save(state);

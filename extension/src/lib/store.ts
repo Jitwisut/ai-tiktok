@@ -88,6 +88,11 @@ export interface Settings {
   flowProjectUrl: string;
   /** Press TikTok's Post button after filling the form, instead of stopping for review. */
   tiktokAutoPost?: boolean;
+  /**
+   * Who analyses products and writes scripts and scenes: the Gemini web app in
+   * this browser (default) or the API keys below.
+   */
+  textSource?: "gemini-web" | "api";
 }
 
 /**
@@ -101,6 +106,19 @@ export interface ApiKeyState {
   keys: string[];
   nextIndex: number;
   cooldowns: Record<string, number>; // key -> epoch ms it becomes usable again
+  /** Last non-quota failure per key (denied project, invalid key, …), so the settings tab can name the broken one. */
+  errors?: Record<string, KeyError>;
+}
+
+export interface KeyError {
+  status?: number;
+  message: string;
+  at: number;
+}
+
+/** How a key is shown anywhere outside the settings textarea. */
+export function maskKey(key: string): string {
+  return key.length > 10 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
 }
 
 interface StoreShape {
@@ -161,7 +179,11 @@ export async function saveApiKeys(keys: string[]): Promise<ApiKeyState> {
   for (const [key, until] of Object.entries(current.cooldowns)) {
     if (keySet.has(key)) cooldowns[key] = until;
   }
-  const next: ApiKeyState = { keys, nextIndex: 0, cooldowns };
+  const errors: Record<string, KeyError> = {};
+  for (const [key, error] of Object.entries(current.errors ?? {})) {
+    if (keySet.has(key)) errors[key] = error;
+  }
+  const next: ApiKeyState = { keys, nextIndex: 0, cooldowns, errors };
   await setAll("geminiKeys", next);
   return next;
 }
@@ -194,6 +216,18 @@ export async function markKeyCooldown(key: string, until: number): Promise<void>
 export async function clearKeyCooldown(key: string): Promise<void> {
   const state = await getApiKeyState();
   delete state.cooldowns[key];
+  if (state.errors) delete state.errors[key];
+  await setAll("geminiKeys", state);
+}
+
+export async function recordKeyError(key: string, error: KeyError | null): Promise<void> {
+  const state = await getApiKeyState();
+  if (!state.keys.includes(key)) return;
+  const errors = { ...(state.errors ?? {}) };
+  if (error) errors[key] = error;
+  else if (errors[key]) delete errors[key];
+  else return; // nothing to clear — skip the write on every successful call
+  state.errors = errors;
   await setAll("geminiKeys", state);
 }
 

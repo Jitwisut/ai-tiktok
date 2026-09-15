@@ -365,7 +365,7 @@
       <div class="section-title">รีวิวและสร้างวิดีโอ</div>
       <div class="row">
         <select id="style"></select>
-        <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ, Gemini ครั้งละ 10 วิ เกินกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ให้เป็นวิดีโอเดียว">
+        <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
           <option value="8">8 วิ · คลิปเดียว</option>
           <option value="16">16 วิ · ต่อ 2 คลิป</option>
           <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
@@ -518,6 +518,17 @@
     </div>
 
     <div id="view-settings" class="view" hidden>
+      <div class="field">
+        <label for="text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
+        <select id="text-source">
+          <option value="gemini-web">เว็บ Gemini (gemini.google.com) — ไม่ต้องใช้ API key</option>
+          <option value="api">Gemini API key</option>
+        </select>
+        <div class="hint">
+          แบบเว็บ Gemini: ระบบจะเปิดแท็บ gemini.google.com/app ถามทีละขั้น (วิเคราะห์ → สคริปต์ → ฉาก) แล้วส่งคำตอบไปสร้างวิดีโอต่อ
+          ต้องล็อกอิน Gemini ไว้ในเบราว์เซอร์นี้ ใช้โควต้าแชทของบัญชีนั้น และแต่ละครั้งจะเป็นแชทใหม่ในประวัติ Gemini
+        </div>
+      </div>
       <div class="field">
         <label for="gemini-api-keys">Gemini API Keys (บรรทัดละ 1 key)</label>
         <textarea

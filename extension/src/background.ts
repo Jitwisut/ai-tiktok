@@ -1,5 +1,6 @@
 import * as store from "./lib/store.js";
 import * as gemini from "./lib/gemini.js";
+import { generateObjectOnWeb } from "./lib/gemini-web.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
 import {
@@ -8,6 +9,7 @@ import {
   clipCountFor,
   clipSecondsForSite,
   planClips,
+  snapDuration,
   type GenerationSite,
   type PlanVariant,
 } from "./lib/prompt-engine.js";
@@ -20,8 +22,12 @@ const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VE
 
 const GEMINI_VIDEOS_URL = "https://gemini.google.com/videos";
 
-/** Only a project page has the prompt box — Flow's home page has nothing to drive. */
-const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/project\//;
+/**
+ * Only a project page has the prompt box — Flow's home page has nothing to drive.
+ * With several Google accounts signed in, Flow puts the account in the path
+ * (flow.google.com/u/1/project/…), so that prefix must be accepted too.
+ */
+const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/(?:u\/\d+\/)?project\//;
 
 async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
   if (site === "aistudio") return VEO_STUDIO_URL;
@@ -220,6 +226,11 @@ interface ResetKeyCooldownMessage {
   key: string;
 }
 
+interface TestApiKeyMessage {
+  type: "TEST_API_KEY";
+  key: string;
+}
+
 type ExtensionMessage =
   | AddProductMessage
   | GetPendingJobsMessage
@@ -245,6 +256,7 @@ type ExtensionMessage =
   | GetApiKeysStatusMessage
   | SaveApiKeysMessage
   | ResetKeyCooldownMessage
+  | TestApiKeyMessage
   | TrustedClickMessage;
 
 /** Clicks an element in the sender's tab with a real (trusted) mouse event — Gemini ignores synthetic clicks on send. */
@@ -274,7 +286,7 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
     scenes: prompts.toScenePromptInputs(content.scenes),
     settings: { ...DEFAULT_VIDEO_SETTINGS, aspectRatio: video.aspectRatio || DEFAULT_VIDEO_SETTINGS.aspectRatio },
     targetDuration,
-    clipSeconds: clipSecondsForSite(site),
+    clipSeconds: clipSecondsForSite(site, targetDuration),
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
@@ -282,19 +294,20 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
     clips: mapped,
-    duration: clips.length * clipSecondsForSite(site),
+    duration: clips.length * clipSecondsForSite(site, targetDuration),
     targetDuration,
   });
   return mapped;
 }
 
 async function buildJob(incoming: IncomingVideoJob, targetDuration?: number, site: GenerationSite = "flow"): Promise<VideoJob> {
+  if (targetDuration) targetDuration = snapDuration(site, targetDuration);
   const image = incoming.imageUrl ? await gemini.fetchImageAsBase64(incoming.imageUrl) : null;
 
   // Re-plan when the panel's length needs a different clip count, or the
   // site renders a different clip length than the job was planned for.
   let clips = incoming.clips;
-  const clipSeconds = clipSecondsForSite(site);
+  const clipSeconds = clipSecondsForSite(site, targetDuration ?? incoming.duration);
   if (targetDuration && (clipCountFor(targetDuration, clipSeconds) !== incoming.clips.length || incoming.duration !== incoming.clips.length * clipSeconds)) {
     clips = (await replanClips(incoming.videoId, targetDuration, site)) ?? clips;
   }
@@ -312,7 +325,8 @@ async function buildJob(incoming: IncomingVideoJob, targetDuration?: number, sit
 
 const SITE_TAB_PATTERNS: Record<GenerationSite, string> = {
   aistudio: "https://aistudio.google.com/*",
-  flow: "https://flow.google.com/project/*",
+  // Broad on purpose: a match pattern can't express the optional /u/<n>/ — findSiteTab narrows it with siteMatchesTab.
+  flow: "https://flow.google.com/*",
   gemini: "https://gemini.google.com/*",
 };
 
@@ -332,7 +346,7 @@ async function findSiteTab(site: GenerationSite): Promise<chrome.tabs.Tab | unde
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (active?.id && siteMatchesTab(site, active.url ?? "")) return active;
 
-  const open = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS[site] })).filter((tab) => tab.id);
+  const open = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS[site] })).filter((tab) => tab.id && siteMatchesTab(site, tab.url ?? ""));
   if (site === "flow") {
     const { flowProjectUrl } = await store.getSettings();
     const configured = open.find((tab) => flowProjectUrl && tab.url?.startsWith(flowProjectUrl));
@@ -421,7 +435,7 @@ async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<Dispatc
   if (!url) {
     return {
       ok: false,
-      error: "ตั้งค่า Google Flow Project URL (https://flow.google.com/project/...) ในแท็บ Settings ก่อน หรือเปิดหน้าโปรเจกต์ Flow ไว้แล้วกดใหม่",
+      error: "ตั้งค่า Google Flow Project URL (https://flow.google.com/project/... หรือ https://flow.google.com/u/1/project/...) ในแท็บ Settings ก่อน หรือเปิดหน้าโปรเจกต์ Flow ไว้แล้วกดใหม่",
     };
   }
   await chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: site });
@@ -437,6 +451,7 @@ async function createJobForContent(
   site: GenerationSite,
   variant?: PlanVariant,
 ): Promise<{ video: store.VideoJob; clips: JobClip[]; imageUrl: string | null }> {
+  targetDuration = snapDuration(site, targetDuration);
   const content = await store.getContent(contentId);
   if (!content) throw new Error("ไม่พบคอนเทนต์");
   if (content.scenes.length === 0) throw new Error("ต้องสร้าง Scene ก่อนจึงจะสร้างวิดีโอได้");
@@ -446,7 +461,7 @@ async function createJobForContent(
     scenes: prompts.toScenePromptInputs(content.scenes),
     settings: DEFAULT_VIDEO_SETTINGS,
     targetDuration,
-    clipSeconds: clipSecondsForSite(site),
+    clipSeconds: clipSecondsForSite(site, targetDuration),
     variant,
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
@@ -456,7 +471,7 @@ async function createJobForContent(
   const video = await store.createVideoJob({
     contentId: content.id,
     clips,
-    duration: clips.length * clipSecondsForSite(site),
+    duration: clips.length * clipSecondsForSite(site, targetDuration),
     aspectRatio: DEFAULT_VIDEO_SETTINGS.aspectRatio,
     targetDuration,
   });
@@ -501,7 +516,8 @@ async function jobFromStore(videoId: string, site: GenerationSite): Promise<Vide
     duration: video.duration,
     aspectRatio: video.aspectRatio,
     imageUrl: product?.images[0] ?? null,
-  }, undefined, site);
+    // Jobs queued before Gemini made the whole video in one generation are still split into parts.
+  }, site === "gemini" && video.clips.length > 1 ? video.targetDuration || video.duration : undefined, site);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -840,12 +856,20 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean, editorSe
   }
 }
 
+/** Product analysis, scripts and scenes: the Gemini web app by default, or the API keys when chosen in Settings. */
+async function generateObject<T>(params: gemini.GenerateObjectParams): Promise<T> {
+  const { textSource } = await store.getSettings();
+  return textSource === "api" ? gemini.generateObject<T>(params) : generateObjectOnWeb<T>(params);
+}
+
 async function analyzeProduct(productId: string): Promise<store.ProductAnalysis> {
   const product = await store.getProduct(productId);
   if (!product) throw new Error("ไม่พบสินค้า");
-  const images = await gemini.loadImages(product.images);
+  // Every image is sent inline as base64 on each call; a few angles are enough
+  // to tell what the product is, and more only make the request slow enough to time out.
+  const images = await gemini.loadImages(product.images.slice(0, 3));
   const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
-  const analysis = await gemini.generateObject<store.ProductAnalysis>({
+  const analysis = await generateObject<store.ProductAnalysis>({
     system,
     prompt,
     images,
@@ -861,16 +885,19 @@ async function generateContentScenes(
   targetDuration: number,
   site: GenerationSite = "flow",
 ): Promise<{ content: store.Content; scenes: store.Scene[] }> {
-  const clipSeconds = clipSecondsForSite(site);
+  targetDuration = snapDuration(site, targetDuration);
+  const clipSeconds = clipSecondsForSite(site, targetDuration);
   const product = await store.getProduct(productId);
   if (!product) throw new Error("ไม่พบสินค้า");
   const analysis = await store.getAnalysis(product.id);
-  const images = await gemini.loadImages(product.images);
+  // The analysis already worked out what the product is; the script and scene
+  // calls only need the cover photo to keep the product's look right.
+  const images = await gemini.loadImages(product.images.slice(0, 1));
 
   // Rotate angles across generations so repeated runs for one product tell different stories.
   const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
   const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
-  const contentResult = await gemini.generateObject<{
+  const contentResult = await generateObject<{
     hook: string;
     script: string;
     caption: string;
@@ -895,7 +922,7 @@ async function generateContentScenes(
   });
 
   const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0);
-  const sceneResult = await gemini.generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
+  const sceneResult = await generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
     ...scenePrompt,
     images,
     schema: prompts.SCENE_PLAN_SCHEMA,
@@ -1488,8 +1515,9 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         ok: true,
         keys: state.keys.map((key) => ({
           key,
-          masked: key.length > 10 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key,
+          masked: store.maskKey(key),
           cooldownUntil: state.cooldowns[key] && state.cooldowns[key] > now ? state.cooldowns[key] : null,
+          lastError: state.errors?.[key] ?? null,
         })),
       });
     })();
@@ -1500,6 +1528,16 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     (async () => {
       const state = await store.saveApiKeys(message.keys);
       sendResponse({ ok: true, count: state.keys.length });
+    })();
+    return true;
+  }
+
+  if (message.type === "TEST_API_KEY") {
+    (async () => {
+      const result = await gemini.testApiKey(message.key);
+      // A key that works again should not stay benched from an old failure.
+      if (result.ok) await store.clearKeyCooldown(message.key);
+      sendResponse(result);
     })();
     return true;
   }

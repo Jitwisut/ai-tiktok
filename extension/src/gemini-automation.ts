@@ -88,9 +88,10 @@ function geminiShowBanner(text: string, color: string) {
   document.body.appendChild(banner);
 }
 
-function geminiReportProgress(videoId: string, current: number, total: number, state: string) {
+/** `error` travels with a failure so autopilot can tell a quota lock from a one-off failure. */
+function geminiReportProgress(videoId: string, current: number, total: number, state: string, error?: string) {
   try {
-    chrome.storage.local.set({ jobProgress: { videoId, current, total, state, at: Date.now() } }).catch(() => {});
+    chrome.storage.local.set({ jobProgress: { videoId, current, total, state, error, at: Date.now() } }).catch(() => {});
   } catch {
     // context already gone
   }
@@ -203,14 +204,17 @@ function geminiVideoSrc(response: HTMLElement | undefined): string | undefined {
 function geminiQuotaNotice(): string | undefined {
   const editor = document.querySelector<HTMLElement>("rich-textarea .ql-editor");
   if (!editor || editor.getAttribute("contenteditable") !== "false") return undefined;
+  // Inside a chat the notice says when videos come back; the /videos start
+  // page locks the box without saying why. Only quote real notice lines,
+  // never the chip labels ("วิดีโอ", "Flash") that share the container.
   const container = document.querySelector<HTMLElement>("input-container") ?? geminiInputArea();
   const notice = (container?.innerText ?? "")
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean)
+    .filter((line) => /โควต้า|quota|limit|ขีดจำกัด|อีกครั้ง|again|อัปเกรด|upgrade/i.test(line) && !/เหลือน้อย|running low/i.test(line))
     .slice(0, 2)
     .join(" ");
-  return `โควต้า: Gemini ล็อกช่อง prompt ไว้ — ${notice || "โควต้าสร้างวิดีโอหมด"}`;
+  return `โควต้า: Gemini ปิดช่องสร้างวิดีโอไว้ — ${notice || "โควต้าวิดีโอของบัญชีนี้หมด ลองใหม่เมื่อโควต้ารีเซ็ต (ดูเวลาได้ในแชทวิดีโอล่าสุดบน Gemini)"}`;
 }
 
 function geminiAttachmentCount(): number {
@@ -269,7 +273,12 @@ async function geminiAttachImage(job: GeminiVideoJob): Promise<boolean> {
   const mimeType = /^image\/(png|jpeg|webp)/.test(job.imageMimeType ?? "") ? job.imageMimeType!.split(";")[0] : "image/jpeg";
   const extension = mimeType === "image/png" ? "png" : mimeType === "image/webp" ? "webp" : "jpg";
   const file = geminiBase64ToFile(job.imageBase64, mimeType, `product-${job.videoId.slice(0, 8)}.${extension}`);
+  return geminiPasteImage(file);
+}
 
+async function geminiPasteImage(file: File): Promise<boolean> {
+  const editor = geminiEditor();
+  if (!editor) return false;
   const before = geminiAttachmentCount();
   const transfer = new DataTransfer();
   transfer.items.add(file);
@@ -320,13 +329,25 @@ function geminiTrustedClick(selector: string, bringToFront: boolean): Promise<{ 
  * suggests it listens for pointer/mouse down — so try the full synthetic
  * sequence first, and only then the DevTools click (which shows Chrome's
  * "debugging this browser" bar and fails while DevTools is open on the tab).
+ *
+ * Sent is judged by the prompt landing in the chat, not by the reply: Gemini
+ * shows the user's message and turns send into "stop" at once, but the
+ * model-response element only appears seconds later. Waiting for the reply
+ * made the fallback fire while the button was already "stop", and the
+ * DevTools click stopped the answer it had just asked for.
  */
 async function geminiSubmit(): Promise<boolean> {
-  const before = geminiResponses().length;
-  const sent = () => (geminiResponses().length > before ? true : undefined);
+  const responsesBefore = geminiResponses().length;
+  const queriesBefore = document.querySelectorAll("user-query").length;
+  const sent = () =>
+    document.querySelectorAll("user-query").length > queriesBefore ||
+    geminiResponses().length > responsesBefore ||
+    geminiSendIsStop()
+      ? true
+      : undefined;
 
   const button = document.querySelector<HTMLButtonElement>(".send-button button");
-  if (button) {
+  if (button && !geminiSendIsStop()) {
     const rect = button.getBoundingClientRect();
     const at = { bubbles: true, cancelable: true, composed: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, button: 0 };
     button.dispatchEvent(new PointerEvent("pointerdown", { ...at, pointerType: "mouse", isPrimary: true }));
@@ -334,18 +355,122 @@ async function geminiSubmit(): Promise<boolean> {
     button.dispatchEvent(new PointerEvent("pointerup", { ...at, pointerType: "mouse", isPrimary: true }));
     button.dispatchEvent(new MouseEvent("mouseup", at));
     button.dispatchEvent(new MouseEvent("click", at));
-    if (await geminiWaitFor(sent, 4000, 400)) return true;
+    if (await geminiWaitFor(sent, 4000, 300)) return true;
   }
 
   for (const bringToFront of [false, true]) {
-    const click = await geminiTrustedClick(".send-button button", bringToFront);
+    // Never click while it is a stop button — that cancels the reply.
+    if (sent()) return true;
+    // `.submit` is only on the send state, so the DevTools click cannot land on "stop" even if it flips in between.
+    const click = await geminiTrustedClick(".send-button.submit button", bringToFront);
     if (!click.ok) {
+      if (sent()) return true;
       geminiShowBanner(`กดส่งไม่สำเร็จ: ${click.error ?? "unknown"}`, "#dc2626");
       return false;
     }
     if (await geminiWaitFor(sent, 15000, 500)) return true;
   }
   return false;
+}
+
+/** The send button turns into "stop" (class `stop`, icon stop) while Gemini is answering. */
+function geminiSendIsStop(): boolean {
+  const container = document.querySelector(".send-button");
+  return !!container && (container.classList.contains("stop") || !!container.querySelector('mat-icon[fonticon="stop"]'));
+}
+
+/* ---------- text prompts (product analysis, scripts, scenes) ---------- */
+
+interface GeminiTextRequest {
+  prompt: string;
+  images?: { base64: string; mimeType: string }[];
+  /** false = a follow-up in the chat the previous prompt used. */
+  newChat?: boolean;
+}
+
+const GEMINI_TEXT_REPLY_MAX_MS = 4 * 60_000;
+let geminiTextRunning = false;
+
+/**
+ * The reply as text. A JSON answer sits in a code block, whose text is the
+ * clean JSON; otherwise take the message body (a refusal, or JSON the model
+ * wrote without a fence).
+ */
+function geminiReplyText(response: HTMLElement): string {
+  const blocks = Array.from(response.querySelectorAll<HTMLElement>("code-block code, pre code, code-block"))
+    .map((el) => el.innerText.trim())
+    .filter((text) => text.includes("{"));
+  if (blocks.length) return blocks.sort((a, b) => b.length - a.length)[0];
+  return (response.querySelector<HTMLElement>("message-content")?.innerText ?? response.innerText).trim();
+}
+
+/** True once some "{" that opens a line reaches the last "}" as valid JSON — Gemini may restart its answer mid-block, leaving only the later copy whole. */
+function geminiJsonComplete(text: string): boolean {
+  if (!text.includes("{")) return true;
+  const end = text.lastIndexOf("}");
+  for (let i = end - 1; i >= 0; i--) {
+    if (text[i] !== "{" || !(i === 0 || /(^|\n)[ \t]*$/.test(text.slice(Math.max(0, i - 8), i)) || /```(json)?\s*$/i.test(text.slice(Math.max(0, i - 8), i)))) continue;
+    try {
+      JSON.parse(text.slice(i, end + 1).replace(/,(\s*[}\]])/g, "$1"));
+      return true;
+    } catch {
+      // keep looking further back
+    }
+  }
+  return false;
+}
+
+async function geminiRunTextPrompt(request: GeminiTextRequest): Promise<{ ok: boolean; text?: string; error?: string }> {
+  if (geminiJobRunning) return { ok: false, error: "แท็บนี้กำลังสร้างวิดีโออยู่" };
+  if (geminiTextRunning) return { ok: false, error: "แท็บนี้กำลังตอบคำถามอื่นอยู่" };
+  geminiTextRunning = true;
+  geminiCancelled = false;
+  try {
+    await geminiWaitFor(() => (geminiIsGenerating() ? undefined : true), 60000, 1000);
+    const editor = await geminiWaitFor(() => geminiEditor() ?? undefined, 20000, 500);
+    if (!editor) return { ok: false, error: "ไม่พบช่องพิมพ์บนหน้า Gemini — ล็อกอิน Gemini ในแท็บนี้ก่อน แล้วลองใหม่" };
+
+    geminiShowBanner("AI Affiliate Studio: กำลังให้ Gemini วิเคราะห์ / เขียนสคริปต์ — ห้ามปิดแท็บนี้", "#111827");
+    if (request.newChat !== false) await geminiClearAttachments();
+    for (const [i, image] of (request.images ?? []).entries()) {
+      const mimeType = /^image\/(png|jpeg|webp)/.test(image.mimeType) ? image.mimeType.split(";")[0] : "image/jpeg";
+      const file = geminiBase64ToFile(image.base64, mimeType, `product-${i + 1}.${mimeType.split("/")[1].replace("jpeg", "jpg")}`);
+      if (!(await geminiPasteImage(file))) geminiShowBanner("แนบรูปสินค้าไม่สำเร็จ — ถามต่อจากข้อความอย่างเดียว", "#d97706");
+    }
+
+    if (!geminiWritePrompt(request.prompt)) return { ok: false, error: "ใส่คำถามลงช่องของ Gemini ไม่สำเร็จ" };
+    await geminiSleep(800);
+    const before = geminiResponses().length;
+    if (!(await geminiSubmit())) return { ok: false, error: "ส่งคำถามบน Gemini ไม่สำเร็จ" };
+
+    // Done = nothing generating and the reply has stopped changing for a couple of polls.
+    let lastText = "";
+    let steady = 0;
+    const text = await geminiWaitFor(
+      () => {
+        const responses = geminiResponses();
+        const response = responses.length > before ? responses[responses.length - 1] : undefined;
+        if (!response || geminiIsGenerating()) {
+          steady = 0;
+          return undefined;
+        }
+        const current = geminiReplyText(response);
+        if (!current) return undefined;
+        steady = current === lastText ? steady + 1 : 0;
+        lastText = current;
+        // A reply that pauses mid-JSON is not done: wait for it to parse, or for a long silence.
+        return (steady >= 2 && geminiJsonComplete(current)) || steady >= 10 ? current : undefined;
+      },
+      GEMINI_TEXT_REPLY_MAX_MS,
+      1000,
+    );
+    if (geminiCancelled) return { ok: false, error: "ยกเลิกแล้ว" };
+    if (!text) return { ok: false, error: "Gemini ตอบไม่เสร็จภายในเวลาที่กำหนด" };
+    geminiShowBanner("AI Affiliate Studio: Gemini ตอบแล้ว ✓", "#16a34a");
+    return { ok: true, text };
+  } finally {
+    geminiTextRunning = false;
+  }
 }
 
 /* ---------- one clip ---------- */
@@ -369,8 +494,9 @@ async function geminiSubmitAndWait(job: GeminiVideoJob, clip: GeminiClip, label:
   // A reply to an earlier prompt may still be finishing.
   await geminiWaitFor(() => (geminiIsGenerating() ? undefined : true), 60000, 1000);
 
-  const editor = await geminiWaitFor(() => geminiEditor() ?? (geminiQuotaNotice() ? true : undefined), 30000, 500);
-  const quota = geminiQuotaNotice();
+  // The box can be briefly non-editable while the page boots — only a lock that stays counts.
+  const editor = await geminiWaitFor(() => geminiEditor() ?? undefined, 10000, 500);
+  const quota = editor ? undefined : geminiQuotaNotice();
   if (quota) return { error: quota };
   if (!editor) return { error: "ไม่พบช่อง prompt บนหน้า Gemini (หน้าเว็บอาจเปลี่ยนไป)" };
   if (!geminiVideoModeOn()) return { error: "หน้า Gemini ไม่ได้อยู่ในโหมดสร้างวิดีโอ — เปิด https://gemini.google.com/videos แล้วลองใหม่" };
@@ -398,7 +524,9 @@ async function geminiSubmitAndWait(job: GeminiVideoJob, clip: GeminiClip, label:
   const orientation = job.aspectRatio === "16:9" ? "16:9 landscape (horizontal)" : "9:16 portrait (vertical)";
 
   geminiShowBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
-  if (!geminiWritePrompt(`Generate one ${orientation} video. ${clip.prompt}${productReference}${continuation}`)) {
+  // Gemini renders as long a video as the prompt asks for; saying the length up front keeps it from defaulting to a short clip.
+  const length = job.clips.length === 1 && job.duration > 0 ? `${job.duration}-second ` : "";
+  if (!geminiWritePrompt(`Generate one ${length}${orientation} video. ${clip.prompt}${productReference}${continuation}`)) {
     return { error: "ใส่ prompt ลงช่องของ Gemini ไม่สำเร็จ" };
   }
   await geminiSleep(800);
@@ -431,11 +559,11 @@ async function geminiSubmitAndWait(job: GeminiVideoJob, clip: GeminiClip, label:
   return outcome ?? { error: "รอวิดีโอจาก Gemini นานเกินไป — เช็คที่หน้า Gemini ว่ายังสร้างอยู่หรือเปล่า" };
 }
 
-async function geminiGenerateClip(job: GeminiVideoJob, clip: GeminiClip, label: string): Promise<string | null> {
+async function geminiGenerateClip(job: GeminiVideoJob, clip: GeminiClip, label: string): Promise<{ src: string } | { error: string }> {
   let withImage = !!job.imageBase64;
   for (;;) {
     const outcome = await geminiSubmitAndWait(job, clip, label, withImage);
-    if ("src" in outcome) return outcome.src;
+    if ("src" in outcome) return outcome;
 
     // The safety filter trips more often with a photo attached; the text alone is worth one more try.
     if (outcome.error.startsWith("นโยบาย") && withImage && !geminiCancelled) {
@@ -444,7 +572,7 @@ async function geminiGenerateClip(job: GeminiVideoJob, clip: GeminiClip, label: 
       continue;
     }
     geminiShowBanner(`${label} ${outcome.error}`, "#dc2626");
-    return null;
+    return outcome;
   }
 }
 
@@ -521,12 +649,13 @@ async function geminiRunJob(job: GeminiVideoJob, startIndex: number) {
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     geminiReportProgress(job.videoId, clip.index + 1, total, "generating");
 
-    const src = await geminiGenerateClip(job, clip, label);
-    if (!src) {
-      geminiReportProgress(job.videoId, clip.index + 1, total, "failed");
+    const generated = await geminiGenerateClip(job, clip, label);
+    if ("error" in generated) {
+      geminiReportProgress(job.videoId, clip.index + 1, total, "failed", generated.error);
       await geminiClearActiveJob();
       return;
     }
+    const src = generated.src;
 
     geminiShowBanner(`AI Affiliate Studio: ${label} กำลังอัปโหลด...`, "#111827");
     geminiReportProgress(job.videoId, clip.index + 1, total, "uploading");
@@ -567,7 +696,11 @@ function geminiStartJob(job: GeminiVideoJob, startIndex = 0): { ok: boolean; err
   geminiSaveActiveJob(job, startIndex)
     .then(() => geminiRunJob(job, startIndex))
     .catch((err) => {
-      geminiShowBanner(`เกิดข้อผิดพลาด: ${err instanceof Error ? err.message : String(err)}`, "#dc2626");
+      const text = err instanceof Error ? err.message : String(err);
+      geminiShowBanner(
+        /context invalidated/i.test(text) ? "Extension ถูกรีโหลดระหว่างทำงาน — กด F5 รีเฟรชหน้านี้" : `เกิดข้อผิดพลาด: ${text}`,
+        "#dc2626",
+      );
     })
     .finally(() => {
       clearInterval(heartbeat);
@@ -576,7 +709,13 @@ function geminiStartJob(job: GeminiVideoJob, startIndex = 0): { ok: boolean; err
   return { ok: true };
 }
 
-chrome.runtime.onMessage.addListener((message: { type: string; job?: GeminiVideoJob }, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: { type: string; job?: GeminiVideoJob } & Partial<GeminiTextRequest>, _sender, sendResponse) => {
+  if (message.type === "RUN_TEXT_PROMPT" && message.prompt) {
+    geminiRunTextPrompt(message as GeminiTextRequest)
+      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))
+      .then(sendResponse);
+    return true;
+  }
   if (message.type === "CANCEL_RUNNING_JOB") {
     geminiCancelled = true;
     geminiShowBanner("กำลังยกเลิก...", "#d97706");

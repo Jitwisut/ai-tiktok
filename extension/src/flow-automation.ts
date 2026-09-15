@@ -518,11 +518,44 @@ async function flowPickAsset(asset: HTMLElement) {
   if (addToPrompt && addToPrompt !== true) addToPrompt.click();
 }
 
+/** Longest side of the product photo sent to Flow — plenty for a product reference. */
+const FLOW_UPLOAD_MAX_SIDE = 1024;
+/**
+ * Flow's upload is slow: a ~1 MB photo sat on "Uploading" for 77 seconds.
+ * Keep waiting while the tile says it is still uploading, up to this cap.
+ */
+const FLOW_ASSET_UPLOAD_MAX_MS = 4 * 60_000;
+
 function flowBase64ToFile(image: FlowProductImage): File {
   const binary = atob(image.base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return new File([bytes], image.name, { type: image.mimeType });
+}
+
+/**
+ * Shop photos are often large, and Flow's upload time grows with the file.
+ * Re-encode as a JPEG no larger than FLOW_UPLOAD_MAX_SIDE; keep the original
+ * if that fails or does not come out smaller.
+ */
+async function flowProductFile(image: FlowProductImage): Promise<File> {
+  const original = flowBase64ToFile(image);
+  try {
+    const bitmap = await createImageBitmap(original);
+    const scale = Math.min(1, FLOW_UPLOAD_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    const canvas = new OffscreenCanvas(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return original;
+    // JPEG has no transparency; a transparent cut-out would otherwise turn black.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.9 });
+    return blob.size < original.size ? new File([blob], image.name, { type: "image/jpeg" }) : original;
+  } catch {
+    return original;
+  }
 }
 
 /**
@@ -558,14 +591,26 @@ async function flowAttachProductImage(image: FlowProductImage): Promise<boolean>
         return false;
       }
       const transfer = new DataTransfer();
-      transfer.items.add(flowBase64ToFile(image));
+      transfer.items.add(await flowProductFile(image));
       input.files = transfer.files;
       input.dispatchEvent(new Event("change", { bubbles: true }));
       input.removeAttribute("data-ai-affiliate-file-input");
     } finally {
       document.documentElement.removeAttribute("data-ai-affiliate-capture-file");
     }
-    asset = await flowWaitFor(byName, 60000, 500);
+    // A fixed 60s wait gave up on uploads that were still going and did finish.
+    const uploadStarted = Date.now();
+    asset = await flowWaitFor(
+      () => {
+        const ready = byName();
+        if (ready) return ready;
+        const seconds = Math.round((Date.now() - uploadStarted) / 1000);
+        flowShowBanner(`AI Affiliate Studio: กำลังอัปโหลดรูปสินค้าเข้า Flow... ${seconds} วิ`, "#111827");
+        return undefined;
+      },
+      FLOW_ASSET_UPLOAD_MAX_MS,
+      1000,
+    );
     if (!asset) {
       await flowCloseIngredientMenu();
       return false;
@@ -1033,7 +1078,8 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
           base64: job.imageBase64,
           // CDNs sometimes label images as octet-stream; Flow's upload only accepts image types.
           mimeType: /^image\/(png|jpeg|webp|gif)/.test(job.imageMimeType ?? "") ? job.imageMimeType!.split(";")[0] : "image/jpeg",
-          name: `product-${job.videoId.slice(0, 8)}.${/png/.test(job.imageMimeType ?? "") ? "png" : /webp/.test(job.imageMimeType ?? "") ? "webp" : "jpg"}`,
+          // Always .jpg: flowProductFile re-encodes the photo as a JPEG before uploading it.
+          name: `product-${job.videoId.slice(0, 8)}.jpg`,
         }
       : null;
     const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16", productImage);
@@ -1098,7 +1144,13 @@ function flowStartJob(job: FlowVideoJob, startIndex = 0) {
   flowSaveActiveJob(job, startIndex)
     .then(() => flowRunJob(job, startIndex))
     .catch((err) => {
-      flowShowBanner(`เกิดข้อผิดพลาด: ${err instanceof Error ? err.message : String(err)}`, "#dc2626");
+      const text = err instanceof Error ? err.message : String(err);
+      flowShowBanner(
+        /context invalidated/i.test(text)
+          ? "Extension ถูกรีโหลดระหว่างทำงาน — แท็บนี้คุยกับ extension ไม่ได้แล้ว กด F5 รีเฟรชหน้านี้ (ถ้าไม่ต้องการให้ส่ง prompt ซ้ำ ให้กด ข้ามชิ้นนี้ ในแผงก่อนรีเฟรช)"
+          : `เกิดข้อผิดพลาด: ${text}`,
+        "#dc2626",
+      );
     })
     .finally(() => {
       clearInterval(heartbeat);
@@ -1137,7 +1189,8 @@ aiPanelMount({ site: "flow", siteLabel: "Google Flow" });
  */
 // Flow's home page has no prompt box, so a job claimed there would only
 // fail — leave it in storage for the project page to pick up instead.
-const flowOnProjectPage = /^\/project\//.test(window.location.pathname);
+// …including /u/<n>/project/… when several Google accounts are signed in.
+const flowOnProjectPage = /^\/(?:u\/\d+\/)?project\//.test(window.location.pathname);
 
 if (flowOnProjectPage) flowShowBanner("AI Affiliate Studio: กำลังตรวจสอบงานที่ค้างอยู่...", "#111827");
 
