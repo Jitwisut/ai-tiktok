@@ -29,12 +29,20 @@ export default async function ContentDetailPage({
         caption: content.caption,
         cta: content.cta,
         style: content.style,
+        onScreenText: content.onScreenText,
+        onScreenCta: content.onScreenCta,
+        angle: content.angle,
         productName: content.product.name,
         scenes: content.scenes.map((s) => ({
           id: s.id,
           position: s.position,
           duration: s.duration,
           description: s.description,
+          visual: s.visual,
+          cameraMotion: s.cameraMotion,
+          clip: s.clip,
+          dialogue: s.dialogue,
+          voiceover: s.voiceover,
         })),
       }}
       videos={videos.map((v) => ({

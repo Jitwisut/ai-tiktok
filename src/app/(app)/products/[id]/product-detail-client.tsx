@@ -59,6 +59,7 @@ export function ProductDetailClient({
   const [deleting, setDeleting] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [style, setStyle] = useState<string>(CONTENT_STYLES[0]);
+  const [targetDuration, setTargetDuration] = useState(24);
   const [generatingContent, setGeneratingContent] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
@@ -165,7 +166,7 @@ export function ProductDetailClient({
     const res = await fetch(`/api/contents/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ productId: product.id, style }),
+      body: JSON.stringify({ productId: product.id, style, targetDuration }),
     });
     setGeneratingContent(false);
 
@@ -298,6 +299,20 @@ export function ProductDetailClient({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="content-duration">ความยาววิดีโอ</Label>
+            <select
+              id="content-duration"
+              className="h-9 rounded-md border bg-transparent px-3 text-sm"
+              value={targetDuration}
+              onChange={(e) => setTargetDuration(Number(e.target.value))}
+            >
+              <option value={8}>8 วินาที</option>
+              <option value={16}>16 วินาที</option>
+              <option value={24}>24 วินาที</option>
+              <option value={32}>32 วินาที</option>
+            </select>
           </div>
           <Button onClick={handleGenerateContent} disabled={generatingContent}>
             {generatingContent ? "กำลังสร้าง..." : "สร้าง Hook/Script/Caption"}

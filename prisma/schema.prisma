@@ -89,6 +89,11 @@ model Content {
   caption   String
   cta       String
   style     String
+  /// Short Thai text that the final video prompt must copy exactly on screen.
+  onScreenText String?
+  onScreenCta  String?
+  /// The analysis angle used to build this creative version.
+  angle     String?
   status    String   @default("ready")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -107,6 +112,13 @@ model Scene {
   position    Int
   duration    Int
   description String
+  /// Provider-facing English visual direction, if a richer storyboard exists.
+  visual      String?
+  cameraMotion String?
+  /// Render clip index, zero-based, for multi-clip storyboards.
+  clip        Int?
+  dialogue    String?
+  voiceover   String?
   videoPrompt String?
   createdAt   DateTime @default(now())
 

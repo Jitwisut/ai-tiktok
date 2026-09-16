@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
       session.user.id,
       parsed.data.productId,
       parsed.data.style,
+      parsed.data.targetDuration,
     );
     if (!content) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });

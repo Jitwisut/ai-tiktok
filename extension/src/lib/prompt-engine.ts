@@ -1,5 +1,7 @@
 /** Ported from src/lib/prompt-engine/{types,prompt-builder,clip-planner}.ts — pure functions, no server dependency. */
 
+import { styleVideoDirection } from "./style-playbooks.js";
+
 export interface VideoSettings {
   duration: number;
   aspectRatio: string;
@@ -50,7 +52,7 @@ const DEFAULT_CAMERA_MOTIONS = [
 export const CLIP_SECONDS = 8;
 
 /** A video is joined from at most this many clips. */
-export const MAX_CLIPS = 3;
+export const MAX_CLIPS = 4;
 
 export type GenerationSite = "aistudio" | "flow" | "gemini";
 
@@ -71,7 +73,7 @@ export function clipSecondsForSite(site: string | undefined, targetDuration?: nu
   return GEMINI_DURATIONS.reduce((best, s) => (Math.abs(s - wanted) < Math.abs(best - wanted) ? s : best));
 }
 
-/** The lengths a site can make: one, two or three joined clips — or on Gemini, one generation of each length. */
+/** The lengths a site can make: one to four joined clips — or on Gemini, one generation of each length. */
 export function durationOptions(site: string | undefined): number[] {
   if (site === "gemini") return [...GEMINI_DURATIONS];
   return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * CLIP_SECONDS);
@@ -112,6 +114,10 @@ export interface OnScreenText {
   cta?: string;
 }
 
+function quoteExact(value: string): string {
+  return JSON.stringify(value.trim());
+}
+
 /** "9:16 portrait vertical" vs "16:9 landscape horizontal" — never a ratio that contradicts its orientation word. */
 export function describeAspectRatio(aspectRatio: string): string {
   const [w, h] = aspectRatio.split(":").map(Number);
@@ -129,8 +135,8 @@ function onScreenTextRule(index: number, clipCount: number, text: OnScreenText |
   const lines: string[] = [];
   const isFirst = index === 0;
   const isLast = index === clipCount - 1;
-  if (isFirst && text?.headline) lines.push(`at the start show the Thai headline 「${text.headline}」`);
-  if (isLast && text?.cta) lines.push(`${lines.length ? "and " : ""}near the end show the Thai call to action 「${text.cta}」`);
+  if (isFirst && text?.headline) lines.push(`at the start show the Thai headline ${quoteExact(text.headline)}`);
+  if (isLast && text?.cta) lines.push(`${lines.length ? "and " : ""}near the end show the Thai call to action ${quoteExact(text.cta)}`);
 
   const packaging =
     "The product's own packaging keeps its real design, colours and logo exactly as in the product photo; render small or dense printed packaging text as soft natural product-photography detail rather than invented legible characters.";
@@ -140,7 +146,7 @@ function onScreenTextRule(index: number, clipCount: number, text: OnScreenText |
   }
   return [
     `[ON-SCREEN TEXT] ${lines.join(" ")}.`,
-    "Copy these Thai strings character for character, exactly as written between the 「」 marks, with every vowel and tone mark in the right place — do not translate, transliterate, reorder or add characters.",
+    "The on-screen text language is Thai, regardless of the language used in this prompt or the spoken language. Copy every string character for character exactly as written between the double quotation marks, including every Thai vowel and tone mark — do not translate, transliterate, reorder or add characters.",
     `Render it as a short static title card: large bold Thai sans-serif block letters, one line, centred, held still (no motion blur, no fast pan across it) against a plain high-contrast background ${clipSeconds > 10 ? "for about 2-3 seconds each" : "for at least half the shot's length"}, so the letterforms stay sharp.`,
     "Show no other on-screen text anywhere else in the frame, and never English words or garbled characters that merely look like Thai.",
     `If you cannot render this exact Thai text sharply and correctly, show no on-screen text at all for this ${clipCount === 1 ? "video" : "part"} — incorrect Thai text is worse than no text.`,
@@ -293,6 +299,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       `[FORMAT] ${describeAspectRatio(settings.aspectRatio)} video. ${look}. Sharp focus, natural motion, realistic hands and faces.`,
     );
     sections.push(`[PRODUCT] ${productName}. The same single product throughout, never replaced by a generic or similar item.`);
+    sections.push(`[STYLE EXECUTION] ${styleVideoDirection(style)}`);
 
     if (cast) {
       sections.push(`[CAST] ${cast.person}. Exactly this person and wardrobe in every part — same face, hair, body and clothes.`);

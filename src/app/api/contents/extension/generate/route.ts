@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const content = await generateContent(product.userId, productId, styleResult.data);
+    const content = await generateContent(product.userId, productId, styleResult.data, targetDuration);
     if (!content) {
       return NextResponse.json({ error: "Product not found" }, { status: 404 });
     }
@@ -69,10 +69,18 @@ export async function POST(request: NextRequest) {
         script: content.script,
         caption: content.caption,
         cta: content.cta,
+        onScreenText: content.onScreenText,
+        onScreenCta: content.onScreenCta,
+        angle: content.angle,
       },
       scenes: (scenes ?? []).map((scene) => ({
         duration: scene.duration,
         description: scene.description,
+        visual: scene.visual,
+        cameraMotion: scene.cameraMotion,
+        clip: scene.clip,
+        dialogue: scene.dialogue,
+        voiceover: scene.voiceover,
       })),
     });
   } catch (err) {

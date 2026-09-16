@@ -97,11 +97,15 @@ interface GeneratedContent {
   script: string;
   caption: string;
   cta: string;
+  onScreenText?: string;
+  onScreenCta?: string;
+  angle?: string;
 }
 
 interface GeneratedScene {
   duration: number;
   description: string;
+  visual?: string;
   clip?: number;
   dialogue?: string;
   voiceover?: string;
@@ -330,12 +334,16 @@ function renderReview() {
     parts.push(`<div><b>Script:</b> ${escapeHtml(activeContent.script)}</div>`);
     parts.push(`<div><b>Caption:</b> ${escapeHtml(activeContent.caption)}</div>`);
     parts.push(`<div><b>CTA:</b> ${escapeHtml(activeContent.cta)}</div>`);
+    if (activeContent.angle) parts.push(`<div><b>มุมการขาย:</b> ${escapeHtml(activeContent.angle)}</div>`);
+    if (activeContent.onScreenText) parts.push(`<div><b>ข้อความบนจอ:</b> "${escapeHtml(activeContent.onScreenText)}"</div>`);
+    if (activeContent.onScreenCta) parts.push(`<div><b>ข้อความ CTA บนจอ:</b> "${escapeHtml(activeContent.onScreenCta)}"</div>`);
   }
   if (activeScenes.length) {
     parts.push(`<div style="font-weight:700;color:#93c5fd;margin:8px 0 2px">ฉาก (${activeScenes.length})</div>`);
     activeScenes.forEach((scene, i) => {
       const clip = Number.isInteger(scene.clip) ? `คลิป ${scene.clip! + 1} · ` : "";
       parts.push(`<div>${i + 1}. (${clip}${scene.duration}s) ${escapeHtml(scene.description)}</div>`);
+      if (scene.visual) parts.push(`<div style="color:#9ca3af;margin-left:14px">ภาพ: ${escapeHtml(scene.visual)}</div>`);
       const speech = scene.dialogue?.trim()
         ? `🗣️ ${scene.dialogue.trim()}`
         : scene.voiceover?.trim()

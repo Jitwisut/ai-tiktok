@@ -3,16 +3,9 @@
 import type { JsonSchema } from "./gemini.js";
 import type { Product, ProductAnalysis, Scene } from "./store.js";
 import { MAX_CLIPS, clipCountFor } from "./prompt-engine.js";
+import { stylePlaybookPrompt } from "./style-playbooks.js";
 
-export const CONTENT_STYLES = [
-  "UGC",
-  "Review",
-  "Problem Solution",
-  "Storytelling",
-  "Before After",
-  "Unboxing",
-  "Demo",
-] as const;
+export { CONTENT_STYLES } from "./style-playbooks.js";
 
 export const PRODUCT_ANALYSIS_SCHEMA: JsonSchema = {
   type: "object",
@@ -76,17 +69,6 @@ const SCRIPT_STRUCTURE: Record<number, string> = {
   1: "hook สั้นมาก + จุดขายหลัก 1 ข้อ + CTA สั้น",
   2: "hook + จุดขาย/การใช้งาน 2 จังหวะ + CTA",
   3: "hook + ปัญหา/บริบท + สาธิตการใช้งาน + ประโยชน์ + CTA",
-};
-
-/** Default speech mode per style; the storyboard may still mix modes where it fits. */
-const STYLE_SPEECH_MODE: Record<string, string> = {
-  UGC: "ส่วนใหญ่เป็น dialogue (คนในภาพพูดกับกล้องแบบเป็นกันเอง)",
-  Review: "dialogue เป็นหลัก แทรก voiceover ได้บางช่วง",
-  "Problem Solution": "ผสม dialogue และ voiceover",
-  Storytelling: "voiceover เป็นหลัก (เล่าเรื่องจากนอกจอ)",
-  "Before After": "voiceover เป็นหลัก",
-  Unboxing: "dialogue สั้นๆ แบบรีแอคชั่นระหว่างแกะกล่อง",
-  Demo: "voiceover เป็นหลัก หรือพูดน้อยที่สุด",
 };
 
 export const SCENE_PLAN_SCHEMA: JsonSchema = {
@@ -170,7 +152,8 @@ export function buildContentPrompt(
       "script ต้องพูดจบได้จริงภายในความยาววิดีโอที่กำหนด โดยไม่ต้องเร่งพูด และเหลือเวลาให้ภาพโชว์สินค้าและรีแอคชั่นด้วย — ห้ามเขียนยาวเกินงบตัวอักษรที่กำหนด",
       "caption ต้องมีโครงสร้าง: บรรทัดแรกเป็น hook สั้นที่ทำให้คนหยุดเลื่อน ตามด้วยจุดขายสั้นๆ 1 ประโยค แล้วปิดท้ายด้วยแฮชแท็ก 4-6 อัน ผสมระหว่างแฮชแท็กกว้าง (หมวดสินค้า) กับแฮชแท็กเจาะจง (ชื่อ/ประเภทสินค้า) ห้ามใช้แฮชแท็กที่ไม่เกี่ยวข้องเพื่อหวังยอดวิว",
       "cta ให้ใช้ภาษาที่คนไทยบน TikTok Shop คุ้นเคย เช่น ชวนกดตะกร้าเหลืองด้านล่าง หรือชวนแชทสอบถาม ห้ามใช้คำที่ฟังดูยัดเยียดหรือเร่งรัดเกินไป",
-      "ห้ามเขียน hook, script, caption หรือ cta ที่มีการอ้างสรรพคุณทางการแพทย์ (เช่น รักษาโรค ต้านมะเร็ง ลดความเสี่ยงโรค), การรับประกันผลลัพธ์แบบเกินจริง (เช่น \"ได้ผล 100%\" \"หายขาด\"), หรือถ้อยคำที่อาจถูกมองว่าหลอกลวงผู้บริโภค — เน้นประสบการณ์การใช้งานจริงและความรู้สึกแทนเสมอ",
+      "ห้ามเขียน hook, script, caption, cta หรือข้อความบนจอที่มีการอ้างสรรพคุณทางการแพทย์ (เช่น รักษาโรค ต้านมะเร็ง ลดความเสี่ยงโรค), การรับประกันผลลัพธ์แบบเกินจริง (เช่น \"ได้ผล 100%\" \"หายขาด\"), หรือถ้อยคำที่อาจถูกมองว่าหลอกลวงผู้บริโภค — เน้นประสบการณ์การใช้งานจริงและความรู้สึกแทนเสมอ",
+      "ห้ามแต่งประสบการณ์ส่วนตัว เช่น ใช้มา 7 วัน/3 เดือน ซื้อซ้ำ หรือเห็นผลในจำนวนวันที่กำหนด เว้นแต่ข้อมูลสินค้าระบุและยืนยันไว้ชัดเจน",
     ].join("\n"),
     prompt: [
       hasImages ? "รูปสินค้าจริงแนบมา ให้ยึดตามรูป" : "",
@@ -184,6 +167,7 @@ export function buildContentPrompt(
             `จุดขาย: ${analysis.sellingPoints.join(", ")}`,
           ].join("\n")
         : "",
+      stylePlaybookPrompt(style),
       angle
         ? `มุมการขายที่เลือก: "${angle}" — สร้าง hook, script และ CTA ทั้งหมดรอบมุมนี้ ห้ามเปลี่ยนไปใช้มุมอื่นกลางคลิป`
         : "",
@@ -196,6 +180,7 @@ export function buildContentPrompt(
       "ต้องการ hook (ประโยคเปิดที่ดึงดูด), script (บทพูดเต็ม), caption (แคปชันโพสต์), cta (call to action)",
       `และ onScreenText: ข้อความพาดหัวที่กลั่นมาจาก hook หรือจุดขายหลัก ให้เห็นแวบเดียวแล้วเข้าใจทันที ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ — ควรเป็นคำเดียวหรือวลีสั้นมาก ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษรรวมสระและวรรณยุกต์ (ยิ่งสั้นยิ่งเรนเดอร์เป็นภาษาไทยได้แม่นยำขึ้น) ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น "สบายสุด" "ยืดเยอะ"`,
       `และ onScreenCta: ข้อความชวนกดตะกร้าเหลืองซื้อตอนท้าย ภาษาไทยล้วน สั้นที่สุดเท่าที่จะสั้นได้ ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษรรวมสระและวรรณยุกต์ ห้ามมีภาษาอังกฤษ อีโมจิ หรือสัญลักษณ์ เช่น "กดเลย" "สั่งเลย"`,
+      "ฟิลด์ onScreenText และ onScreenCta คือข้อความจริงที่จะถูกคัดลอกลงวิดีโอภายหลัง: ส่งเฉพาะตัวอักษรภาษาไทย ไม่ต้องใส่เครื่องหมายคำพูดในค่า เพราะ prompt engine จะครอบด้วยเครื่องหมาย \"...\" ให้เอง",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -254,15 +239,15 @@ export function buildScenePrompt(
       hasImages ? "รูปสินค้าจริงแนบมา ให้ยึดตามรูป" : "",
       `สินค้า: ${product.name}`,
       `รายละเอียดสินค้า: ${product.description ?? "-"}`,
-      `สไตล์: ${content.style} — โหมดเสียงพูดที่แนะนำ: ${STYLE_SPEECH_MODE[content.style] ?? "เลือกให้เหมาะกับฉาก"}`,
+      `สไตล์: ${content.style}\n${stylePlaybookPrompt(content.style)}`,
       content.angle ? `มุมการขาย: ${content.angle}` : "",
       `hook: ${content.hook}`,
       `script: ${content.script}`,
       `cta: ${content.cta}`,
       content.onScreenText
-        ? `ข้อความพาดหัวบนจอ "${content.onScreenText}" จะขึ้นช่วงต้นของ clip 0 — ให้ฉากแรกของ clip 0 เป็นภาพที่สื่อถึง hook และมีพื้นที่ว่างให้ข้อความ`
+        ? `ข้อความพาดหัวบนจอภาษาไทยต้องคัดลอกตรงตัวว่า "${content.onScreenText}" จะขึ้นช่วงต้นของ clip 0 — ให้ฉากแรกของ clip 0 เป็นภาพที่สื่อถึง hook และมีพื้นที่ว่างให้ข้อความ`
         : "ฉากแรกของ clip 0 ต้องเป็นภาพที่สื่อถึง hook ของสคริปต์โดยตรง ให้เห็นแวบแรกแล้วรู้สึกอยากดูต่อ",
-      content.onScreenCta ? `ข้อความ CTA บนจอ "${content.onScreenCta}" จะขึ้นช่วงท้ายของ clip ${lastBlock} — ให้ฉากสุดท้ายจบที่สินค้าดูน่าซื้อ` : "",
+      content.onScreenCta ? `ข้อความ CTA บนจอภาษาไทยต้องคัดลอกตรงตัวว่า "${content.onScreenCta}" จะขึ้นช่วงท้ายของ clip ${lastBlock} — ให้ฉากสุดท้ายจบที่สินค้าดูน่าซื้อ` : "",
       `ความยาววิดีโอทั้งหมด: ${blocks * clipSeconds} วินาที = ${blocks} clip (clip 0 ถึง clip ${lastBlock}) ต้องมีฉากครบทุก clip`,
     ]
       .filter(Boolean)

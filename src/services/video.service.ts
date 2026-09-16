@@ -18,11 +18,15 @@ export async function createVideo(
   if (!content) return { error: "not_found" as const };
   if (content.scenes.length === 0) return { error: "no_scenes" as const };
 
-  const built = buildVeoPrompt(
-    content.product.name,
-    content.scenes,
-    settings,
-  );
+  const promptSettings = {
+    ...settings,
+    style: settings.style === "UGC" ? content.style : settings.style,
+    // Content-level text is the source of truth, while explicit settings let
+    // an API caller override it for a one-off render.
+    onScreenText: settings.onScreenText ?? content.onScreenText ?? undefined,
+    onScreenCta: settings.onScreenCta ?? content.onScreenCta ?? undefined,
+  };
+  const built = buildVeoPrompt(content.product.name, content.scenes, promptSettings);
 
   const video = await prisma.$transaction(async (tx) => {
     const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
@@ -54,7 +58,7 @@ export async function createVideo(
         aspectRatio: settings.aspectRatio,
         duration: settings.duration,
         settings: JSON.parse(
-          JSON.stringify({ ...settings, promptText: built.text, structured: built.structured }),
+          JSON.stringify({ ...promptSettings, promptText: built.text, structured: built.structured }),
         ),
       },
     });
@@ -99,7 +103,19 @@ export async function createExtensionVideoJob(
   if (!content) return { error: "not_found" as const };
   if (content.scenes.length === 0) return { error: "no_scenes" as const };
 
-  const clips = planClips(content.product.name, content.scenes, settings, targetDuration);
+  const promptSettings = {
+    ...settings,
+    style: settings.style === "UGC" ? content.style : settings.style,
+    onScreenText: content.onScreenText ?? settings.onScreenText ?? undefined,
+    onScreenCta: content.onScreenCta ?? settings.onScreenCta ?? undefined,
+  };
+  const clips = planClips({
+    productName: content.product.name,
+    scenes: content.scenes,
+    settings: promptSettings,
+    targetDuration,
+    text: { headline: promptSettings.onScreenText, cta: promptSettings.onScreenCta },
+  });
 
   const video = await prisma.video.create({
     data: {
@@ -109,7 +125,7 @@ export async function createExtensionVideoJob(
       status: "queued",
       aspectRatio: settings.aspectRatio,
       duration: clips.length * CLIP_SECONDS,
-      settings: JSON.parse(JSON.stringify({ ...settings, targetDuration, clips })),
+      settings: JSON.parse(JSON.stringify({ ...promptSettings, targetDuration, clips })),
     },
   });
 
@@ -137,18 +153,28 @@ export async function replanExtensionVideoClips(videoId: string, targetDuration:
   if (video.status !== "queued") return { error: "not_queued" as const };
 
   const settings = videoSettingsSchema.parse((video.settings as Record<string, unknown>) ?? {});
-  const clips = planClips(
-    video.content.product.name,
-    video.content.scenes,
-    settings,
+  const promptSettings = {
+    ...settings,
+    style: settings.style === "UGC" ? video.content.style : settings.style,
+    onScreenText: video.content.onScreenText ?? settings.onScreenText ?? undefined,
+    onScreenCta: video.content.onScreenCta ?? settings.onScreenCta ?? undefined,
+  };
+  const clips = planClips({
+    productName: video.content.product.name,
+    scenes: video.content.scenes,
+    settings: promptSettings,
     targetDuration,
-  );
+    text: {
+      headline: promptSettings.onScreenText,
+      cta: promptSettings.onScreenCta,
+    },
+  });
 
   await prisma.video.update({
     where: { id: videoId },
     data: {
       duration: clips.length * CLIP_SECONDS,
-      settings: JSON.parse(JSON.stringify({ ...settings, targetDuration, clips })),
+      settings: JSON.parse(JSON.stringify({ ...promptSettings, targetDuration, clips })),
     },
   });
 

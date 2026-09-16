@@ -16,6 +16,11 @@ type Scene = {
   position: number;
   duration: number;
   description: string;
+  visual: string | null;
+  cameraMotion: string | null;
+  clip: number | null;
+  dialogue: string | null;
+  voiceover: string | null;
 };
 
 type Video = {
@@ -34,6 +39,9 @@ type ContentDetail = {
   caption: string;
   cta: string;
   style: string;
+  onScreenText: string | null;
+  onScreenCta: string | null;
+  angle: string | null;
   productName: string;
   scenes: Scene[];
 };
@@ -67,6 +75,8 @@ export function ContentDetailClient({
   const [script, setScript] = useState(content.script);
   const [caption, setCaption] = useState(content.caption);
   const [cta, setCta] = useState(content.cta);
+  const [onScreenText, setOnScreenText] = useState(content.onScreenText ?? "");
+  const [onScreenCta, setOnScreenCta] = useState(content.onScreenCta ?? "");
 
   const [saving, setSaving] = useState(false);
   const [planning, setPlanning] = useState(false);
@@ -92,7 +102,7 @@ export function ContentDetailClient({
     const res = await fetch(`/api/contents/${content.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ hook, script, caption, cta }),
+      body: JSON.stringify({ hook, script, caption, cta, onScreenText, onScreenCta }),
     });
     setSaving(false);
 
@@ -127,7 +137,14 @@ export function ContentDetailClient({
     const res = await fetch("/api/videos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contentId: content.id }),
+      body: JSON.stringify({
+        contentId: content.id,
+        settings: {
+          style: content.style,
+          onScreenText: onScreenText || undefined,
+          onScreenCta: onScreenCta || undefined,
+        },
+      }),
     });
     setCreatingVideo(false);
 
@@ -161,7 +178,15 @@ export function ContentDetailClient({
     const res = await fetch("/api/videos/extension", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contentId: content.id, targetDuration }),
+      body: JSON.stringify({
+        contentId: content.id,
+        targetDuration,
+        settings: {
+          style: content.style,
+          onScreenText: onScreenText || undefined,
+          onScreenCta: onScreenCta || undefined,
+        },
+      }),
     });
 
     if (!res.ok) {
@@ -235,6 +260,7 @@ export function ContentDetailClient({
       <Card>
         <CardHeader>
           <CardTitle>Hook / Script / Caption / CTA</CardTitle>
+          {content.angle && <p className="text-xs text-muted-foreground">มุมการขายที่ใช้: {content.angle}</p>}
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSave} className="flex flex-col gap-4">
@@ -253,6 +279,30 @@ export function ContentDetailClient({
             <div className="flex flex-col gap-2">
               <Label htmlFor="cta">CTA</Label>
               <Input id="cta" value={cta} onChange={(e) => setCta(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-2 rounded-md border border-dashed p-3">
+              <div>
+                <Label htmlFor="on-screen-text">ข้อความภาษาไทยบนวิดีโอ</Label>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  ระบบจะส่งข้อความนี้ในเครื่องหมาย &quot;...&quot; และสั่งให้ AI คัดลอกทุกตัวอักษรตรงๆ เช่น ตัวอย่าง
+                </p>
+              </div>
+              <Input
+                id="on-screen-text"
+                value={onScreenText}
+                onChange={(e) => setOnScreenText(e.target.value)}
+                placeholder="ตัวอย่าง"
+                maxLength={12}
+              />
+              <Label htmlFor="on-screen-cta">ข้อความ CTA ภาษาไทยท้ายวิดีโอ</Label>
+              <Input
+                id="on-screen-cta"
+                aria-label="ข้อความ CTA ภาษาไทยบนวิดีโอ"
+                value={onScreenCta}
+                onChange={(e) => setOnScreenCta(e.target.value)}
+                placeholder="กดดูเลย"
+                maxLength={10}
+              />
             </div>
             <Button type="submit" disabled={saving}>
               {saving ? "กำลังบันทึก..." : "บันทึก"}
@@ -275,9 +325,14 @@ export function ContentDetailClient({
             {content.scenes.map((scene) => (
               <div key={scene.id} className="flex gap-3 rounded-md border p-3 text-sm">
                 <Badge variant="outline" className="shrink-0">
-                  {scene.duration}s
+                  {scene.clip === null ? "" : `คลิป ${scene.clip + 1} · `}{scene.duration}s
                 </Badge>
-                <p className="text-muted-foreground">{scene.description}</p>
+                <div className="text-muted-foreground">
+                  <p>{scene.description}</p>
+                  {scene.visual && <p className="mt-1 text-xs opacity-80">ภาพ: {scene.visual}</p>}
+                  {scene.dialogue && <p className="mt-1 text-xs">🗣️ {scene.dialogue}</p>}
+                  {scene.voiceover && <p className="mt-1 text-xs">🎙️ {scene.voiceover}</p>}
+                </div>
               </div>
             ))}
           </CardContent>
