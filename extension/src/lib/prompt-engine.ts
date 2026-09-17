@@ -1,6 +1,6 @@
 /** Ported from src/lib/prompt-engine/{types,prompt-builder,clip-planner}.ts — pure functions, no server dependency. */
 
-import { styleVideoDirection } from "./style-playbooks.js";
+import { styleUsesOnScreenText, styleVideoDirection } from "./style-playbooks.js";
 
 export interface VideoSettings {
   duration: number;
@@ -41,12 +41,51 @@ export interface CastLook {
   setting: string;
 }
 
-/** Used when a scene plan has no camera directions: one continuous handheld move per part. */
+/**
+ * Used when a scene plan has no camera directions: one simple move per part.
+ * No orbits or arcs — when asked to circle a subject the video model tends to
+ * spin the person (head turning 360°) instead of moving the camera.
+ */
 const DEFAULT_CAMERA_MOTIONS = [
-  "slow handheld push-in from a medium shot towards the person and the product",
-  "smooth handheld arc around the subject that reveals the product from a new side",
-  "gentle handheld pull-back to a medium shot that settles on the product",
+  "slow gentle push-in from a medium shot towards the person and the product",
+  "steady medium close-up with a slight tilt down to the product in the hands",
+  "gentle slow pull-back to a medium shot that settles on the product",
 ];
+
+/**
+ * Camera words that make the model rotate the subject or smear the frame.
+ * A plan that asks for them gets a steady move instead.
+ */
+const UNSTABLE_CAMERA = /\b(orbit\w*|arcs?|arcing|circl\w*|360|spin\w*|rotat\w*|whip\w*|swirl\w*|around the (subject|person|product))\b/i;
+
+function safeCameraMotion(motion: string | undefined): string | undefined {
+  const value = motion?.trim();
+  if (!value) return undefined;
+  return UNSTABLE_CAMERA.test(value) ? "slow steady push-in towards the person and the product" : value;
+}
+
+/**
+ * Anatomy and motion rules repeated in every part. Stated positively as well as
+ * in [AVOID]: video models follow "what to do" far better than "what not to do".
+ */
+const MOTION_RULES =
+  "[MOTION] Real-world physics at normal speed. One simple, slow, deliberate action at a time. The person stays facing the camera (turned no more than about 45° away); the head moves only with small natural nods and tilts and always stays aligned with the shoulders and body. Exactly two arms and two hands with five fingers each; hands grip the product naturally. Face, hair and body keep a stable shape in every frame.";
+
+/** Rules that stop the model rushing, mangling or repeating Thai speech. */
+function voiceRules(clipSeconds: number, clipCount: number, onScreen: boolean): string {
+  return [
+    "Voice: a native Thai speaker with a clear standard Central Thai (Bangkok) accent and correct Thai tones, pronouncing every syllable fully at a relaxed conversational pace — not rushed, not robotic, not sing-song.",
+    clipCount > 1 ? "Use the same voice (timbre, pitch and accent) as in the other parts of this advert." : "",
+    "Speak the quoted Thai exactly as written, word for word, and say each line ONLY ONCE.",
+    `Start speaking at about 0.5 seconds and finish the last word by about ${Math.max(2, clipSeconds - 1.5)} seconds. After the last line the voice stops completely: no repeating, no second take, no echo, no filler sounds, no extra or English words — the rest is silence with natural ambience while the action continues.`,
+    onScreen
+      ? "Lips move in sync only while the words are spoken and the mouth rests closed or smiling when silent; keep the face towards the camera and the head steady while talking."
+      : "",
+    "Soft background music kept low under the voice, natural room ambience.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 /** Flow and AI Studio render 8 seconds per generation. */
 export const CLIP_SECONDS = 8;
@@ -90,11 +129,25 @@ export function clipCountFor(targetDuration: number, clipSeconds: number): numbe
 }
 
 /**
- * Speech longer than this in one clip makes the model rush or cut the line
- * off; when a re-plan squeezes several clips' worth of lines into one, later
- * lines are dropped instead.
+ * Speech longer than this in one clip makes the model rush, garble or cut the
+ * line off; when a re-plan squeezes several clips' worth of lines into one,
+ * later lines are dropped instead. Kept close to the 45-characters-per-8-seconds
+ * budget the script writer is given (analysis-prompts.ts), with a little slack.
  */
-const MAX_SPEECH_CHARS_PER_SECOND = 10;
+const MAX_SPEECH_CHARS_PER_SECOND = 6.5;
+
+/**
+ * Emoji, quotes and symbols in a spoken line are read out as noise or make the
+ * model improvise; keep only what a speaker can say.
+ */
+export function speakableThai(text: string | undefined): string {
+  return (text ?? "")
+    .replace(/[^\u0E00-\u0E7FA-Za-z0-9\s!?,.]/g, " ")
+    .replace(/\.{2,}/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([!?,.])/g, "$1")
+    .trim();
+}
 
 /** Which run this is when the same content is generated several times in a row. */
 export interface PlanVariant {
@@ -126,32 +179,42 @@ export function describeAspectRatio(aspectRatio: string): string {
   return `${aspectRatio} portrait (vertical)`;
 }
 
+/** No-text rule: the prompt carries quoted Thai speech, which models otherwise draw as subtitles in made-up letters. */
+const NO_TEXT_RULE =
+  "[ON-SCREEN TEXT] None. The video contains no written words at all — no captions, subtitles, titles, stickers, labels, signs, handwriting or made-up letters in any alphabet. The spoken Thai lines are heard only and are never written on screen.";
+
+const PACKAGING_RULE =
+  "The product packaging shows only its real logo and colours as in the product photo; all other small printing stays soft and unreadable, never invented letters.";
+
+/** One short quoted Thai string, copied as-is; everything else stays text-free. */
+function quotedTextRule(items: string[], scope: string): string {
+  return [
+    `[ON-SCREEN TEXT] ${items.join(" ")}`,
+    "Copy the Thai inside the double quotation marks character for character — do not translate, re-spell, reorder or add characters.",
+    "Draw it as one line of large bold white Thai letters with a dark outline, centred in the upper third of the frame, held perfectly still for about 2 seconds while the camera is steady.",
+    "The quoted text is the ONLY writing anywhere in the video: no other captions, subtitles, labels or signs, and the spoken lines are never shown as text.",
+    `If it cannot be drawn as correct, readable Thai, show no text at all in this ${scope}.`,
+  ].join(" ");
+}
+
+/** Text-related items for [AVOID] / negativePrompt. */
+export function textAvoidList(hasText: boolean): string {
+  return hasText
+    ? "any text other than the quoted Thai, subtitles, captions, made-up or alien-looking letters, gibberish characters, misspelled Thai, English words"
+    : "any on-screen text, letters, numbers or symbols, subtitles, captions, made-up or alien-looking letters, gibberish characters, English words";
+}
+
 /**
  * Veo writes whatever text it likes onto the frame — English titles, or
- * letters that only look Thai. Giving it the exact short Thai strings to show,
- * and forbidding anything else, is the most reliable way to get readable Thai.
+ * letters that only look Thai. Text is only requested for styles that need it
+ * (see styleUsesOnScreenText), as short quoted Thai; everything else is text-free.
  */
-function onScreenTextRule(index: number, clipCount: number, text: OnScreenText | undefined, clipSeconds: number): string {
-  const lines: string[] = [];
-  const isFirst = index === 0;
-  const isLast = index === clipCount - 1;
-  if (isFirst && text?.headline) lines.push(`at the start show the Thai headline ${quoteExact(text.headline)}`);
-  if (isLast && text?.cta) lines.push(`${lines.length ? "and " : ""}near the end show the Thai call to action ${quoteExact(text.cta)}`);
-
-  const packaging =
-    "The product's own packaging keeps its real design, colours and logo exactly as in the product photo; render small or dense printed packaging text as soft natural product-photography detail rather than invented legible characters.";
-
-  if (!lines.length) {
-    return `[ON-SCREEN TEXT] None. Add no captions, subtitles, titles, stickers or labels anywhere in the frame. ${packaging}`;
-  }
-  return [
-    `[ON-SCREEN TEXT] ${lines.join(" ")}.`,
-    "The on-screen text language is Thai, regardless of the language used in this prompt or the spoken language. Copy every string character for character exactly as written between the double quotation marks, including every Thai vowel and tone mark — do not translate, transliterate, reorder or add characters.",
-    `Render it as a short static title card: large bold Thai sans-serif block letters, one line, centred, held still (no motion blur, no fast pan across it) against a plain high-contrast background ${clipSeconds > 10 ? "for about 2-3 seconds each" : "for at least half the shot's length"}, so the letterforms stay sharp.`,
-    "Show no other on-screen text anywhere else in the frame, and never English words or garbled characters that merely look like Thai.",
-    `If you cannot render this exact Thai text sharply and correctly, show no on-screen text at all for this ${clipCount === 1 ? "video" : "part"} — incorrect Thai text is worse than no text.`,
-    packaging,
-  ].join(" ");
+function onScreenTextRule(index: number, clipCount: number, text: OnScreenText | undefined): { rule: string; hasText: boolean } {
+  const items: string[] = [];
+  if (index === 0 && text?.headline) items.push(`At the start show the Thai text ${quoteExact(text.headline)}.`);
+  if (index === clipCount - 1 && text?.cta) items.push(`Near the end show the Thai text ${quoteExact(text.cta)}.`);
+  if (!items.length) return { rule: `${NO_TEXT_RULE} ${PACKAGING_RULE}`, hasText: false };
+  return { rule: `${quotedTextRule(items, clipCount === 1 ? "video" : "part")} ${PACKAGING_RULE}`, hasText: true };
 }
 
 interface ClipGroup {
@@ -226,26 +289,46 @@ function visualOf(scene: ScenePromptInput): string {
   return (scene.visual?.trim() || scene.description.trim()).replace(/[.。]$/, "");
 }
 
-/** Spoken lines for one clip, in order, trimmed to what fits in the clip. */
-function speechLines(beats: ReturnType<typeof timeline>, clipSeconds: number): string[] {
-  const budget = MAX_SPEECH_CHARS_PER_SECOND * clipSeconds;
-  const lines: string[] = [];
-  let used = 0;
+interface SpeechLine {
+  kind: "dialogue" | "voiceover";
+  text: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Keeps lines within the character budget. The last line (usually the CTA)
+ * is always kept; lines before it are dropped from the end when over budget.
+ */
+function fitSpeech<T extends { text: string }>(lines: T[], budget: number): T[] {
+  const length = (line: T) => Array.from(line.text).length;
+  if (lines.length <= 1) return lines;
+  const last = lines[lines.length - 1];
+  let used = length(last);
+  const kept: T[] = [];
+  for (const line of lines.slice(0, -1)) {
+    if (kept.length > 0 && used + length(line) > budget) break;
+    used += length(line);
+    kept.push(line);
+  }
+  return [...kept, last];
+}
+
+/**
+ * Spoken lines for one clip, in order, trimmed to what fits in the clip.
+ * `spoken` holds lines earlier clips already say, so a line the plan put in
+ * two clips is heard once rather than twice in the joined video.
+ */
+function speechLines(beats: ReturnType<typeof timeline>, clipSeconds: number, spoken: Set<string>): SpeechLine[] {
+  const lines: SpeechLine[] = [];
   for (const { start, end, scene } of beats) {
     for (const [kind, raw] of [["dialogue", scene.dialogue], ["voiceover", scene.voiceover]] as const) {
-      const line = raw?.trim();
-      if (!line) continue;
-      const length = Array.from(line).length;
-      if (lines.length > 0 && used + length > budget) return lines;
-      used += length;
-      lines.push(
-        kind === "dialogue"
-          ? `[${start}-${end}s] The person on screen says in Thai: "${line}"`
-          : `[${start}-${end}s] Off-screen narrator voiceover in Thai: "${line}"`,
-      );
+      const text = speakableThai(raw);
+      if (!text || spoken.has(text) || lines.some((line) => line.text === text)) continue;
+      lines.push({ kind, text, start, end });
     }
   }
-  return lines;
+  return fitSpeech(lines, MAX_SPEECH_CHARS_PER_SECOND * clipSeconds);
 }
 
 export interface PlanClipsInput {
@@ -271,16 +354,18 @@ export interface PlanClipsInput {
  * happens now, and says how it joins the part before.
  */
 export function planClips(input: PlanClipsInput): PlannedClip[] {
-  const { productName, scenes, settings, targetDuration, variant, text } = input;
+  const { productName, scenes, settings, targetDuration, variant } = input;
   const clipSeconds = input.clipSeconds ?? CLIP_SECONDS;
   const clipCount = clipCountFor(targetDuration, clipSeconds);
   if (scenes.length === 0) return [];
 
   const style = input.style || settings.style;
+  const text = styleUsesOnScreenText(style) ? input.text : undefined;
   const look = `${settings.lighting}, one consistent colour grade, ${style}-style ${settings.camera} footage`;
   const casts = (input.castOptions ?? []).filter((c) => c.person?.trim() && c.setting?.trim());
   const cast = casts.length ? casts[(variant?.index ?? 0) % casts.length] : undefined;
   const groups = groupScenes(scenes, clipCount);
+  const spoken = new Set<string>();
 
   return groups.map((group, index) => {
     const isFirst = index === 0;
@@ -334,31 +419,35 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     );
 
     // A continuation clip does not re-speak the lines its first stage already said.
-    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats, clipSeconds);
+    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats, clipSeconds, spoken);
+    speech.forEach((line) => spoken.add(line.text));
+    const onScreenSpeaker = speech.some((line) => line.kind === "dialogue");
     sections.push(
       speech.length
         ? [
-            `[AUDIO] ${speech.join(" ")}`,
-            "Speak exactly these Thai lines with natural Thai pronunciation and a relaxed conversational pace — do not translate, paraphrase or add any other spoken words.",
-            speech.some((line) => line.includes("person on screen"))
-              ? "The speaker's face is visible and lip-synced while talking; no fast head turns during the line."
-              : "",
-            "Soft background music kept low under the voice, natural room ambience.",
-          ]
-            .filter(Boolean)
-            .join(" ")
-        : "[AUDIO] No speech or voiceover — nobody talks. Natural ambient sound and light upbeat background music only.",
+            `[AUDIO] The complete spoken script for this ${clipCount === 1 ? "video" : "part"}, in this order:`,
+            speech
+              .map((line, i) =>
+                // Long single generations keep per-line timing so each line lands on its beat; in 8-second clips narrow windows made the model rush.
+                `${speech.length > 1 ? `${i + 1}) ` : ""}${clipSeconds > 10 ? `[${line.start}-${line.end}s] ` : ""}${line.kind === "dialogue" ? "The person on screen says in Thai" : "An off-screen narrator says in Thai"}: ${quoteExact(line.text)}`,
+              )
+              .join(" "),
+            voiceRules(clipSeconds, clipCount, onScreenSpeaker),
+          ].join(" ")
+        : "[AUDIO] No speech or voiceover — nobody talks and lips stay closed. Natural ambient sound and light upbeat background music only.",
     );
 
-    const motions = group.scenes.map((scene) => scene.cameraMotion?.trim()).filter(Boolean).join(", then ");
+    sections.push(MOTION_RULES);
+
+    const motions = group.scenes.map((scene) => safeCameraMotion(scene.cameraMotion)).filter(Boolean).join(", then ");
     const motion =
       motions || (longTake ? DEFAULT_CAMERA_MOTIONS.join(", then ") : DEFAULT_CAMERA_MOTIONS[Math.min(index, DEFAULT_CAMERA_MOTIONS.length - 1)]);
     sections.push(
       longTake
-        ? `[CAMERA] ${motion}. Smooth, motivated camera moves; a clean cut between beats is fine, but no jarring jump cuts, and the person, product, location and lighting look identical in every shot.`
+        ? `[CAMERA] ${motion}. Slow, stable, motivated camera moves on a steady handheld or gimbal; a clean cut between beats is fine, but no jarring jump cuts, and the person, product, location and lighting look identical in every shot.`
         : isFirst || clipCount === 1
-        ? `[CAMERA] One continuous take with no cuts: ${motion}.`
-        : `[CAMERA] Pick up the camera exactly where part ${index} ended — same position, direction, speed and height, no cut or reframe at the start — then ${motion}. One continuous take.`,
+        ? `[CAMERA] One continuous, stable take with no cuts: ${motion}. The camera moves slowly; the person does not spin or turn around.`
+        : `[CAMERA] Open on a calm, steady medium shot of the same person and product, continuing naturally from the end of part ${index}, then ${motion}. One continuous, stable take; the person does not spin or turn around.`,
     );
 
     // Repeated runs of the same content would otherwise come back as near-identical videos.
@@ -370,12 +459,13 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       );
     }
 
-    sections.push(onScreenTextRule(index, clipCount, text, clipSeconds));
+    const onScreen = onScreenTextRule(index, clipCount, text);
+    sections.push(onScreen.rule);
     sections.push(
-      "[AVOID] Product changing shape or colour, duplicate products, deformed hands or extra fingers, sudden face, clothing, location or lighting change" +
+      "[AVOID] Head or body spinning or rotating unnaturally, head turning past the shoulders, twisted neck, the person turning their back to the camera, limbs bending the wrong way, hands passing through objects, morphing face or body, product changing shape or colour, duplicate products, deformed hands or extra fingers, sudden face, clothing, location or lighting change" +
         (isFirst ? "" : ", a jump cut at the start") +
-        (clipCount === 1 ? `, ending before ${clipSeconds} seconds, looping or replaying the opening` : "") +
-        ", fake logos, watermarks, random English text.",
+        (clipCount === 1 ? `, ending before ${clipSeconds} seconds` : "") +
+        ", looping or replaying earlier moments, repeated or stuttered words, speaking a line twice, mumbling or garbled Thai speech, lips moving without speech, fake logos, watermarks, " + textAvoidList(onScreen.hasText) + ".",
     );
 
     return {

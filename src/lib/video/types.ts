@@ -1,5 +1,7 @@
 export interface VideoGenerateInput {
   prompt: string;
+  /** What the model should not render; providers without such a field ignore it. */
+  negativePrompt?: string;
   aspectRatio: string;
   duration: number;
 }

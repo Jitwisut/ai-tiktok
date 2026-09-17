@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CONTENT_STYLES } from "@/lib/validation/content";
+import { styleLabel } from "@/lib/prompt-engine/style-playbooks";
 
 type ProductDetail = {
   id: string;
@@ -289,16 +290,20 @@ export function ProductDetailClient({
             <Label>สไตล์คอนเทนต์</Label>
             <Select value={style} onValueChange={(value) => value && setStyle(value)}>
               <SelectTrigger className="w-full">
-                <SelectValue />
+                <SelectValue>{(value: string) => styleLabel(value).name}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {CONTENT_STYLES.map((s) => (
                   <SelectItem key={s} value={s}>
-                    {s}
+                    <div className="flex flex-col gap-0.5">
+                      <span>{styleLabel(s).name}</span>
+                      <span className="text-xs text-muted-foreground">{styleLabel(s).description}</span>
+                    </div>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">{styleLabel(style).description}</p>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="content-duration">ความยาววิดีโอ</Label>

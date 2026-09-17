@@ -7,7 +7,7 @@ import {
   ON_SCREEN_HEADLINE_MAX,
   type UpdateContentInput,
 } from "@/lib/validation/content";
-import { getStylePlaybook, stylePlaybookPrompt } from "@/lib/prompt-engine/style-playbooks";
+import { SPEAKABLE_SCRIPT_RULE, getStylePlaybook, stylePlaybookPrompt, styleUsesOnScreenText } from "@/lib/prompt-engine/style-playbooks";
 
 const MOCK_CONTENT = {
   hook: "ใครกำลังหาไอเท็มที่ใช้สะดวกต้องดู",
@@ -83,6 +83,7 @@ export async function generateContent(
       "คุณเป็นนักเขียนครีเอทีฟและนักวางโฆษณา TikTok affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น",
       "เขียน hook, script, caption, cta และข้อความบนจอเป็นภาษาไทยที่เป็นธรรมชาติแบบภาษาพูด แม้ข้อมูลสินค้าและคำสั่งส่วนอื่นจะเป็นภาษาอังกฤษ",
       "script คือคำพูดที่ได้ยินจริงทั้งหมด เรียงตามเวลา ขึ้นต้นด้วย hook จบด้วย CTA ประโยคสั้น พูดจบได้ในเวลาที่กำหนดโดยไม่ต้องเร่ง และเว้นจังหวะให้ภาพเล่าเรื่อง",
+      SPEAKABLE_SCRIPT_RULE,
       "hook ต้องดึงความสนใจภายใน 1-2 วินาทีแรก ห้ามขึ้นต้นด้วยการแนะนำตัวหรือคำว่า วันนี้จะมารีวิว...",
       "ยึดรูปสินค้าและข้อมูลที่ให้มาเป็นหลัก ห้ามแต่งคุณสมบัติหรือการใช้งานที่ไม่สมเหตุสมผลกับประเภทสินค้า",
       ...reviewRules(),
@@ -110,7 +111,9 @@ export async function generateContent(
       `โครงเรื่องตามความยาว: ${scriptStructure(targetDuration)}`,
       `งบคำพูดโดยประมาณ: ไม่เกิน ${speechBudget} ตัวอักษรไทยรวมสระและวรรณยุกต์ (เหลือเวลาสำหรับภาพและ CTA)`,
       "ส่งฟิลด์ hook, script, caption, cta ให้ครบ",
-      `ส่ง onScreenText เป็นพาดหัวภาษาไทยล้วนจาก hook/จุดขาย ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษร และ onScreenCta เป็น CTA ภาษาไทยล้วน ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษร — ทั้งสองฟิลด์คือข้อความจริงที่จะถูกคัดลอกลงวิดีโอ ห้ามใส่เครื่องหมายคำพูดไว้ในค่า เพราะระบบจะครอบด้วยเครื่องหมาย \"...\" เอง`,
+      styleUsesOnScreenText(style)
+        ? `ส่ง onScreenText เป็นพาดหัวภาษาไทยล้วนจาก hook/จุดขาย ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษร และ onScreenCta เป็น CTA ภาษาไทยล้วน ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษร — ทั้งสองฟิลด์คือข้อความจริงที่จะถูกคัดลอกลงวิดีโอ ห้ามใส่เครื่องหมายคำพูดไว้ในค่า เพราะระบบจะครอบด้วยเครื่องหมาย \"...\" เอง`
+        : 'ส่ง onScreenText และ onScreenCta เป็นสตริงว่าง "" ทั้งคู่ เพราะสไตล์นี้ไม่ใส่ตัวหนังสือบนวิดีโอ',
     ]
       .filter(Boolean)
       .join("\n"),

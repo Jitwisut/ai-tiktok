@@ -3,7 +3,7 @@ import { getLLMProvider } from "@/lib/ai";
 import { scenePlanResultSchema } from "@/lib/validation/scene";
 import { loadProductImages } from "@/lib/ai/product-images";
 import { CLIP_SECONDS, MAX_CLIPS } from "@/lib/prompt-engine/clip-planner";
-import { stylePlaybookPrompt } from "@/lib/prompt-engine/style-playbooks";
+import { SPEAKABLE_SCRIPT_RULE, stylePlaybookPrompt, styleUsesOnScreenText } from "@/lib/prompt-engine/style-playbooks";
 
 const MOCK_SCENES = {
   scenes: [
@@ -70,8 +70,12 @@ export async function planScenes(
       `ต้องมีฉากครบทุก clip และ duration ของฉากใน clip เดียวกันรวมกันเท่ากับ ${clipSeconds} วินาทีโดยประมาณ ใช้ 1-3 ฉากต่อ clip${clipCount === 1 ? "" : " และห้ามปล่อย clip ใดว่าง"}`,
       "ภายใน clip เดียวกันให้เป็นการเคลื่อนไหวต่อเนื่อง ไม่มี jump cut; ข้าม clip ให้เรื่องเดินหน้าและเปลี่ยนการกระทำ มุมกล้อง หรือระยะภาพอย่างมีเหตุผล แต่คน ชุด สถานที่ แสง และสินค้าต้องต่อเนื่อง",
       "description เป็นสรุปฉากภาษาไทยสั้นๆ สำหรับผู้ใช้ตรวจ, visual เป็นคำบรรยายภาพภาษาอังกฤษที่เป็นรูปธรรมสำหรับโมเดลวิดีโอ, cameraMotion เป็นคำสั่งกล้องภาษาอังกฤษที่ต่อจากฉากก่อน",
+      "visual ต่อฉากให้มีการกระทำหลักเพียงอย่างเดียวที่ช้าและเรียบง่าย (เช่น หยิบสินค้าขึ้นมา, เปิดฝา, กดใช้) คนในภาพหันหน้าเข้ากล้องเป็นหลัก ห้ามมีท่าหมุนตัว หันหลัง สะบัดหัว เต้น กระโดด โยนสินค้า หรือการเคลื่อนไหวเร็ว เพราะโมเดลวิดีโอจะทำให้หัวหรือร่างกายบิดผิดธรรมชาติ",
+      "cameraMotion ใช้ได้เฉพาะการเคลื่อนที่ช้าและนิ่ง: static, slow push-in, slow pull-back, gentle tilt up/down, small slow pan ห้ามใช้ orbit, arc, 360, วนรอบตัวคน, whip pan หรือ zoom เร็ว",
       "dialogue คือประโยคภาษาไทยที่คนในภาพพูด, voiceover คือประโยคภาษาไทยของเสียงบรรยายนอกจอ ฉากหนึ่งควรใช้เพียงช่องเดียว หรือเว้นทั้งคู่ถ้าเป็นภาพล้วน",
-      "แบ่ง script ลงใน dialogue/voiceover ตามลำดับและใช้ข้อความตามต้นฉบับทุกคำ ทุกประโยคต้องปรากฏครั้งเดียว ห้ามตัด hook หรือ CTA และห้ามแต่งบทพูดเพิ่ม",
+      "แบ่ง script ลงใน dialogue/voiceover ตามลำดับและใช้ข้อความตามต้นฉบับทุกคำ ทุกประโยคต้องปรากฏครั้งเดียวในทั้งวิดีโอ ห้ามใส่ประโยคเดิมซ้ำในฉากหรือ clip อื่น ห้ามตัด hook หรือ CTA และห้ามแต่งบทพูดเพิ่ม",
+      `ใน 1 clip ให้มีผู้พูดแบบเดียว (dialogue หรือ voiceover อย่างใดอย่างหนึ่ง) ไม่เกิน 1-2 ประโยคสั้น รวมไม่เกินประมาณ ${Math.round((45 / 8) * clipSeconds)} ตัวอักษร และปล่อยให้ 1-2 วินาทีสุดท้ายของ clip ไม่มีเสียงพูด`,
+      SPEAKABLE_SCRIPT_RULE,
       "ถ้าเป็น Review ให้เห็นหลักฐานจากการสาธิตก่อนพูดจุดเด่น และห้ามแต่งประสบการณ์ว่าใช้มานาน ซื้อซ้ำ หรือเห็นผลในจำนวนวัน ถ้าไม่มีข้อมูลยืนยัน",
       "ถ้ามีรูปสินค้า ให้ยึดรูปทรง สี วัสดุ โลโก้ และวิธีใช้งานที่สมเหตุสมผลตามรูป ห้ามเปลี่ยนเป็นสินค้าทั่วไปหรือใส่ฟีเจอร์ที่ไม่มีข้อมูล",
       "ห้ามใส่ฉากอันตราย ความรุนแรง การรักษาโรค การเปลี่ยนแปลงร่างกายแบบมหัศจรรย์ หรือ before/after ที่ไม่มีข้อเท็จจริงรองรับ",
@@ -87,10 +91,10 @@ export async function planScenes(
       `hook: ${content.hook}`,
       `script (ต้องรักษาคำพูดไว้ครบ): ${content.script}`,
       `cta: ${content.cta}`,
-      content.onScreenText
+      content.onScreenText && styleUsesOnScreenText(content.style)
         ? `ข้อความพาดหัวบนจอภาษาไทยที่ต้องคัดลอกตรงตัวว่า ${quoteExact(content.onScreenText)} จะขึ้นต้นคลิป — จัด composition ให้มีพื้นที่ว่าง ห้ามใส่ข้อความนี้ไว้ใน description/visual`
         : "",
-      content.onScreenCta
+      content.onScreenCta && styleUsesOnScreenText(content.style)
         ? `ข้อความ CTA บนจอภาษาไทยที่ต้องคัดลอกตรงตัวว่า ${quoteExact(content.onScreenCta)} จะขึ้นท้ายคลิป — จัดเฟรมสินค้าน่าซื้อ ห้ามใส่ข้อความนี้ไว้ใน description/visual`
         : "",
       `ความยาวทั้งหมด: ${totalDuration} วินาที (${clipCount} clip × ${clipSeconds} วินาที)`,

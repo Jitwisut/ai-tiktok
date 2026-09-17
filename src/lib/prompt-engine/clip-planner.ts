@@ -89,6 +89,9 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
 
   const clipCount = clipCountFor(targetDuration);
   const groups = groupScenes(scenes, clipCount);
+  // Shared across parts: a scene repeated as a continuation (or a line the
+  // storyboard put in two clips) is spoken only in the first part that has it.
+  const spoken = new Set<string>();
 
   return groups.map((group, index) => {
     const isFirst = index === 0;
@@ -98,7 +101,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       duration: CLIP_SECONDS,
       onScreenText: isFirst ? text?.headline ?? settings.onScreenText : undefined,
       onScreenCta: isLast ? text?.cta ?? settings.onScreenCta : undefined,
-    });
+    }, spoken, clipCount > 1);
 
     const earlier = scenes.slice(0, group.first).map(visualOf).filter(Boolean).join(" / ");
     const story = [
@@ -106,7 +109,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       "Keep the same person, wardrobe, location, product identity, light direction and colour grade across every part.",
       index === 0
         ? "Establish the cast and setting clearly for later parts."
-        : `Start exactly where part ${index} ended, with no jump cut or reframe. Move the story forward with a new action; do not repeat an earlier shot.${earlier ? ` Earlier actions were: ${earlier}.` : ""}`,
+        : `Open on a calm, steady medium shot that continues naturally from the end of part ${index}. Move the story forward with a new action; do not repeat an earlier shot or re-speak earlier lines.${earlier ? ` Earlier actions were: ${earlier}.` : ""}`,
       isLast ? "This is the final part: finish on an appealing, steady product frame." : "End on a clear frame or motion that the next part can continue from.",
     ];
 

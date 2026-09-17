@@ -4,6 +4,7 @@
 
 import { getClipsForVideo, MERGED_CLIP_INDEX } from "./lib/library.js";
 import { CONTENT_STYLES } from "./lib/analysis-prompts.js";
+import { styleLabel } from "./lib/style-playbooks.js";
 import { clipCountFor, clipSecondsForSite, durationOptions } from "./lib/prompt-engine.js";
 import { stepLabel, type AutopilotState } from "./lib/autopilot.js";
 
@@ -152,9 +153,26 @@ function bindDurationToSite(durationId: string, siteId: string) {
   siteSelect.addEventListener("change", () => renderDurationOptions(durationSelect, siteSelect.value));
 }
 
+/** Thai names in the picker; the option value stays the English style key used by prompts and storage. */
+function styleOptions(): string {
+  return CONTENT_STYLES.map((s) => `<option value="${s}" title="${escapeHtml(styleLabel(s).description)}">${escapeHtml(styleLabel(s).name)}</option>`).join("");
+}
+
+/** Shows what the chosen style looks like under its picker, and keeps it in sync. */
+function bindStyleDescription(selectId: string, descId: string, rotateText?: string) {
+  const select = $(selectId) as HTMLSelectElement;
+  const desc = $(descId);
+  const render = () => {
+    desc.textContent = select.value === "rotate" && rotateText ? rotateText : styleLabel(select.value).description;
+  };
+  select.addEventListener("change", render);
+  render();
+}
+
 function populateStyles() {
   const select = $("style") as HTMLSelectElement;
-  select.innerHTML = CONTENT_STYLES.map((s) => `<option value="${s}">${s}</option>`).join("");
+  select.innerHTML = styleOptions();
+  bindStyleDescription("style", "style-desc");
 }
 
 function setCatalogStatus(text: string) {
@@ -1110,7 +1128,8 @@ function apRenderProducts() {
 function apSetupOptions() {
   const style = $("ap-style") as HTMLSelectElement;
   style.innerHTML =
-    `<option value="rotate">สลับสไตล์ทุกคลิป</option>` + CONTENT_STYLES.map((s) => `<option value="${s}">${s}</option>`).join("");
+    `<option value="rotate">สลับสไตล์ทุกคลิป</option>` + styleOptions();
+  bindStyleDescription("ap-style", "ap-style-desc", "ใช้สไตล์ต่างกันในแต่ละคลิป วนไปตามลำดับ เพื่อให้คอนเทนต์ไม่ซ้ำกัน");
   for (const radio of Array.from(document.querySelectorAll<HTMLInputElement>('input[name="ap-mode"]'))) {
     radio.addEventListener("change", () => {
       $("ap-schedule-box").hidden = apMode() !== "schedule";
@@ -1150,7 +1169,7 @@ function apRender(state: AutopilotState | null) {
       const cur = state.current;
       lines.push(
         `<div>กำลังทำ: <b>${escapeHtml(cur.productName.slice(0, 50))}</b></div>` +
-          `<div>ขั้นตอน: ${stepLabel(cur.step)}${cur.attempts ? ` (ลองใหม่ครั้งที่ ${cur.attempts + 1})` : ""}${cur.style ? ` · สไตล์ ${escapeHtml(cur.style)}` : ""}</div>`,
+          `<div>ขั้นตอน: ${stepLabel(cur.step)}${cur.attempts ? ` (ลองใหม่ครั้งที่ ${cur.attempts + 1})` : ""}${cur.style ? ` · สไตล์ ${escapeHtml(styleLabel(cur.style).name)}` : ""}</div>`,
       );
       if (cur.lastError) lines.push(`<div style="color:#f87171">ผิดพลาดล่าสุด: ${escapeHtml(cur.lastError)}</div>`);
     }
@@ -1171,7 +1190,7 @@ function apRender(state: AutopilotState | null) {
     const meta = AP_HISTORY_LABELS[entry.status];
     const row = document.createElement("div");
     row.className = "ap-history-row";
-    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)}${entry.style ? ` · ${escapeHtml(entry.style)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
+    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)}${entry.style ? ` · ${escapeHtml(styleLabel(entry.style).name)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
     history.appendChild(row);
   }
 }

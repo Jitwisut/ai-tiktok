@@ -4,6 +4,13 @@
  * story shape, speaking mode, and visual language.
  */
 
+/**
+ * Video models pronounce plain spoken Thai well but garble digits, English
+ * words, abbreviations and symbols — or read them out in English.
+ */
+export const SPEAKABLE_SCRIPT_RULE =
+  "คำพูดทุกประโยค (script, dialogue, voiceover) ต้องเป็นภาษาไทยที่อ่านออกเสียงได้ทันที: เขียนตัวเลขเป็นคำอ่านไทย (เช่น \"สามสิบเก้าบาท\" ไม่ใช่ \"39฿\"), ชื่อแบรนด์หรือคำอังกฤษให้เขียนทับศัพท์เป็นอักษรไทย, ห้ามใช้ตัวย่อ อีโมจิ สัญลักษณ์ (% / + & ~ …) หรือเครื่องหมายคำพูด, ห้ามใช้คำพูดติดปากซ้ำๆ เช่น \"คือแบบ\" \"แบบว่า\" และใช้ประโยคสั้นที่พูดจบในลมหายใจเดียว";
+
 export const CONTENT_STYLES = [
   "UGC",
   "Review",
@@ -21,6 +28,46 @@ export const CONTENT_STYLES = [
 ] as const;
 
 export type ContentStyle = (typeof CONTENT_STYLES)[number];
+
+/**
+ * Styles whose message needs a written word on screen (a "before/after" label,
+ * a comparison point, a tip title). Video models often draw Thai as made-up
+ * letters, so every other style renders with no text at all — TikTok captions
+ * carry the message instead.
+ */
+const STYLES_WITH_ON_SCREEN_TEXT = new Set<string>(["Before After", "Comparison", "Educational Tips"]);
+
+export function styleUsesOnScreenText(style: string): boolean {
+  return STYLES_WITH_ON_SCREEN_TEXT.has(style);
+}
+
+export interface StyleLabel {
+  /** Thai name shown in style pickers; the English value stays the stored key. */
+  name: string;
+  /** One-line Thai explanation of what the style looks like. */
+  description: string;
+}
+
+export const STYLE_LABELS: Record<(typeof CONTENT_STYLES)[number], StyleLabel> = {
+  UGC: { name: "คนจริงรีวิวเอง (UGC)", description: "เหมือนครีเอเตอร์ถ่ายเองด้วยมือถือ พูดกับกล้องแบบเป็นกันเอง ดูเป็นธรรมชาติ ไม่เหมือนโฆษณา" },
+  Review: { name: "รีวิวสินค้า", description: "ลองใช้ให้ดูจริง บอกจุดเด่นที่เห็นในคลิปและเหมาะกับใคร เน้นความน่าเชื่อถือ" },
+  "Problem Solution": { name: "ปัญหา → ทางแก้", description: "เปิดด้วยปัญหาที่คนดูเจอบ่อย แล้วโชว์ว่าสินค้าช่วยแก้ได้อย่างไร" },
+  Storytelling: { name: "เล่าเรื่อง", description: "เรื่องสั้นที่มีจุดเปลี่ยน ใช้ตัวละครเดียวและสถานที่เดียว ชวนดูจนจบ" },
+  "Before After": { name: "ก่อน-หลังใช้", description: "เทียบภาพก่อนและหลังใช้สินค้าในมุมเดียวกัน ให้เห็นความต่างชัดๆ" },
+  Unboxing: { name: "แกะกล่อง", description: "เปิดกล่องให้ดูทีละขั้น โชว์รายละเอียดสินค้าและความรู้สึกแรกที่เห็น" },
+  Demo: { name: "สาธิตวิธีใช้", description: "โชว์วิธีใช้งานทีละขั้น เห็นมือกับสินค้าชัด พูดน้อย ให้ภาพอธิบาย" },
+  POV: { name: "มุมมองคนดู (POV)", description: "ถ่ายจากสายตาคนดู เหมือนกำลังหยิบใช้สินค้าเองในสถานการณ์จริง" },
+  "ASMR / Satisfying": { name: "ASMR / ดูเพลิน", description: "ภาพระยะใกล้กับเสียงสัมผัส เช่น เปิด กด เท จัดวาง พูดน้อยมากหรือไม่พูดเลย" },
+  Comparison: { name: "เปรียบเทียบ", description: "วางเทียบกับทางเลือกทั่วไปแบบเป็นกลาง ทดสอบให้เห็นความต่างจริง" },
+  "Challenge / Test": { name: "ท้าทดสอบ", description: "ตั้งโจทย์ทดสอบง่ายๆ ที่ปลอดภัย แล้วโชว์ผลลัพธ์ให้เห็นตรงๆ" },
+  "Lifestyle Vlog": { name: "วล็อกชีวิตประจำวัน", description: "แทรกสินค้าเข้าไปใน routine ประจำวัน ให้เห็นว่าเข้ากับชีวิตจริง" },
+  "Educational Tips": { name: "สอนเคล็ดลับ", description: "สอนทริคที่ใช้ได้จริง 1 เรื่อง โดยมีสินค้าเป็นตัวช่วยในขั้นตอนนั้น" },
+};
+
+/** Thai label for a stored style value; unknown values are shown as-is. */
+export function styleLabel(style: string): StyleLabel {
+  return STYLE_LABELS[style as (typeof CONTENT_STYLES)[number]] ?? { name: style, description: "" };
+}
 
 export interface StylePlaybook {
   goal: string;

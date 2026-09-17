@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth/auth";
 import { listContents } from "@/services/content.service";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { styleLabel } from "@/lib/prompt-engine/style-playbooks";
 
 export default async function ContentsPage() {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -30,7 +31,7 @@ export default async function ContentsPage() {
                 <CardContent className="flex flex-col gap-2 pt-6">
                   <div className="flex items-start justify-between gap-2">
                     <p className="font-medium">{c.product.name}</p>
-                    <Badge variant="secondary">{c.style}</Badge>
+                    <Badge variant="secondary">{styleLabel(c.style).name}</Badge>
                   </div>
                   <p className="line-clamp-2 text-sm text-muted-foreground">
                     {c.hook}

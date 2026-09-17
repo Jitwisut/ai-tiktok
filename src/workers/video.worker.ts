@@ -4,6 +4,7 @@ import { createWorkerConnection } from "@/lib/queue/connection";
 import { VIDEO_QUEUE_NAME, type VideoJobData } from "@/lib/queue/video-queue";
 import { prisma } from "@/lib/db/prisma";
 import { getVideoProvider } from "@/lib/video";
+import { veoNegativePrompt } from "@/lib/prompt-engine/prompt-builder";
 import { VIDEO_CREDIT_COST } from "@/services/video.service";
 
 const BACKOFF_DELAYS_MS = [60_000, 180_000, 600_000];
@@ -17,11 +18,12 @@ async function processVideoJob(job: Job<VideoJobData>) {
   });
 
   const video = await prisma.video.findUniqueOrThrow({ where: { id: videoId } });
-  const settings = video.settings as { promptText: string };
+  const settings = video.settings as { promptText: string; structured?: { onScreenText?: string; onScreenCta?: string } };
 
   const provider = getVideoProvider();
   const result = await provider.generate({
     prompt: settings.promptText,
+    negativePrompt: veoNegativePrompt(Boolean(settings.structured?.onScreenText || settings.structured?.onScreenCta)),
     aspectRatio: video.aspectRatio ?? "9:16",
     duration: video.duration ?? 8,
   });

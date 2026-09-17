@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { styleLabel } from "@/lib/prompt-engine/style-playbooks";
 
 type Scene = {
   id: string;
@@ -250,7 +251,7 @@ export function ContentDetailClient({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-semibold">{content.productName}</h1>
-          <Badge variant="secondary">{content.style}</Badge>
+          <Badge variant="secondary">{styleLabel(content.style).name}</Badge>
         </div>
         <Button variant="destructive" onClick={handleDeleteContent} disabled={deleting}>
           {deleting ? "กำลังลบ..." : "ลบคอนเทนต์"}

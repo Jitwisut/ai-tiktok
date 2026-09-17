@@ -70,6 +70,7 @@ export class VeoProvider implements VideoProvider {
         aspectRatio: input.aspectRatio,
         durationSeconds: input.duration,
         resolution: process.env.VIDEO_RESOLUTION ?? "720p",
+        negativePrompt: input.negativePrompt,
       },
     });
 
