@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "AI Affiliate Studio — Add to Studio",
   "version": "0.3.0",
-  "description": "Standalone product-to-video studio: import products, analyze and script them with Gemini, then drive Google AI Studio/Flow/Gemini to generate the clips — all from one side panel.",
+  "description": "Standalone product-to-video studio: import products, analyze and script them with Gemini, then drive Google AI Studio/Flow/Gemini or Meta AI to generate the clips — all from one side panel.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -20,7 +20,8 @@
     "https://generativelanguage.googleapis.com/*",
     "https://aistudio.google.com/*",
     "https://flow.google.com/*",
-    "https://gemini.google.com/*"
+    "https://gemini.google.com/*",
+    "https://*.meta.ai/*"
   ],
   "action": {
     "default_title": "AI Affiliate Studio — เปิด side panel"
@@ -79,6 +80,16 @@
       "js": [
         "dist/panel.js",
         "dist/gemini-automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.meta.ai/*"
+      ],
+      "js": [
+        "dist/panel.js",
+        "dist/meta-automation.js"
       ],
       "run_at": "document_idle"
     },

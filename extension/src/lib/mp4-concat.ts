@@ -2,7 +2,10 @@
  * Joins MP4 clips into one file without re-encoding. Flow renders every clip
  * with the same codec setup (H.264 High 720x1280 24fps + AAC 48kHz, one
  * non-fragmented mdat, each clip opening on an IDR frame), so the sample data
- * can be copied as-is and only the moov sample tables need rebuilding. Pure
+ * can be copied as-is and only the moov sample tables need rebuilding. Meta
+ * AI's clips satisfy the same conditions — checked on a real two-scene reply:
+ * unfragmented avc1 + mp4a, one sample description each, and sample entry
+ * keys identical between the two clips once btrt is ignored. Pure
  * ArrayBuffer code — runs in the service worker, where ffmpeg can't.
  *
  * Tracks are matched by handler type (vide/soun). A track type missing from

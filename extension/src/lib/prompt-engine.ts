@@ -93,7 +93,7 @@ export const CLIP_SECONDS = 8;
 /** A video is joined from at most this many clips. */
 export const MAX_CLIPS = 4;
 
-export type GenerationSite = "aistudio" | "flow" | "gemini";
+export type GenerationSite = "aistudio" | "flow" | "gemini" | "meta";
 
 /**
  * Gemini's video tool renders the whole advert in one generation when the
@@ -102,11 +102,22 @@ export type GenerationSite = "aistudio" | "flow" | "gemini";
 export const GEMINI_DURATIONS = [10, 20];
 
 /**
+ * Meta AI renders 10 seconds per scene whatever length the prompt asks for —
+ * measured on a finished reply (two clips, 10.0s each, 720x1280), and Meta
+ * says the same in chat. Asking for 8 got 10 anyway, so the plan is written
+ * in 10-second parts and the joined lengths follow from that.
+ */
+export const META_CLIP_SECONDS = 10;
+
+/**
  * Seconds one generation renders on each site. Flow and AI Studio always make
  * 8-second clips; on Gemini one generation is the whole video, so it is the
- * requested length (snapped to a length Gemini makes).
+ * requested length (snapped to a length Gemini makes). Meta AI makes every
+ * scene of the advert from a single prompt and renders each one as a
+ * 10-second clip, which the parts are then joined from.
  */
 export function clipSecondsForSite(site: string | undefined, targetDuration?: number): number {
+  if (site === "meta") return META_CLIP_SECONDS;
   if (site !== "gemini") return CLIP_SECONDS;
   const wanted = targetDuration || GEMINI_DURATIONS[0];
   return GEMINI_DURATIONS.reduce((best, s) => (Math.abs(s - wanted) < Math.abs(best - wanted) ? s : best));
@@ -115,7 +126,8 @@ export function clipSecondsForSite(site: string | undefined, targetDuration?: nu
 /** The lengths a site can make: one to four joined clips — or on Gemini, one generation of each length. */
 export function durationOptions(site: string | undefined): number[] {
   if (site === "gemini") return [...GEMINI_DURATIONS];
-  return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * CLIP_SECONDS);
+  const clipSeconds = site === "meta" ? META_CLIP_SECONDS : CLIP_SECONDS;
+  return Array.from({ length: MAX_CLIPS }, (_, i) => (i + 1) * clipSeconds);
 }
 
 /** The closest length the site can make — e.g. an older 30-second Gemini setting becomes 20. */

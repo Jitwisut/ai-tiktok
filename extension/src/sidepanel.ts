@@ -127,9 +127,11 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Lengths depend on the site (joined 8s clips on Flow/AI Studio, one
- * generation of the whole length on Gemini), so rebuild the list when the
- * site changes — keeping the closest length to what was picked.
+ * Lengths depend on the site (joined 8s clips on Flow/AI Studio, joined 10s
+ * scenes on Meta AI, one generation of the whole length on Gemini), so
+ * rebuild the list when the site changes — keeping the closest length to what
+ * was picked (16s on Flow becomes 20s on Meta, never a value the new list has
+ * no option for).
  */
 function renderDurationOptions(durationSelect: HTMLSelectElement, site: string) {
   const previous = Number(durationSelect.value);
@@ -449,7 +451,7 @@ function selectedRunOptions() {
   return {
     targetDuration: Number(($("duration") as HTMLSelectElement).value || 24),
     count: Number(($("repeat") as HTMLSelectElement).value || 1),
-    site: (($("site") as HTMLSelectElement).value || "flow") as "aistudio" | "flow" | "gemini",
+    site: (($("site") as HTMLSelectElement).value || "flow") as "aistudio" | "flow" | "gemini" | "meta",
   };
 }
 
@@ -726,7 +728,7 @@ function runJob(job: LibraryJob, button: HTMLButtonElement) {
     return;
   }
   const targetDuration = Number(($("duration") as HTMLSelectElement).value ?? 24);
-  const site = (($("site") as HTMLSelectElement).value ?? "flow") as "aistudio" | "flow" | "gemini";
+  const site = (($("site") as HTMLSelectElement).value ?? "flow") as "aistudio" | "flow" | "gemini" | "meta";
 
   setBusy(true, job.videoId);
   button.disabled = true;

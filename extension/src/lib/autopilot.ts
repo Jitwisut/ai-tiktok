@@ -20,7 +20,7 @@ import { CONTENT_STYLES } from "./analysis-prompts.js";
 import { durationOptions } from "./prompt-engine.js";
 
 export type AutopilotPostMode = "auto" | "prepare" | "none";
-export type AutopilotSite = "flow" | "aistudio" | "gemini";
+export type AutopilotSite = "flow" | "aistudio" | "gemini" | "meta";
 
 export interface AutopilotSettings {
   targetDuration: number;
@@ -465,7 +465,7 @@ export function createAutopilot(deps: AutopilotDeps) {
         const times = mode === "schedule" ? parseTimes(String(message.times ?? "")) : [];
         if (mode === "schedule" && times.length === 0) return { ok: false, error: "ใส่เวลาอย่างน้อย 1 เวลา เช่น 09:00, 19:30" };
         const settings = message.settings as AutopilotSettings;
-        const site: AutopilotSite = ["aistudio", "gemini"].includes(settings?.site) ? settings.site : "flow";
+        const site: AutopilotSite = ["aistudio", "gemini", "meta"].includes(settings?.site) ? settings.site : "flow";
         const lengths = durationOptions(site);
         const now = Date.now();
         const state: AutopilotState = {
