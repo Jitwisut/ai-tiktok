@@ -250,35 +250,87 @@ function metaVideoFileUrls(sinceMark: number): string[] {
 
 /* ---------- composer actions ---------- */
 
+/** What the composer holds, normalised the way the written prompt is. */
+function metaComposerText(composer: HTMLElement): string {
+  const raw =
+    composer instanceof HTMLInputElement || composer instanceof HTMLTextAreaElement
+      ? composer.value
+      : composer.innerText ?? "";
+  return raw.replace(/\r/g, "").trim();
+}
+
 /**
- * React keeps the composer's value in its own state, so assigning `.value`
- * leaves the send button disabled — the value has to go through the native
- * setter and be announced with an input event. (Verified on meta.ai: after
- * this the send button's `disabled` attribute clears.)
+ * Puts the prompt in the composer, and answers whether the composer now holds
+ * exactly it — a half-written prompt must fail loudly rather than be sent.
+ *
+ * Two ways in, because neither works on its own:
+ *
+ * - execCommand replaces a full selection in one go, which is what a box with
+ *   anything already in it needs. But it silently does nothing while the page
+ *   is not the focused window, and that is the normal case here: an autopilot
+ *   run has the side panel in focus, and the whole job failed with "ใส่
+ *   prompt ลงช่องของ Meta AI ไม่สำเร็จ" for that reason alone.
+ * - A synthetic paste event does work unfocused (Lexical takes it), but it
+ *   only ever inserts at the caret. Selecting everything first does not make
+ *   it replace — measured: the pasted text lands after the old text.
+ *
+ * So: try execCommand, and fall back to a paste only once the box is empty,
+ * which it is for every job (each one starts in a fresh chat).
  */
-function metaWritePrompt(text: string): boolean {
+async function metaWritePrompt(text: string): Promise<boolean> {
   const composer = metaComposer();
   if (!composer) return false;
-  // The composer is a single-line input: a newline either does nothing or sends.
+  // One line: a newline in the composer is the same key that sends.
   const line = text.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
-  composer.focus();
 
   if (composer instanceof HTMLInputElement || composer instanceof HTMLTextAreaElement) {
     const prototype = composer instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    composer.focus();
     setter?.call(composer, line);
     composer.dispatchEvent(new Event("input", { bubbles: true }));
     composer.dispatchEvent(new Event("change", { bubbles: true }));
-    return composer.value.trim().length > 0;
+    return metaComposerText(composer) === line;
   }
 
-  // Lexical ignores a "delete" on a full selection (the box keeps its old
-  // text and the prompt lands appended to it), but an insertText over that
-  // same selection replaces the lot — so this is one call, not clear-then-type.
+  // Lexical applies an edit on its own tick, so poll rather than guess a delay.
+  const settled = async () => {
+    await metaWaitFor(() => (metaComposerText(composer) === line ? true : undefined), 4000, 200);
+    return metaComposerText(composer) === line;
+  };
+
+  composer.focus();
   document.execCommand("selectAll", false);
   document.execCommand("insertText", false, line);
   composer.dispatchEvent(new InputEvent("input", { bubbles: true }));
-  return (composer.innerText ?? "").trim().length > 0;
+  if (await settled()) return true;
+
+  // execCommand did nothing, or not all of it. A paste can only add to what
+  // is there — and nothing else clears a Lexical box from script, a "delete"
+  // over a full selection included (measured: the text stays put) — so
+  // anything still in the box would end up glued to the front of the prompt.
+  // Refuse rather than send that.
+  if (metaComposerText(composer).length > 0) return false;
+
+  const transfer = new DataTransfer();
+  transfer.setData("text/plain", line);
+  composer.focus();
+  composer.dispatchEvent(new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }));
+  return settled();
+}
+
+/** Asks the worker to bring this tab to the front — see FOCUS_MY_TAB in background.ts. */
+function metaFocusTab(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "FOCUS_MY_TAB" }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
 }
 
 /** Clicks a button through the DevTools protocol when the page ignores synthetic events. */
@@ -595,13 +647,22 @@ async function metaUploadClip(videoId: string, src: string, clipIndex: number, c
 async function metaRunJob(job: MetaVideoJob) {
   const total = job.clips.length;
 
+  // Meta finishes hydrating its composer only while this tab is visible: left
+  // in the background Chrome throttles the page and the editor never replaces
+  // its placeholder textarea, however long the wait (measured: still nothing
+  // after 78 seconds hidden).
+  await metaFocusTab();
+
   await metaWaitFor(() => (metaIsGenerating() ? undefined : true), 60000, 1000);
-  // Measured on a signed-in page: the Lexical composer only replaces the
-  // prehydration textarea around 15 seconds in, so this wait is generous.
-  const composer = await metaWaitFor(() => metaComposer() ?? undefined, 45000, 500);
+  // Measured on a visible signed-in page: the editor appears 15-40 seconds in.
+  const composer = await metaWaitFor(() => metaComposer() ?? undefined, 90000, 500);
   if (!composer) {
-    metaReportProgress(job.videoId, 0, total, "failed", "ไม่พบช่องพิมพ์บนหน้า Meta AI");
-    metaShowBanner("ไม่พบช่องพิมพ์บนหน้า Meta AI — ล็อกอิน meta.ai ในแท็บนี้ก่อน แล้วลองใหม่", "#dc2626");
+    const error =
+      document.visibilityState === "hidden"
+        ? "แท็บ Meta AI ถูกสลับไปอยู่เบื้องหลัง หน้าเว็บเลยโหลดช่องพิมพ์ไม่เสร็จ — เปิดแท็บนี้ค้างไว้แล้วสั่งใหม่"
+        : "ไม่พบช่องพิมพ์บนหน้า Meta AI — ล็อกอิน meta.ai ในแท็บนี้ก่อน แล้วลองใหม่";
+    metaReportProgress(job.videoId, 0, total, "failed", error);
+    metaShowBanner(error, "#dc2626");
     return;
   }
 
@@ -620,9 +681,10 @@ async function metaRunJob(job: MetaVideoJob) {
       : "AI Affiliate Studio: กำลังสั่ง Meta AI สร้างวิดีโอ...",
     "#111827",
   );
-  if (!metaWritePrompt(metaComposePrompt(job, imageAttached))) {
-    metaReportProgress(job.videoId, 0, total, "failed", "ใส่ prompt ลงช่องของ Meta AI ไม่สำเร็จ");
-    metaShowBanner("ใส่ prompt ลงช่องของ Meta AI ไม่สำเร็จ", "#dc2626");
+  if (!(await metaWritePrompt(metaComposePrompt(job, imageAttached)))) {
+    const error = "ใส่ prompt ลงช่องของ Meta AI ไม่สำเร็จ — ถ้ามีข้อความค้างอยู่ในช่องพิมพ์ ให้ลบออกแล้วสั่งใหม่";
+    metaReportProgress(job.videoId, 0, total, "failed", error);
+    metaShowBanner(error, "#dc2626");
     return;
   }
   await metaSleep(800);

@@ -34,8 +34,13 @@ const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/(?:u\/\d+\/)?project\//;
 
 const META_TAB_URL = /^https:\/\/(?:www\.)?meta\.ai\//;
 
-/** A Meta AI chat that already holds messages — /c/<id>. */
-const META_EXISTING_CHAT = /^https:\/\/(?:www\.)?meta\.ai\/c\//;
+/**
+ * A Meta AI chat that already holds messages. Sending a prompt moves the tab
+ * to /prompt/<uuid> (and older links use /c/<id>), so both count as "not a
+ * new chat" — matching only /c/ let a job be sent into the conversation a
+ * previous run had left open, on top of its messages and its videos.
+ */
+const META_EXISTING_CHAT = /^https:\/\/(?:www\.)?meta\.ai\/(?:c|prompt)\//;
 
 async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
   if (site === "aistudio") return VEO_STUDIO_URL;
@@ -290,7 +295,18 @@ type ExtensionMessage =
   | SaveApiKeysMessage
   | ResetKeyCooldownMessage
   | TestApiKeyMessage
+  | FocusMyTabMessage
   | TrustedClickMessage;
+
+/**
+ * Brings the sender's own tab to the front. Meta AI only finishes hydrating
+ * its composer while its tab is visible — Chrome throttles a background tab
+ * hard enough that the editor never replaces the placeholder textarea, and a
+ * job waiting on it just times out.
+ */
+interface FocusMyTabMessage {
+  type: "FOCUS_MY_TAB";
+}
 
 /** Clicks an element in the sender's tab with a real (trusted) mouse event — Gemini ignores synthetic clicks on send. */
 interface TrustedClickMessage {
@@ -1542,6 +1558,24 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
       }
       try {
         await clickInTab(tabId, message.selector, !!message.bringToFront);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "FOCUS_MY_TAB") {
+    (async () => {
+      const tab = sender.tab;
+      if (!tab?.id) {
+        sendResponse({ ok: false, error: "no tab" });
+        return;
+      }
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
         sendResponse({ ok: true });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
