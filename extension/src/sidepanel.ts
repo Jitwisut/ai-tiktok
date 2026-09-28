@@ -1088,6 +1088,12 @@ renderQueueInfo();
 
 const apSelected = new Set<string>();
 let apProductsLoaded = false;
+let apTextSourceTouched = false;
+const AP_TEXT_SOURCE_LABELS: Record<string, string> = {
+  "gemini-web": "เว็บ Gemini",
+  "chatgpt-web": "เว็บ ChatGPT",
+  api: "Gemini API",
+};
 
 function apFormatTime(ms: number): string {
   const d = new Date(ms);
@@ -1128,6 +1134,7 @@ function apRenderProducts() {
 }
 
 function apSetupOptions() {
+  $("ap-text-source").addEventListener("change", () => { apTextSourceTouched = true; });
   const style = $("ap-style") as HTMLSelectElement;
   style.innerHTML =
     `<option value="rotate">สลับสไตล์ทุกคลิป</option>` + styleOptions();
@@ -1179,7 +1186,8 @@ function apRender(state: AutopilotState | null) {
       if (state.mode === "batch") lines.push(`<div>เหลืออีก ${state.productIds.length} ชิ้น</div>`);
       else if (state.nextRunAt) lines.push(`<div>รอบถัดไป: ${apFormatTime(state.nextRunAt)} · หมุนเวียน ${state.productIds.length} ชิ้น · เวลา ${state.times.join(", ")}</div>`);
       const post = { auto: "โพสต์อัตโนมัติ", prepare: "เตรียมโพสต์รอกดเอง", none: "ไม่โพสต์" }[state.settings.postMode];
-      lines.push(`<div style="color:#9ca3af">${state.settings.targetDuration} วิ · ${post}</div>`);
+      const textSource = AP_TEXT_SOURCE_LABELS[state.settings.textSource] ?? "เว็บ Gemini";
+      lines.push(`<div style="color:#9ca3af">วิเคราะห์ด้วย ${textSource} · ${state.settings.targetDuration} วิ · ${post}</div>`);
     }
     status.innerHTML = lines.join("");
     status.style.display = "block";
@@ -1204,7 +1212,16 @@ async function loadAutopilot() {
     apProductsLoaded = true;
   }
   apRenderProducts();
-  const result = await send<{ ok: boolean; state?: AutopilotState | null }>({ type: "AUTOPILOT_GET_STATE" });
+  const [result, settingsResult] = await Promise.all([
+    send<{ ok: boolean; state?: AutopilotState | null }>({ type: "AUTOPILOT_GET_STATE" }),
+    send<{ ok: boolean; settings?: { textSource?: string } }>({ type: "GET_SETTINGS" }),
+  ]);
+  if (!apTextSourceTouched) {
+    const source = result?.state?.status !== "idle" && result?.state?.settings.textSource
+      ? result.state.settings.textSource : settingsResult?.settings?.textSource;
+    ($("ap-text-source") as HTMLSelectElement).value =
+      source && AP_TEXT_SOURCE_LABELS[source] ? source : "gemini-web";
+  }
   apRender(result?.state ?? null);
 }
 
@@ -1243,7 +1260,10 @@ $("ap-start").addEventListener("click", () => {
     postMode === "auto" ? "\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี TikTok จริงโดยไม่ถามอีก" : "";
   const siteSelect = $("ap-site") as HTMLSelectElement;
   const siteName = siteSelect.selectedOptions[0]?.textContent ?? "Flow";
-  if (!confirm(`${plan}\nใช้เครดิต/โควต้าวิดีโอของ ${siteName} และโควต้า Gemini API ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
+  const sourceSelect = $("ap-text-source") as HTMLSelectElement;
+  const source = sourceSelect.value;
+  const sourceQuota = source === "chatgpt-web" ? "โควต้าแชท ChatGPT" : source === "api" ? "โควต้า Gemini API" : "โควต้าแชท Gemini";
+  if (!confirm(`${plan}\nใช้เครดิต/โควต้าวิดีโอของ ${siteName} และ${sourceQuota} ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
 
   apCommand("AUTOPILOT_START", {
     mode,
@@ -1254,6 +1274,7 @@ $("ap-start").addEventListener("click", () => {
       style: ($("ap-style") as HTMLSelectElement).value,
       postMode,
       site: ($("ap-site") as HTMLSelectElement).value,
+      textSource: source,
     },
   });
 });
@@ -1288,7 +1309,8 @@ function loadSettings() {
   }).then((result) => {
     const settings = result?.settings;
     if (!settings) return;
-    ($("text-source") as HTMLSelectElement).value = settings.textSource === "api" ? "api" : "gemini-web";
+    ($("text-source") as HTMLSelectElement).value =
+      settings.textSource === "api" || settings.textSource === "chatgpt-web" ? settings.textSource : "gemini-web";
     ($("gemini-model") as HTMLInputElement).value = settings.geminiModel;
     ($("flow-project-url") as HTMLInputElement).value = settings.flowProjectUrl;
   });
@@ -1376,7 +1398,7 @@ $("save-settings").addEventListener("click", () => {
   const settings = {
     geminiModel: ($("gemini-model") as HTMLInputElement).value.trim() || "gemini-flash-latest",
     flowProjectUrl: ($("flow-project-url") as HTMLInputElement).value.trim(),
-    textSource: ($("text-source") as HTMLSelectElement).value === "api" ? "api" : "gemini-web",
+    textSource: ($("text-source") as HTMLSelectElement).value,
   };
 
   Promise.all([send({ type: "SAVE_SETTINGS", settings }), send({ type: "SAVE_API_KEYS", keys: uniqueKeys })]).then(

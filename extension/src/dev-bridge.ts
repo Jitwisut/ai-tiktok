@@ -30,7 +30,7 @@ const DEV_BRIDGE_ALLOWED = new Set([
   "DEV_RELOAD_EXTENSION",
 ]);
 
-const DEV_BRIDGE_STATE_KEYS = ["jobLog", "jobProgress", "jobStatusText", "activeFlowJob", "pendingVideoJob", "videos", "jobQueue", "pendingTikTokPost", "settings", "autopilot"];
+const DEV_BRIDGE_STATE_KEYS = ["jobLog", "jobProgress", "jobStatusText", "activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob", "videos", "jobQueue", "pendingTikTokPost", "settings", "autopilot"];
 
 function devBridgeReply(id: unknown, response: unknown) {
   window.postMessage({ __aiAffiliateDevResponse: true, id, response }, window.location.origin);

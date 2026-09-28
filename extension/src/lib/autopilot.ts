@@ -28,6 +28,8 @@ export interface AutopilotSettings {
   style: string;
   postMode: AutopilotPostMode;
   site: AutopilotSite;
+  /** Fixed for this run, even if the general Settings tab changes later. */
+  textSource: store.TextSource;
 }
 
 type Step = "analyze" | "content" | "video" | "post";
@@ -77,8 +79,11 @@ export interface AutopilotState {
 }
 
 export interface AutopilotDeps {
-  analyzeProduct(productId: string): Promise<unknown>;
-  generateContentScenes(productId: string, style: string, targetDuration: number, site: AutopilotSite): Promise<{ content: store.Content }>;
+  analyzeProduct(productId: string, source: store.TextSource): Promise<unknown>;
+  generateContentScenes(
+    productId: string, style: string, targetDuration: number, site: AutopilotSite, source: store.TextSource,
+    resumeContentId?: string, onContentReady?: (content: store.Content) => Promise<void>,
+  ): Promise<{ content: store.Content }>;
   startVideo(contentId: string, targetDuration: number, site: AutopilotSite): Promise<string>;
   prepareTikTokPost(videoId: string, caption: string, autoPost: boolean, productId: string | null): Promise<{ ok: boolean; error?: string }>;
   isManualJobRunning(): Promise<boolean>;
@@ -183,8 +188,8 @@ export function createAutopilot(deps: AutopilotDeps) {
    */
   async function forgetTabJob(videoId: string | undefined) {
     if (!videoId) return;
-    const stored = await chrome.storage.local.get(["activeFlowJob", "activeGeminiJob", "pendingVideoJob"]);
-    const stale = (["activeFlowJob", "activeGeminiJob"] as const).filter(
+    const stored = await chrome.storage.local.get(["activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob"]);
+    const stale = (["activeFlowJob", "activeGeminiJob", "metaActiveJob"] as const).filter(
       (key) => (stored[key] as { job?: { videoId?: string } } | undefined)?.job?.videoId === videoId,
     ) as string[];
     if ((stored.pendingVideoJob as { videoId?: string } | undefined)?.videoId === videoId) stale.push("pendingVideoJob", "pendingVideoJobSite");
@@ -217,6 +222,11 @@ export function createAutopilot(deps: AutopilotDeps) {
   async function step(): Promise<boolean> {
     const state = await load();
     if (!state || state.status !== "running") return false;
+    // Runs saved before this setting existed still use the currently selected source.
+    if (!state.settings.textSource) {
+      state.settings.textSource = (await store.getSettings()).textSource ?? "gemini-web";
+      await save(state);
+    }
     const now = Date.now();
 
     if (!state.current) {
@@ -278,7 +288,10 @@ export function createAutopilot(deps: AutopilotDeps) {
         cur.leaseUntil = now + LEASE_GEMINI_MS;
         await save(state);
         try {
-          if (!(await store.getAnalysis(cur.productId))) await deps.analyzeProduct(cur.productId);
+          const source = state.settings.textSource;
+          if (!(await store.getAnalysis(cur.productId)) || (await store.getAnalysisSource(cur.productId)) !== source) {
+            await deps.analyzeProduct(cur.productId, source);
+          }
           advance(cur, "content");
         } catch (err) {
           failStep(state, err);
@@ -292,7 +305,20 @@ export function createAutopilot(deps: AutopilotDeps) {
         cur.style ??= pickStyle(state);
         await save(state);
         try {
-          const { content } = await deps.generateContentScenes(cur.productId, cur.style, state.settings.targetDuration, state.settings.site);
+          const { content } = await deps.generateContentScenes(
+            cur.productId, cur.style, state.settings.targetDuration, state.settings.site, state.settings.textSource,
+            cur.contentId,
+            async (draft) => {
+              cur.contentId = draft.id;
+              cur.caption = draft.caption;
+              const latest = await load();
+              if (latest?.startedAt === state.startedAt && latest.current?.productId === cur.productId && latest.current.step === "content") {
+                latest.current.contentId = draft.id;
+                latest.current.caption = draft.caption;
+                await save(latest);
+              }
+            },
+          );
           cur.contentId = content.id;
           cur.caption = content.caption;
           advance(cur, "video");
@@ -465,6 +491,8 @@ export function createAutopilot(deps: AutopilotDeps) {
         const times = mode === "schedule" ? parseTimes(String(message.times ?? "")) : [];
         if (mode === "schedule" && times.length === 0) return { ok: false, error: "ใส่เวลาอย่างน้อย 1 เวลา เช่น 09:00, 19:30" };
         const settings = message.settings as AutopilotSettings;
+        const textSource = ["gemini-web", "chatgpt-web", "api"].includes(settings?.textSource)
+          ? settings.textSource : (await store.getSettings()).textSource ?? "gemini-web";
         const site: AutopilotSite = ["aistudio", "gemini", "meta"].includes(settings?.site) ? settings.site : "flow";
         const lengths = durationOptions(site);
         const now = Date.now();
@@ -476,6 +504,7 @@ export function createAutopilot(deps: AutopilotDeps) {
             style: settings?.style || "rotate",
             postMode: ["auto", "prepare", "none"].includes(settings?.postMode) ? settings.postMode : "prepare",
             site,
+            textSource,
           },
           times,
           productIds,

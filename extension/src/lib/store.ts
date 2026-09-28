@@ -18,6 +18,8 @@ export interface ProductAnalysis {
   angles: string[];
 }
 
+export type TextSource = "gemini-web" | "chatgpt-web" | "api";
+
 export interface Scene {
   duration: number;
   /** Thai summary of the shot, shown in the side panel. */
@@ -89,10 +91,10 @@ export interface Settings {
   /** Press TikTok's Post button after filling the form, instead of stopping for review. */
   tiktokAutoPost?: boolean;
   /**
-   * Who analyses products and writes scripts and scenes: the Gemini web app in
-   * this browser (default) or the API keys below.
+   * Who analyses products and writes scripts and scenes: Gemini web (default),
+   * ChatGPT web, or the Gemini API keys below.
    */
-  textSource?: "gemini-web" | "api";
+  textSource?: TextSource;
 }
 
 /**
@@ -124,6 +126,7 @@ export function maskKey(key: string): string {
 interface StoreShape {
   products: Product[];
   analyses: Record<string, ProductAnalysis>;
+  analysisSources: Record<string, TextSource>;
   contents: Content[];
   videos: VideoJob[];
   settings: Settings;
@@ -133,6 +136,7 @@ interface StoreShape {
 const DEFAULTS: StoreShape = {
   products: [],
   analyses: {},
+  analysisSources: {},
   contents: [],
   videos: [],
   settings: { geminiModel: "gemini-flash-latest", flowProjectUrl: "" },
@@ -279,6 +283,9 @@ export async function deleteProducts(ids: string[]): Promise<number> {
   const analyses = await getAll("analyses");
   for (const id of ids) delete analyses[id];
   await setAll("analyses", analyses);
+  const analysisSources = await getAll("analysisSources");
+  for (const id of ids) delete analysisSources[id];
+  await setAll("analysisSources", analysisSources);
 
   const contents = await getAll("contents");
   const deadContentIds = new Set(contents.filter((c) => idSet.has(c.productId)).map((c) => c.id));
@@ -341,10 +348,18 @@ export async function getAnalysis(productId: string): Promise<ProductAnalysis | 
   return analyses[productId] ?? null;
 }
 
-export async function saveAnalysis(productId: string, analysis: ProductAnalysis): Promise<void> {
+export async function getAnalysisSource(productId: string): Promise<TextSource | null> {
+  const sources = await getAll("analysisSources");
+  return sources[productId] ?? null;
+}
+
+export async function saveAnalysis(productId: string, analysis: ProductAnalysis, source: TextSource): Promise<void> {
   const analyses = await getAll("analyses");
   analyses[productId] = analysis;
   await setAll("analyses", analyses);
+  const sources = await getAll("analysisSources");
+  sources[productId] = source;
+  await setAll("analysisSources", sources);
 }
 
 /* ---------- contents ---------- */

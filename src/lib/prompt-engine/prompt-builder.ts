@@ -51,9 +51,10 @@ function quoteExact(value: string): string {
 
 /**
  * Speech longer than this per second makes Veo rush, garble or cut the line
- * off. Close to the 45-characters-per-8-seconds budget the script writer gets.
+ * off. Kept just above the
+ * 10-characters-per-second budget the script writer gets.
  */
-const MAX_SPEECH_CHARS_PER_SECOND = 6.5;
+const MAX_SPEECH_CHARS_PER_SECOND = 11;
 
 /**
  * Camera words that make Veo rotate the subject (head turning 360°) or smear
@@ -197,8 +198,10 @@ function speechInstructions(beats: TimedScene[], duration: number, spoken: Set<s
     `[AUDIO] The complete spoken script, in this order: ${script}`,
     "Voice: a native Thai speaker with a clear standard Central Thai (Bangkok) accent and correct Thai tones, pronouncing every syllable fully at a relaxed conversational pace — not rushed, not robotic, not sing-song.",
     multiPart ? "Use the same voice (timbre, pitch and accent) as in the other parts of this advert." : "",
-    "Speak the quoted Thai exactly as written, word for word, and say each line ONLY ONCE. Do not translate, paraphrase, shorten or add words.",
-    `Start speaking at about 0.5 seconds and finish the last word by about ${Math.max(2, duration - 1.5)} seconds. After the last line the voice stops completely: no repeating, no second take, no echo, no filler sounds — the rest is silence with natural ambience while the action continues.`,
+    "Speak the quoted Thai exactly as written, word for word. Do not translate, paraphrase, shorten or add words.",
+    `Start speaking at about 0.3 seconds and keep talking through the ${duration}-second shot at a natural pace, finishing the last word by about ${Math.max(2, duration - 0.5)} seconds — only short natural breathing pauses between sentences, no long silence.`,
+    "Delivery: warm, upbeat and persuasive, like a creator who genuinely recommends the product — never shouting and never an over-the-top announcer.",
+    "Say each line ONLY ONCE: no repeating, no second take, no echo, no filler sounds.",
     lines.some((line) => line.onScreen)
       ? "Lips move in sync only while the words are spoken and the mouth rests closed or smiling when silent; keep the face towards the camera and the head steady while talking."
       : "",

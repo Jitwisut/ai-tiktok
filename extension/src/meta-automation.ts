@@ -33,6 +33,8 @@ interface MetaVideoJob {
   imageMimeType?: string;
 }
 
+type MetaJobPhase = "starting" | "composing" | "submitted";
+
 /** Seconds Meta renders per scene — measured on a finished reply (10.0s, 720x1280). Mirrors META_CLIP_SECONDS in prompt-engine.ts, which this classic script cannot import. */
 const META_CLIP_SECONDS = 10;
 
@@ -614,6 +616,20 @@ function metaSendWithTimeout(message: object): Promise<MetaUploadResult> {
   });
 }
 
+/** Persists the point reached before Meta navigates away from this document. */
+function metaSetJobPhase(videoId: string, phase: MetaJobPhase): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type: "META_JOB_PHASE", videoId, phase }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+}
+
 /**
  * fbcdn answers this page's request only WITHOUT credentials — sending
  * cookies turns it into a CORS failure (measured on meta.ai). If the fetch
@@ -644,67 +660,9 @@ async function metaUploadClip(videoId: string, src: string, clipIndex: number, c
 
 /* ---------- the job ---------- */
 
-async function metaRunJob(job: MetaVideoJob) {
+async function metaCollectAndUpload(job: MetaVideoJob, sinceMark: number) {
   const total = job.clips.length;
-
-  // Meta finishes hydrating its composer only while this tab is visible: left
-  // in the background Chrome throttles the page and the editor never replaces
-  // its placeholder textarea, however long the wait (measured: still nothing
-  // after 78 seconds hidden).
-  await metaFocusTab();
-
-  await metaWaitFor(() => (metaIsGenerating() ? undefined : true), 60000, 1000);
-  // Measured on a visible signed-in page: the editor appears 15-40 seconds in.
-  const composer = await metaWaitFor(() => metaComposer() ?? undefined, 90000, 500);
-  if (!composer) {
-    const error =
-      document.visibilityState === "hidden"
-        ? "แท็บ Meta AI ถูกสลับไปอยู่เบื้องหลัง หน้าเว็บเลยโหลดช่องพิมพ์ไม่เสร็จ — เปิดแท็บนี้ค้างไว้แล้วสั่งใหม่"
-        : "ไม่พบช่องพิมพ์บนหน้า Meta AI — ล็อกอิน meta.ai ในแท็บนี้ก่อน แล้วลองใหม่";
-    metaReportProgress(job.videoId, 0, total, "failed", error);
-    metaShowBanner(error, "#dc2626");
-    return;
-  }
-
-  metaReportProgress(job.videoId, 0, total, "generating");
-
-  let imageAttached = false;
-  if (job.imageBase64) {
-    metaShowBanner("AI Affiliate Studio: กำลังแนบรูปสินค้าใน Meta AI...", "#111827");
-    imageAttached = await metaAttachImage(job);
-    if (!imageAttached) metaShowBanner("แนบรูปสินค้าไม่สำเร็จ — สร้างต่อจากข้อความอย่างเดียว (สินค้าในคลิปอาจไม่ตรง)", "#d97706");
-  }
-
-  metaShowBanner(
-    total > 1
-      ? `AI Affiliate Studio: กำลังสั่ง Meta AI สร้าง ${total} ฉากในครั้งเดียว...`
-      : "AI Affiliate Studio: กำลังสั่ง Meta AI สร้างวิดีโอ...",
-    "#111827",
-  );
-  if (!(await metaWritePrompt(metaComposePrompt(job, imageAttached)))) {
-    const error = "ใส่ prompt ลงช่องของ Meta AI ไม่สำเร็จ — ถ้ามีข้อความค้างอยู่ในช่องพิมพ์ ให้ลบออกแล้วสั่งใหม่";
-    metaReportProgress(job.videoId, 0, total, "failed", error);
-    metaShowBanner(error, "#dc2626");
-    return;
-  }
-  await metaSleep(800);
-
-  // Taken before sending: everything requested from here on belongs to this job.
-  const mark = performance.now();
-  if (!(await metaSubmit())) {
-    metaReportProgress(job.videoId, 0, total, "failed", "ส่ง prompt ไม่สำเร็จ");
-    metaShowBanner("ส่ง prompt ไม่สำเร็จ — ลองกดส่งเองในหน้า Meta AI ได้ prompt ใส่ไว้ให้แล้ว", "#dc2626");
-    return;
-  }
-
-  metaShowBanner(
-    total > 1
-      ? `AI Affiliate Studio: Meta AI กำลังสร้าง ${total} ฉาก — ห้ามปิดหรือรีเฟรชแท็บนี้`
-      : "AI Affiliate Studio: Meta AI กำลังสร้างวิดีโอ — ห้ามปิดหรือรีเฟรชแท็บนี้",
-    "#111827",
-  );
-
-  const outcome = await metaWaitForVideos(job.videoId, total, mark);
+  const outcome = await metaWaitForVideos(job.videoId, total, sinceMark);
   if ("error" in outcome) {
     metaReportProgress(job.videoId, 0, total, "failed", outcome.error);
     metaShowBanner(outcome.error, "#dc2626");
@@ -757,7 +715,85 @@ async function metaRunJob(job: MetaVideoJob) {
   );
 }
 
-function metaStartJob(job: MetaVideoJob): { ok: boolean; error?: string } {
+async function metaRunJob(job: MetaVideoJob, phase: MetaJobPhase = "starting") {
+  const total = job.clips.length;
+
+  // Meta may fully navigate to /prompt/<id> after accepting the message. The
+  // new document reports phase="submitted" and comes here without typing or
+  // sending the prompt again; it only resumes the video watcher.
+  if (phase === "submitted") {
+    await metaFocusTab();
+    metaShowBanner("AI Affiliate Studio: Meta AI เปลี่ยนหน้าแล้ว — กำลังติดตามวิดีโอต่อ...", "#111827");
+    // The new document may have loaded the reply before document_idle ran, so
+    // do not discard its already-recorded resource timings.
+    await metaCollectAndUpload(job, 0);
+    return;
+  }
+
+  // Meta finishes hydrating its composer only while this tab is visible: left
+  // in the background Chrome throttles the page and the editor never replaces
+  // its placeholder textarea, however long the wait (measured: still nothing
+  // after 78 seconds hidden).
+  await metaFocusTab();
+
+  await metaWaitFor(() => (metaIsGenerating() ? undefined : true), 60000, 1000);
+  // Measured on a visible signed-in page: the editor appears 15-40 seconds in.
+  const composer = await metaWaitFor(() => metaComposer() ?? undefined, 90000, 500);
+  if (!composer) {
+    const error =
+      document.visibilityState === "hidden"
+        ? "แท็บ Meta AI ถูกสลับไปอยู่เบื้องหลัง หน้าเว็บเลยโหลดช่องพิมพ์ไม่เสร็จ — เปิดแท็บนี้ค้างไว้แล้วสั่งใหม่"
+        : "ไม่พบช่องพิมพ์บนหน้า Meta AI — ล็อกอิน meta.ai ในแท็บนี้ก่อน แล้วลองใหม่";
+    metaReportProgress(job.videoId, 0, total, "failed", error);
+    metaShowBanner(error, "#dc2626");
+    return;
+  }
+
+  metaReportProgress(job.videoId, 0, total, "generating");
+  await metaSetJobPhase(job.videoId, "composing");
+
+  let imageAttached = false;
+  if (job.imageBase64) {
+    metaShowBanner("AI Affiliate Studio: กำลังแนบรูปสินค้าใน Meta AI...", "#111827");
+    imageAttached = await metaAttachImage(job);
+    if (!imageAttached) metaShowBanner("แนบรูปสินค้าไม่สำเร็จ — สร้างต่อจากข้อความอย่างเดียว (สินค้าในคลิปอาจไม่ตรง)", "#d97706");
+  }
+
+  metaShowBanner(
+    total > 1
+      ? `AI Affiliate Studio: กำลังสั่ง Meta AI สร้าง ${total} ฉากในครั้งเดียว...`
+      : "AI Affiliate Studio: กำลังสั่ง Meta AI สร้างวิดีโอ...",
+    "#111827",
+  );
+  if (!(await metaWritePrompt(metaComposePrompt(job, imageAttached)))) {
+    const error = "ใส่ prompt ลงช่องของ Meta AI ไม่สำเร็จ — ถ้ามีข้อความค้างอยู่ในช่องพิมพ์ ให้ลบออกแล้วสั่งใหม่";
+    metaReportProgress(job.videoId, 0, total, "failed", error);
+    metaShowBanner(error, "#dc2626");
+    return;
+  }
+  await metaSleep(800);
+
+  // Taken before sending: everything requested from here on belongs to this job.
+  const mark = performance.now();
+  // Persist this before the click. If that click causes a full navigation,
+  // the next content script knows that the prompt was already submitted.
+  await metaSetJobPhase(job.videoId, "submitted");
+  if (!(await metaSubmit())) {
+    metaReportProgress(job.videoId, 0, total, "failed", "ส่ง prompt ไม่สำเร็จ");
+    metaShowBanner("ส่ง prompt ไม่สำเร็จ — ลองกดส่งเองในหน้า Meta AI ได้ prompt ใส่ไว้ให้แล้ว", "#dc2626");
+    return;
+  }
+
+  metaShowBanner(
+    total > 1
+      ? `AI Affiliate Studio: Meta AI กำลังสร้าง ${total} ฉาก — ห้ามปิดหรือรีเฟรชแท็บนี้`
+      : "AI Affiliate Studio: Meta AI กำลังสร้างวิดีโอ — ห้ามปิดหรือรีเฟรชแท็บนี้",
+    "#111827",
+  );
+  await metaCollectAndUpload(job, mark);
+}
+
+function metaStartJob(job: MetaVideoJob, phase: MetaJobPhase = "starting"): { ok: boolean; error?: string } {
   if (metaJobRunning) return { ok: false, error: "มีงานกำลังทำอยู่แล้วในแท็บนี้" };
   metaJobRunning = true;
   metaCancelled = false;
@@ -769,9 +805,10 @@ function metaStartJob(job: MetaVideoJob): { ok: boolean; error?: string } {
   } catch {
     // not supported — the <video> elements are the primary source anyway
   }
-  metaRunJob(job)
+  metaRunJob(job, phase)
     .catch((err) => {
       const text = err instanceof Error ? err.message : String(err);
+      metaReportProgress(job.videoId, 0, job.clips.length, "failed", text);
       metaShowBanner(
         /context invalidated/i.test(text) ? "Extension ถูกรีโหลดระหว่างทำงาน — กด F5 รีเฟรชหน้านี้" : `เกิดข้อผิดพลาด: ${text}`,
         "#dc2626",
@@ -796,14 +833,13 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: MetaVideoJo
 
 aiPanelMount({ site: "meta", siteLabel: "Meta AI" });
 
-// A job the worker opened this page for. It is claimed whatever the URL
-// turned out to be: the worker only leaves a job waiting when it has just
-// sent a tab to a new chat for it, and Meta may well answer that with a
-// redirect to the chat's own address — refusing to start there would strand
-// the job. What keeps a file matched to the right scene is the timing mark
-// metaRunJob takes just before sending (metaMp4UrlsSince), with the empty
-// chat dispatchMetaJob opens as the second line of defence.
-chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "meta" }, (result: { job: MetaVideoJob | null } | undefined) => {
+// A job the worker opened this page for, or a job that was already submitted
+// before Meta navigated to its /prompt/<id> page. The phase prevents a reload
+// from typing and sending the same prompt a second time.
+chrome.runtime.sendMessage(
+  { type: "GET_PENDING_VIDEO_JOB", site: "meta" },
+  (result: { job: MetaVideoJob | null; phase?: MetaJobPhase } | undefined) => {
   if (chrome.runtime.lastError) return;
-  if (result?.job) metaStartJob(result.job);
-});
+    if (result?.job) metaStartJob(result.job, result.phase ?? "starting");
+  },
+);

@@ -18,7 +18,13 @@ const MOCK_CONTENT = {
   onScreenCta: "กดดูเลย",
 };
 
-const THAI_CHARS_PER_SECOND = 45 / 8;
+/**
+ * Thai speaking budget per second of video, in characters (vowel and tone
+ * marks included). A natural Thai speaking pace is about 10-12 characters a
+ * second, so 10 keeps the presenter selling almost continuously without
+ * having to rush the words.
+ */
+const THAI_CHARS_PER_SECOND = 10;
 
 function cleanOnScreenText(text: string | undefined, maxChars: number): string | undefined {
   const cleaned = (text ?? "")
@@ -30,10 +36,23 @@ function cleanOnScreenText(text: string | undefined, maxChars: number): string |
   return Array.from(cleaned).length <= maxChars ? cleaned : undefined;
 }
 
+/**
+ * A short line leaves the presenter silent for most of a clip and does not
+ * sell; this asks for a continuous, concrete pitch that still fits the
+ * speaking budget and the claim-safety rules.
+ */
+const SELLING_SCRIPT_RULE = [
+  "script ต้องเป็นคำพูดขายที่ต่อเนื่องและน่าเชื่อ ไม่ใช่แค่บรรยายภาพ: ทุกจุดขายต้องบอกด้วยว่าดียังไงกับคนดู (เช่น ใช้แล้วประหยัดเวลาตอนไหน เก็บของได้มากขึ้นแค่ไหน) ไม่ใช่พูดลอยๆ ว่าดีหรือคุ้ม",
+  "ใส่รายละเอียดที่จับต้องได้จากข้อมูลสินค้า เช่น วัสดุ ขนาด วิธีใช้ จำนวนชิ้น เพื่อให้ฟังแล้วรู้สึกว่าคนพูดใช้สินค้าจริง",
+  "บอกให้ชัดว่าเหมาะกับใครหรือใช้ตอนไหน แล้วปิดด้วย CTA ที่ชวนกดตะกร้าเหลืองอย่างมั่นใจ",
+  "พูดต่อเนื่องเป็นจังหวะธรรมชาติ ประโยคสั้นเรียงติดกัน เว้นจังหวะหายใจสั้นๆ ได้ แต่ห้ามเงียบยาวหลายวินาที",
+  "ห้ามพูดวนซ้ำความเดิมเพื่อให้ยาวขึ้น ทุกประโยคต้องเพิ่มข้อมูลใหม่หรือเหตุผลใหม่ที่ทำให้อยากซื้อ",
+].join("\n");
+
 function scriptStructure(targetDuration: number): string {
-  if (targetDuration <= 8) return "hook สั้นมาก + จุดขายหลัก 1 ข้อ + CTA สั้น";
-  if (targetDuration <= 16) return "hook + จุดขาย/การใช้งาน 2 จังหวะ + CTA";
-  return "hook + ปัญหา/บริบท + สาธิตการใช้งาน + ประโยชน์ + CTA";
+  if (targetDuration <= 8) return "hook + จุดขายหลัก 1 ข้อพร้อมเหตุผลว่าดียังไง + CTA ชวนกดซื้อ";
+  if (targetDuration <= 16) return "hook + ปัญหาที่เจอ + จุดขาย 2 ข้อพร้อมเหตุผล + บอกว่าเหมาะกับใคร + CTA ชวนกดซื้อ";
+  return "hook + ปัญหาที่เจอ + สาธิตการใช้งานพร้อมเล่าไปด้วย + จุดขาย 2-3 ข้อพร้อมเหตุผล + บอกว่าเหมาะกับใคร + CTA ชวนกดซื้อแบบหนักแน่น";
 }
 
 function reviewRules(): string[] {
@@ -109,7 +128,8 @@ export async function generateContent(
         : "เลือกมุมการขายที่เหมาะกับสินค้าและสไตล์นี้เพียงหนึ่งมุม แล้วรักษามุมเดิมตลอดทั้งชิ้น",
       `ความยาวเป้าหมาย: ${targetDuration} วินาที`,
       `โครงเรื่องตามความยาว: ${scriptStructure(targetDuration)}`,
-      `งบคำพูดโดยประมาณ: ไม่เกิน ${speechBudget} ตัวอักษรไทยรวมสระและวรรณยุกต์ (เหลือเวลาสำหรับภาพและ CTA)`,
+      `งบคำพูด: ควรยาวประมาณ ${Math.round(speechBudget * 0.85)}-${speechBudget} ตัวอักษรไทยรวมสระและวรรณยุกต์ (ประมาณ ${THAI_CHARS_PER_SECOND} ตัวอักษรต่อวินาที) — พูดขายต่อเนื่องเกือบตลอดคลิป ไม่ใช่พูดสั้นๆ แล้วเงียบ แต่ห้ามยาวเกินจนต้องเร่งพูด`,
+      SELLING_SCRIPT_RULE,
       "ส่งฟิลด์ hook, script, caption, cta ให้ครบ",
       styleUsesOnScreenText(style)
         ? `ส่ง onScreenText เป็นพาดหัวภาษาไทยล้วนจาก hook/จุดขาย ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษร และ onScreenCta เป็น CTA ภาษาไทยล้วน ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษร — ทั้งสองฟิลด์คือข้อความจริงที่จะถูกคัดลอกลงวิดีโอ ห้ามใส่เครื่องหมายคำพูดไว้ในค่า เพราะระบบจะครอบด้วยเครื่องหมาย \"...\" เอง`

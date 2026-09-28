@@ -15,6 +15,12 @@ export interface GenerateObjectParams {
   prompt: string;
   images?: ImagePart[];
   schema: JsonSchema;
+  /**
+   * A filled-in answer for an invented product, shown to the web chat apps
+   * (which have no responseSchema) so they see the exact shape to return.
+   * The API path ignores it — responseSchema already enforces the shape.
+   */
+  example?: unknown;
 }
 
 export class GeminiError extends Error {

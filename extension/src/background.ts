@@ -1,6 +1,7 @@
 import * as store from "./lib/store.js";
 import * as gemini from "./lib/gemini.js";
 import { generateObjectOnWeb } from "./lib/gemini-web.js";
+import { generateObjectOnChatGPT } from "./lib/chatgpt-web.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
 import {
@@ -81,6 +82,47 @@ interface VideoJob {
   modelId: string;
   imageBase64?: string;
   imageMimeType?: string;
+}
+
+/**
+ * Meta navigates from the empty composer to /prompt/<id> after submit. A full
+ * navigation destroys the content script that was waiting for the videos, so
+ * this small durable record lets the new page resume the same job instead of
+ * starting over or leaving the side panel looking idle.
+ */
+type MetaJobPhase = "starting" | "composing" | "submitted";
+
+interface MetaActiveJob {
+  job: VideoJob;
+  tabId: number;
+  phase: MetaJobPhase;
+  at: number;
+}
+
+const META_ACTIVE_JOB_KEY = "metaActiveJob";
+const META_ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
+
+async function setMetaActiveJob(job: VideoJob, tabId: number, phase: MetaJobPhase): Promise<void> {
+  await chrome.storage.local.set({
+    [META_ACTIVE_JOB_KEY]: { job, tabId, phase, at: Date.now() } satisfies MetaActiveJob,
+  });
+}
+
+async function getMetaActiveJob(): Promise<MetaActiveJob | null> {
+  const stored = await chrome.storage.local.get(META_ACTIVE_JOB_KEY);
+  const active = stored[META_ACTIVE_JOB_KEY] as Partial<MetaActiveJob> | undefined;
+  if (!active?.job?.videoId || typeof active.tabId !== "number") return null;
+  if (active.at && Date.now() - active.at > META_ACTIVE_JOB_STALE_MS) {
+    await chrome.storage.local.remove(META_ACTIVE_JOB_KEY);
+    return null;
+  }
+  return active as MetaActiveJob;
+}
+
+async function clearMetaActiveJob(videoId?: string): Promise<void> {
+  const active = await getMetaActiveJob();
+  if (!active || (videoId && active.job.videoId !== videoId)) return;
+  await chrome.storage.local.remove(META_ACTIVE_JOB_KEY);
 }
 
 interface IncomingVideoJob {
@@ -240,6 +282,12 @@ interface GetPendingVideoJobMessage {
   site?: GenerationSite;
 }
 
+interface MetaJobPhaseMessage {
+  type: "META_JOB_PHASE";
+  videoId: string;
+  phase: MetaJobPhase;
+}
+
 interface GetSettingsMessage {
   type: "GET_SETTINGS";
 }
@@ -289,6 +337,7 @@ type ExtensionMessage =
   | AnalyzeProductMessage
   | GenerateContentScenesMessage
   | GetPendingVideoJobMessage
+  | MetaJobPhaseMessage
   | GetSettingsMessage
   | SaveSettingsMessage
   | GetApiKeysStatusMessage
@@ -478,30 +527,49 @@ async function dispatchGeminiJob(job: VideoJob): Promise<DispatchResult> {
  */
 async function dispatchMetaJob(job: VideoJob): Promise<DispatchResult> {
   const tabs = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS.meta })).filter((tab) => tab.id && META_TAB_URL.test(tab.url ?? ""));
-  const onNewChat = tabs.find((tab) => !META_EXISTING_CHAT.test(tab.url ?? ""));
-  if (onNewChat?.id) {
-    try {
-      const result = await sendJobToTab(onNewChat.id, "meta", job);
-      if (result.ok) {
-        await chrome.tabs.update(onNewChat.id, { active: true });
-        await chrome.storage.local.set({ metaJobTabId: onNewChat.id });
-        return result;
-      }
-      if (/มีงานกำลังทำอยู่/.test(result.error ?? "")) return result;
-    } catch {
-      // fall through to a fresh page load
+  const active = await getMetaActiveJob();
+  if (active) {
+    const activeTab = tabs.find((tab) => tab.id === active.tabId);
+    if (activeTab && active.job.videoId !== job.videoId) {
+      return { ok: false, error: "มีงานสร้างวิดีโอใน Meta AI กำลังทำอยู่ — รอให้งานเดิมเสร็จก่อน" };
     }
+    if (activeTab?.id && active.job.videoId === job.videoId) {
+      await chrome.tabs.update(activeTab.id, { active: true });
+      return { ok: true, opened: true };
+    }
+    // The old Meta tab was closed. It is safe to replace the orphaned record.
+    await clearMetaActiveJob(active.job.videoId);
   }
-
+  const onNewChat = tabs.find((tab) => !META_EXISTING_CHAT.test(tab.url ?? ""));
   await stashPendingJob(job, "meta");
   const { metaJobTabId } = await chrome.storage.local.get("metaJobTabId");
-  const reusable = tabs.find((tab) => tab.id === metaJobTabId);
+  // Do not send directly into an already-loaded Meta page. Meta often
+  // navigates to /prompt/<id> immediately after submit; sending directly
+  // leaves the old content script waiting while the new document has no job
+  // to claim. Reloading the same tab with a pending job keeps the browser tab
+  // visible and lets the fresh content script own the whole lifecycle.
+  const reusable = onNewChat ?? tabs.find((tab) => tab.id === metaJobTabId);
   if (reusable?.id) {
-    await chrome.tabs.update(reusable.id, { url: META_NEW_CHAT_URL, active: true });
+    await setMetaActiveJob(job, reusable.id, "starting");
+    await chrome.storage.local.set({
+      jobProgress: { videoId: job.videoId, current: 0, total: job.clips.length, state: "generating", at: Date.now() },
+      jobStatusText: { text: "กำลังเปิดหน้า Meta AI และจะติดตามหน้าสร้างวิดีโอต่อให้", color: "#2563eb", at: Date.now() },
+    });
+    await chrome.tabs.update(reusable.id, { active: true });
+    if (onNewChat?.id === reusable.id) await chrome.tabs.reload(reusable.id);
+    else await chrome.tabs.update(reusable.id, { url: META_NEW_CHAT_URL, active: true });
+    await chrome.storage.local.set({ metaJobTabId: reusable.id });
     return { ok: true, opened: true };
   }
-  const created = await chrome.tabs.create({ url: META_NEW_CHAT_URL });
+
+  const created = await chrome.tabs.create({ url: META_NEW_CHAT_URL, active: true });
+  if (!created.id) throw new Error("เปิดแท็บ Meta AI ไม่สำเร็จ");
+  await setMetaActiveJob(job, created.id, "starting");
   await chrome.storage.local.set({ metaJobTabId: created.id });
+  await chrome.storage.local.set({
+    jobProgress: { videoId: job.videoId, current: 0, total: job.clips.length, state: "generating", at: Date.now() },
+    jobStatusText: { text: "กำลังเปิดหน้า Meta AI และจะติดตามหน้าสร้างวิดีโอต่อให้", color: "#2563eb", at: Date.now() },
+  });
   return { ok: true, opened: true };
 }
 
@@ -653,6 +721,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const progress = changes.jobProgress?.newValue as { videoId?: string; state?: string } | undefined;
   if (!progress?.videoId || (progress.state !== "done" && progress.state !== "failed")) return;
+  // A Meta page can be reloaded while it is rendering. Once the job reaches a
+  // terminal state its recovery record must disappear, otherwise a later
+  // visit to the same Meta tab could resume an old video.
+  void clearMetaActiveJob(progress.videoId);
   void advanceJobQueue(progress.videoId);
 });
 
@@ -945,26 +1017,30 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean, editorSe
   }
 }
 
-/** Product analysis, scripts and scenes: the Gemini web app by default, or the API keys when chosen in Settings. */
-async function generateObject<T>(params: gemini.GenerateObjectParams): Promise<T> {
-  const { textSource } = await store.getSettings();
-  return textSource === "api" ? gemini.generateObject<T>(params) : generateObjectOnWeb<T>(params);
+/** Product analysis, scripts and scenes use the selected text source. */
+async function generateObject<T>(params: gemini.GenerateObjectParams, source: store.TextSource | undefined, productId: string): Promise<T> {
+  const textSource = source ?? (await store.getSettings()).textSource;
+  if (textSource === "api") return gemini.generateObject<T>(params);
+  if (textSource === "chatgpt-web") return generateObjectOnChatGPT<T>(params, productId);
+  return generateObjectOnWeb<T>(params);
 }
 
-async function analyzeProduct(productId: string): Promise<store.ProductAnalysis> {
+async function analyzeProduct(productId: string, source?: store.TextSource): Promise<store.ProductAnalysis> {
   const product = await store.getProduct(productId);
   if (!product) throw new Error("ไม่พบสินค้า");
+  const textSource = source ?? (await store.getSettings()).textSource ?? "gemini-web";
   // Every image is sent inline as base64 on each call; a few angles are enough
   // to tell what the product is, and more only make the request slow enough to time out.
   const images = await gemini.loadImages(product.images.slice(0, 3));
-  const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
+  const { system, prompt, example } = prompts.buildAnalysisPrompt(product, images.length > 0);
   const analysis = await generateObject<store.ProductAnalysis>({
     system,
     prompt,
+    example,
     images,
     schema: prompts.PRODUCT_ANALYSIS_SCHEMA,
-  });
-  await store.saveAnalysis(product.id, analysis);
+  }, textSource, product.id);
+  await store.saveAnalysis(product.id, analysis, textSource);
   return analysis;
 }
 
@@ -973,6 +1049,9 @@ async function generateContentScenes(
   style: string,
   targetDuration: number,
   site: GenerationSite = "flow",
+  source?: store.TextSource,
+  resumeContentId?: string,
+  onContentReady?: (content: store.Content) => Promise<void>,
 ): Promise<{ content: store.Content; scenes: store.Scene[] }> {
   targetDuration = snapDuration(site, targetDuration);
   const clipSeconds = clipSecondsForSite(site, targetDuration);
@@ -983,39 +1062,45 @@ async function generateContentScenes(
   // calls only need the cover photo to keep the product's look right.
   const images = await gemini.loadImages(product.images.slice(0, 1));
 
-  // Rotate angles across generations so repeated runs for one product tell different stories.
-  const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
-  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
-  const contentResult = await generateObject<{
-    hook: string;
-    script: string;
-    caption: string;
-    cta: string;
-    onScreenText?: string;
-    onScreenCta?: string;
-  }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA });
+  let content = resumeContentId ? await store.getContent(resumeContentId) : null;
+  if (content && (content.productId !== product.id || content.style !== style)) content = null;
+  if (!content) {
+    // Rotate angles across generations so repeated runs for one product tell different stories.
+    const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
+    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
+    const contentResult = await generateObject<{
+      hook: string;
+      script: string;
+      caption: string;
+      cta: string;
+      onScreenText?: string;
+      onScreenCta?: string;
+    }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA }, source, product.id);
 
-  const content = await store.createContent({
-    productId: product.id,
-    style,
-    hook: contentResult.hook,
-    script: contentResult.script,
-    caption: contentResult.caption,
-    cta: contentResult.cta,
-    // Short is what actually renders as legible Thai in Veo — anything longer
-    // that Gemini writes despite the prompt's instruction is dropped rather
-    // than risking garbled text on screen.
-    onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, prompts.ON_SCREEN_HEADLINE_MAX),
-    onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, prompts.ON_SCREEN_CTA_MAX),
-    angle,
-  });
+    content = await store.createContent({
+      productId: product.id,
+      style,
+      hook: contentResult.hook,
+      script: contentResult.script,
+      caption: contentResult.caption,
+      cta: contentResult.cta,
+      // Short is what actually renders as legible Thai in Veo — anything longer
+      // that the model writes despite the prompt's instruction is dropped.
+      onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, prompts.ON_SCREEN_HEADLINE_MAX),
+      onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, prompts.ON_SCREEN_CTA_MAX),
+      angle,
+    });
+    await onContentReady?.(content);
+  }
 
-  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0);
+  if (content.scenes.length > 0) return { content, scenes: content.scenes };
+
+  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0, analysis);
   const sceneResult = await generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
     ...scenePrompt,
     images,
     schema: prompts.SCENE_PLAN_SCHEMA,
-  });
+  }, source, product.id);
   await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions);
   return { content, scenes: sceneResult.scenes };
 }
@@ -1535,7 +1620,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         sendResponse({ ok: false, error: "วิดีโอนี้สร้างเสร็จแล้ว ยกเลิกไม่ได้" });
         return;
       }
-      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "pendingVideoJob", "pendingVideoJobSite"]);
+      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob", "pendingVideoJobSite"]);
       await chrome.storage.local.set({
         jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
       });
@@ -1584,6 +1669,19 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "META_JOB_PHASE") {
+    (async () => {
+      const active = await getMetaActiveJob();
+      if (!active || active.job.videoId !== message.videoId || active.tabId !== sender.tab?.id) {
+        sendResponse({ ok: false, error: "ไม่พบงาน Meta AI ที่กำลังติดตาม" });
+        return;
+      }
+      await setMetaActiveJob(active.job, active.tabId, message.phase);
+      sendResponse({ ok: true });
+    })().catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+
   if (message.type === "GET_PENDING_VIDEO_JOB") {
     (async () => {
       const stored = await chrome.storage.local.get(["pendingVideoJob", "pendingVideoJobSite", "pendingVideoJobAt"]);
@@ -1604,8 +1702,27 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         return;
       }
       // Clear before responding so a second asker can't claim the same job.
-      if (job) await clearPendingJob();
-      sendResponse({ job });
+      if (job) {
+        if (message.site === "meta" && sender.tab?.id) {
+          await setMetaActiveJob(job, sender.tab.id, "starting");
+        }
+        await clearPendingJob();
+        sendResponse({ job, phase: message.site === "meta" ? ("starting" as MetaJobPhase) : undefined });
+        return;
+      }
+
+      // A full navigation after Meta accepts the prompt starts a fresh
+      // content script. Give that script the same job in "submitted" mode so
+      // it waits for the already-requested videos instead of submitting the
+      // prompt a second time.
+      if (message.site === "meta" && sender.tab?.id) {
+        const active = await getMetaActiveJob();
+        if (active?.tabId === sender.tab.id) {
+          sendResponse({ job: active.job, phase: active.phase });
+          return;
+        }
+      }
+      sendResponse({ job: null });
     })();
     return true;
   }

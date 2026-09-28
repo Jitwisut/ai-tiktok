@@ -102,6 +102,7 @@ async function flowLoadActiveJob(): Promise<FlowActiveJob | null> {
 }
 
 function flowShowBanner(text: string, color: string) {
+  if (color === "#dc2626") flowLastError = text;
   // The in-page panel is the primary surface; the floating banner stays as a
   // fallback for when the panel has not mounted yet.
   aiPanelStatus(text, color === "#111827" ? "#e5e7eb" : color);
@@ -130,11 +131,13 @@ function flowShowBanner(text: string, color: string) {
   document.body.appendChild(banner);
 }
 
+let flowLastError: string | undefined;
+
 function flowReportProgress(videoId: string, current: number, total: number, state: string) {
   // See the comment on aiPanelStatus in panel.ts — a reloaded extension
   // orphans this tab's script, and chrome.storage then throws.
   try {
-    chrome.storage.local.set({ jobProgress: { videoId, current, total, state, at: Date.now() } }).catch(() => {});
+    chrome.storage.local.set({ jobProgress: { videoId, current, total, state, error: state === "failed" ? flowLastError : undefined, at: Date.now() } }).catch(() => {});
   } catch {
     // context already gone
   }
@@ -157,9 +160,37 @@ async function flowWaitFor<T>(
 
 
 function flowFindEditor(): HTMLElement | undefined {
-  return Array.from(document.querySelectorAll<HTMLElement>("div.ProseMirror")).find(
-    (el) => el.getBoundingClientRect().width > 0,
-  );
+  // Flow now also uses a plain text-entry area on new Agent sessions. Anchor
+  // the fallback to the generation controls so search boxes and session-title
+  // fields are never mistaken for the prompt.
+  const start = flowFindStartButton();
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(
+    'div.ProseMirror, textarea, [contenteditable="true"], [role="textbox"]',
+  )).filter((el) => {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 &&
+      el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+  });
+  if (!start) return candidates.find((el) => el.matches("div.ProseMirror"));
+  const buttonRect = start.getBoundingClientRect();
+  const composer = start.closest("form") ?? start.parentElement?.parentElement?.parentElement;
+  return candidates
+    .filter((el) => el.matches('div.ProseMirror, textarea, [contenteditable="true"], [role="textbox"]'))
+    .sort((a, b) => {
+      const score = (el: HTMLElement) => {
+        const rect = el.getBoundingClientRect();
+        const distance = Math.hypot(rect.left + rect.width / 2 - buttonRect.left,
+          rect.top + rect.height / 2 - buttonRect.top);
+        return distance + (composer?.contains(el) ? 0 : 1000);
+      };
+      return score(a) - score(b);
+    })[0];
+}
+
+function flowEditorText(editor: HTMLElement): string {
+  return editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+    ? editor.value
+    : editor.textContent ?? "";
 }
 
 /**
@@ -168,12 +199,41 @@ function flowFindEditor(): HTMLElement | undefined {
  */
 function flowSetPrompt(editor: HTMLElement, text: string) {
   editor.focus();
+  if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+    editor.setSelectionRange(0, editor.value.length);
+    document.execCommand("insertText", false, text);
+    return;
+  }
   const selection = window.getSelection();
   const range = document.createRange();
   range.selectNodeContents(editor);
   selection?.removeAllRanges();
   selection?.addRange(range);
   document.execCommand("insertText", false, text);
+}
+
+/** Give the visible Flow editor real browser focus when another window owns input. */
+async function flowFocusEditorForInput(): Promise<void> {
+  const editor = flowFindEditor();
+  if (!editor) return;
+  const marker = "data-ai-affiliate-prompt-target";
+  editor.setAttribute(marker, "true");
+  try {
+    await new Promise<void>((resolve) => {
+      chrome.runtime.sendMessage({
+        type: "TRUSTED_CLICK",
+        selector: `[${marker}="true"]`,
+        bringToFront: true,
+      }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    });
+  } catch {
+    // The normal editor focus and insertion path below can still succeed.
+  } finally {
+    editor.removeAttribute(marker);
+  }
 }
 
 /**
@@ -187,21 +247,31 @@ async function flowSetPromptVerified(text: string): Promise<boolean> {
     if (editor) {
       flowSetPrompt(editor, text);
       await new Promise((resolve) => setTimeout(resolve, 700));
-      if ((flowFindEditor()?.textContent ?? "").trim().length > 20) return true;
+      if (flowEditorText(flowFindEditor() ?? editor).trim().length > 20) return true;
     }
     // Something took focus — usually a picker overlay still open.
     await flowCloseIngredientMenu();
+    await flowFocusEditorForInput();
   }
   return false;
 }
 
+function flowVisibleButton(selector: string): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>(selector)).find((button) => {
+    const rect = button.getBoundingClientRect();
+    return button.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) &&
+      rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+      rect.left < window.innerWidth && rect.top < window.innerHeight;
+  });
+}
+
 function flowFindStartButton(): HTMLButtonElement | null {
-  return document.querySelector<HTMLButtonElement>('button[aria-label="Start generation"]');
+  return flowVisibleButton('button[aria-label="Start generation"], button[aria-label="เริ่มสร้าง"]') ?? null;
 }
 
 function flowIsGenerating(): boolean {
   return Boolean(
-    document.querySelector('button[aria-label="Stop generation"]') ??
+    document.querySelector('button[aria-label="Stop generation"], button[aria-label="หยุดสร้าง"]') ??
       Array.from(document.querySelectorAll("button")).find(
         (b) => b.textContent?.trim() === "stop",
       ) ??
@@ -349,7 +419,7 @@ async function flowReadVideoSrcFromTile(tile: HTMLElement): Promise<string | und
   const src = await flowWaitFor(() => (onDetail() ? flowFindClipFileUrl(openedAt) : undefined), 30000, 500);
 
   if (onDetail()) {
-    const back = document.querySelector<HTMLButtonElement>('button[aria-label^="Back button"]');
+    const back = document.querySelector<HTMLButtonElement>('button[aria-label^="Back button"], button[aria-label^="ย้อนกลับ"]');
     if (back) back.click();
     else history.back();
   }
@@ -369,14 +439,14 @@ function flowFindApprove(): HTMLElement | undefined {
   // answers its own.
   const cardOption = Array.from(
     document.querySelectorAll<HTMLElement>('flow-permission-message [role="radio"]:not([aria-disabled="true"])'),
-  ).find((row) => (row.getAttribute("aria-label") ?? row.querySelector(".option-label")?.textContent ?? "").trim() === "Approve");
+  ).find((row) => /^(Approve|อนุมัติ|ยืนยัน)$/.test((row.getAttribute("aria-label") ?? row.querySelector(".option-label")?.textContent ?? "").trim()));
   if (cardOption) return cardOption;
 
   return Array.from(document.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='button']")).find(
     (el) => {
       const label = (el.textContent ?? "").trim();
-      if (!label || /always/i.test(label)) return false; // never the account-wide "always approve" toggle
-      return /^(approve|confirm|continue|yes,?\s*continue|generate anyway)$/i.test(label);
+      if (!label || /always|เสมอ|ทุกครั้ง/i.test(label)) return false; // never the account-wide "always approve" toggle
+      return /^(approve|confirm|continue|yes,?\s*continue|generate anyway|อนุมัติ|ยืนยัน|ดำเนินการต่อ|สร้างต่อ)$/i.test(label);
     },
   );
 }
@@ -434,16 +504,24 @@ function flowComposer(): Element | null {
   return flowFindStartButton()?.closest("div")?.parentElement?.parentElement ?? null;
 }
 
-/** Drops ingredients left over from the previous clip so they do not stack up. */
-async function flowClearIngredients() {
-  const composer = flowComposer();
-  const removers = composer
-    ? Array.from(composer.querySelectorAll("button")).filter((b) =>
-        /remove|delete|clear|close/i.test(b.getAttribute("aria-label") ?? ""),
-      )
-    : [];
-  for (const button of removers) button.click();
-  if (removers.length) await new Promise((resolve) => setTimeout(resolve, 800));
+/** Clear the actual ingredient row and verify it is empty before another product. */
+async function flowClearIngredients(): Promise<boolean> {
+  if (flowIngredientChips() === 0) return true;
+  const clearPrompt = flowVisibleButton('button[aria-label="Clear prompt"], button[aria-label="ล้างพรอมต์"]');
+  clearPrompt?.click();
+  if (await flowWaitFor(() => flowIngredientChips() === 0 ? true : undefined, 2500, 200)) return true;
+
+  // The chip row may sit outside flowComposer(), beside the Start toolbar.
+  // Only search each chip's nearby controls so page-wide Close/Delete buttons
+  // cannot remove unrelated assets or dismiss dialogs.
+  for (const chip of flowIngredientChipButtons()) {
+    const row = chip.parentElement?.parentElement;
+    const remove = row && Array.from(row.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button !== chip && /^(remove|delete|clear|close|ลบ|เอาออก|นำออก)/i.test((button.getAttribute("aria-label") ?? "").trim()),
+    );
+    remove?.click();
+  }
+  return (await flowWaitFor(() => flowIngredientChips() === 0 ? true : undefined, 3000, 200)) === true;
 }
 
 /**
@@ -452,6 +530,11 @@ async function flowClearIngredients() {
  * attached with an empty prompt box and Run disabled.
  */
 async function flowCloseIngredientMenu() {
+  const close = Array.from(document.querySelectorAll<HTMLButtonElement>(".cdk-overlay-container button")).find(
+    (button) => /^(Close|ปิด)$/.test(button.getAttribute("aria-label") ?? "") &&
+      button.querySelector("mat-icon")?.textContent?.trim() === "close",
+  );
+  close?.click();
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await flowWaitFor(
@@ -468,20 +551,37 @@ interface FlowProductImage {
   name: string;
 }
 
+function flowIngredientChipButtons(): HTMLButtonElement[] {
+  // The Start button sits in a sibling toolbar, so walking up from it can
+  // miss the ingredient row entirely. Count Flow's visible chip buttons.
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button")).filter((button) => {
+    const label = (button.getAttribute("aria-label") || button.innerText || "").trim();
+    const rect = button.getBoundingClientRect();
+    return /^(Ingredient|องค์ประกอบ)$/i.test(label) &&
+      button.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) &&
+      rect.width > 0 && rect.height > 0;
+  });
+}
+
 function flowIngredientChips(): number {
-  return flowComposer()?.querySelectorAll('button[aria-label="Ingredient"]').length ?? 0;
+  return flowIngredientChipButtons().length;
 }
 
 /** The picker's upload button: labelled by aria-label in the compact layout, only by its text in the wide one. */
 function flowUploadMediaButton(): HTMLButtonElement | undefined {
-  return Array.from(document.querySelectorAll<HTMLButtonElement>(".cdk-overlay-container button")).find(
-    (b) => b.getAttribute("aria-label") === "Upload media" || /Upload media\s*$/.test(b.innerText.trim()),
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+    (b) => b.getBoundingClientRect().width > 0 && (
+      /^(Upload media|อัปโหลดสื่อ)$/.test(b.getAttribute("aria-label") ?? "") ||
+      /Upload media\s*$/.test(b.innerText.trim()) || b.querySelector("mat-icon")?.textContent?.trim() === "upload"
+    ),
   );
 }
 
 /** Opens the ingredient picker; resolves once it is showing (an empty project has an upload button but no assets). */
 async function flowOpenIngredientPicker(): Promise<boolean> {
-  const addButton = document.querySelector<HTMLButtonElement>('button[aria-label="Add ingredients to the prompt box"]');
+  const addButton = flowVisibleButton(
+    'button[aria-label="Add ingredients to the prompt box"], button[aria-label="เพิ่มองค์ประกอบลงในช่องพรอมต์"]',
+  );
   if (!addButton) return false;
   addButton.click();
   const open = await flowWaitFor(
@@ -496,26 +596,107 @@ function flowAssetItems(): HTMLElement[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".asset-item"));
 }
 
+function flowAssetTitle(item: HTMLElement): string {
+  return (item.querySelector(".asset-title")?.textContent ?? item.innerText.split("\n")[0] ?? "").trim();
+}
+
+/**
+ * The tile the picker's preview and Add button currently act on. Flow marks
+ * it with the asset-item-active class and leaves aria-selected false on every
+ * tile, so checking only aria-selected never saw the real selection.
+ */
+function flowAssetIsActive(item: HTMLElement): boolean {
+  return item.classList.contains("asset-item-active") || item.classList.contains("selected") ||
+    item.getAttribute("aria-selected") === "true" || item.getAttribute("data-state") === "selected";
+}
+
+/** Name in the picker's image preview ("แสดงตัวอย่าง product-….jpg"); video previews have none. */
+function flowAssetPreviewName(): string | undefined {
+  for (const img of Array.from(document.querySelectorAll<HTMLImageElement>("img[alt]"))) {
+    const match = /^(?:แสดงตัวอย่าง|Preview(?: of)?)\s+(.+)$/i.exec(img.alt.trim());
+    if (match && img.getBoundingClientRect().width > 0) return match[1].trim();
+  }
+  return undefined;
+}
+
+function flowAddToPromptButton(): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+    (b) => b.getBoundingClientRect().width > 0 &&
+      /^(Add to prompt|เพิ่มไปยังพรอมต์|เพิ่มลงในพรอมต์|เพิ่มลงในช่องพรอมต์)$/.test(b.innerText.trim()) &&
+      b.getAttribute("aria-disabled") !== "true" && !b.disabled,
+  );
+}
+
+async function flowTrustedClick(element: HTMLElement, marker: string): Promise<boolean> {
+  element.setAttribute(marker, "true");
+  try {
+    return await new Promise<boolean>((resolve) => {
+      chrome.runtime.sendMessage({ type: "TRUSTED_CLICK", selector: `[${marker}="true"]`, bringToFront: true }, (result: { ok?: boolean } | undefined) => {
+        resolve(!chrome.runtime.lastError && result?.ok === true);
+      });
+    });
+  } catch {
+    return false;
+  } finally {
+    element.removeAttribute(marker);
+  }
+}
+
 /**
  * In the compact layout clicking an asset adds it straight away; in the wide
  * layout (agent panel open) it only selects it and shows a preview with an
  * "Add to prompt" button.
+ *
+ * The picker opens with its newest tile already selected, and an upload
+ * leaves whatever was selected before still selected — with Add to prompt
+ * enabled. A click that missed the new tile (Flow re-renders the list once
+ * an upload settles, detaching the element we held) then attached the
+ * previous product. So select by name, confirm the picker's own selection
+ * and preview show that name, and only then press Add.
  */
-async function flowPickAsset(asset: HTMLElement) {
-  for (const type of ["pointerdown", "mousedown", "mouseup", "click"] as const) {
-    asset.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+async function flowPickAsset(asset: HTMLElement, expectedName?: string): Promise<boolean> {
+  const chipsBefore = flowIngredientChips();
+  const name = expectedName ?? flowAssetTitle(asset);
+  const pickerOpen = () => Boolean(document.querySelector(".asset-item"));
+  const added = () => flowIngredientChips() > chipsBefore;
+  // A product photo has a unique file name, so always look it up afresh.
+  // Video titles such as "Generate video" repeat, so keep the element we
+  // were given while it is still live.
+  const byName = () => flowAssetItems().find((item) => flowAssetTitle(item) === name);
+  const target = () => (expectedName ? byName() : asset.isConnected ? asset : byName());
+  const targetSelected = () => {
+    const tile = target();
+    if (!tile || !flowAssetIsActive(tile)) return false;
+    if (flowAssetItems().some((item) => item !== tile && flowAssetIsActive(item))) return false;
+    const preview = flowAssetPreviewName();
+    return preview === undefined || preview === name;
+  };
+
+  for (let attempt = 0; attempt < 3 && pickerOpen() && !targetSelected(); attempt++) {
+    const tile = target();
+    if (!tile) return false;
+    tile.scrollIntoView({ block: "nearest" });
+    if (attempt === 0) tile.click();
+    else await flowTrustedClick(tile, "data-ai-affiliate-pick-asset");
+    if (await flowWaitFor(() => (!pickerOpen() || targetSelected() ? true : undefined), 3000, 200)) break;
   }
-  const addToPrompt = await flowWaitFor(
-    () =>
-      document.querySelector(".asset-item")
-        ? Array.from(document.querySelectorAll<HTMLButtonElement>(".cdk-overlay-container button")).find(
-            (b) => b.innerText.trim() === "Add to prompt" && b.getAttribute("aria-disabled") !== "true" && !b.disabled,
-          )
-        : true, // picker already closed: the compact layout added it
-    3000,
-    200,
-  );
-  if (addToPrompt && addToPrompt !== true) addToPrompt.click();
+
+  // Compact layout: the click itself added the asset and closed the picker.
+  if (!pickerOpen()) return (await flowWaitFor(() => (added() ? true : undefined), 3000, 200)) === true;
+  if (!targetSelected()) return false;
+
+  const addToPrompt = await flowWaitFor(() => flowAddToPromptButton(), 3000, 200);
+  if (!addToPrompt || !targetSelected()) return false;
+  addToPrompt.click();
+  if (await flowWaitFor(() => (added() ? true : undefined), 2500, 200)) return true;
+
+  // Flow sometimes ignores a synthetic click even though the button is
+  // enabled. Retry once through trusted input — but only while the preview
+  // still shows this asset, so the retry cannot add a different one.
+  if (addToPrompt.isConnected && pickerOpen() && targetSelected()) {
+    await flowTrustedClick(addToPrompt, "data-ai-affiliate-add-to-prompt");
+  }
+  return (await flowWaitFor(() => (added() ? true : undefined), 5000, 200)) === true;
 }
 
 /** Longest side of the product photo sent to Flow — plenty for a product reference. */
@@ -530,13 +711,14 @@ function flowBase64ToFile(image: FlowProductImage): File {
   const binary = atob(image.base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new File([bytes], image.name, { type: image.mimeType });
+  const extension = image.mimeType === "image/png" ? "png" : image.mimeType === "image/webp" ? "webp" : image.mimeType === "image/gif" ? "gif" : "jpg";
+  return new File([bytes], `${image.name}.${extension}`, { type: image.mimeType });
 }
 
 /**
  * Shop photos are often large, and Flow's upload time grows with the file.
  * Re-encode as a JPEG no larger than FLOW_UPLOAD_MAX_SIDE; keep the original
- * if that fails or does not come out smaller.
+ * with its matching filename extension if conversion fails.
  */
 async function flowProductFile(image: FlowProductImage): Promise<File> {
   const original = flowBase64ToFile(image);
@@ -552,7 +734,7 @@ async function flowProductFile(image: FlowProductImage): Promise<File> {
     ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.9 });
-    return blob.size < original.size ? new File([blob], image.name, { type: "image/jpeg" }) : original;
+    return new File([blob], `${image.name}.jpg`, { type: "image/jpeg" });
   } catch {
     return original;
   }
@@ -564,17 +746,26 @@ async function flowProductFile(image: FlowProductImage): Promise<File> {
  * own "Upload media" button the first time (flow-file-picker.ts keeps the OS
  * file dialog from opening) and picks the already-uploaded asset afterwards.
  */
+let flowAttachFailure: string | undefined;
+
 async function flowAttachProductImage(image: FlowProductImage): Promise<boolean> {
+  flowAttachFailure = undefined;
   const chipsBefore = flowIngredientChips();
-  if (!(await flowOpenIngredientPicker())) return false;
+  const file = await flowProductFile(image);
+  if (!(await flowOpenIngredientPicker())) {
+    flowAttachFailure = "เปิดเมนูแนบรูปใน Flow ไม่สำเร็จ";
+    return false;
+  }
 
   const byName = () =>
-    flowAssetItems().find((item) => item.innerText.includes(image.name) && !/Generating|Uploading/i.test(item.innerText));
+    flowAssetItems().find((item) => item.innerText.split("\n").some((line) => line.trim() === file.name) &&
+      !/Generating|Uploading|กำลังสร้าง|กำลังอัปโหลด/i.test(item.innerText));
 
   let asset = byName();
   if (!asset) {
     const upload = flowUploadMediaButton();
     if (!upload) {
+      flowAttachFailure = "ไม่พบปุ่มอัปโหลดสื่อใน Flow";
       await flowCloseIngredientMenu();
       return false;
     }
@@ -587,11 +778,12 @@ async function flowAttachProductImage(image: FlowProductImage): Promise<boolean>
         200,
       );
       if (!input) {
+        flowAttachFailure = "Flow ไม่เปิดช่องรับไฟล์รูป";
         await flowCloseIngredientMenu();
         return false;
       }
       const transfer = new DataTransfer();
-      transfer.items.add(await flowProductFile(image));
+      transfer.items.add(file);
       input.files = transfer.files;
       input.dispatchEvent(new Event("change", { bubbles: true }));
       input.removeAttribute("data-ai-affiliate-file-input");
@@ -612,23 +804,30 @@ async function flowAttachProductImage(image: FlowProductImage): Promise<boolean>
       1000,
     );
     if (!asset) {
+      flowAttachFailure = "อัปโหลดรูปแล้วแต่ไม่พบรูปในคลัง Flow ภายในเวลาที่กำหนด";
       await flowCloseIngredientMenu();
       return false;
     }
   }
 
-  await flowPickAsset(asset);
+  const picked = await flowPickAsset(asset, file.name);
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await flowCloseIngredientMenu();
+  if (!picked) {
+    flowAttachFailure = "กดเพิ่มรูปไปยังพรอมต์ใน Flow ไม่สำเร็จ";
+    return false;
+  }
   // The chip shows busy while Flow processes the image; Run stays disabled until it's done.
   const attached = await flowWaitFor(
     () =>
-      flowIngredientChips() > chipsBefore && !flowComposer()?.querySelector('button[aria-label="Ingredient"][aria-busy="true"]')
+      flowIngredientChips() === chipsBefore + 1 &&
+      flowIngredientChipButtons().every((chip) => chip.getAttribute("aria-busy") !== "true")
         ? true
         : undefined,
     30000,
     500,
   );
+  if (!attached) flowAttachFailure = "เลือกรูปแล้วแต่ Flow ไม่ยืนยันว่าแนบรูปในพรอมต์";
   return attached === true;
 }
 
@@ -638,7 +837,7 @@ async function flowAttachPreviousClip(): Promise<boolean> {
   // Newest finished video — the product photo uploaded for this job is an Image and sits above it.
   const asset = await flowWaitFor(
     () =>
-      flowAssetItems().find((item) => /\bVideo\s*$/.test(item.innerText.trim()) && !/Generating/i.test(item.innerText)) ??
+      flowAssetItems().find((item) => /(?:\bVideo|วิดีโอ)\s*$/.test(item.innerText.trim()) && !/Generating|กำลังสร้าง/i.test(item.innerText)) ??
       undefined,
     8000,
     300,
@@ -648,10 +847,10 @@ async function flowAttachPreviousClip(): Promise<boolean> {
     return false;
   }
 
-  await flowPickAsset(asset);
+  const picked = await flowPickAsset(asset);
   await new Promise((resolve) => setTimeout(resolve, 1200));
   await flowCloseIngredientMenu();
-  return true;
+  return picked;
 }
 
 const IMAGE_INSTEAD_OF_VIDEO = "__IMAGE_INSTEAD_OF_VIDEO__";
@@ -672,39 +871,196 @@ function flowOrientation(aspectRatio: string): string {
  * asks for: with the panel left on 16:9 and x2 a "9:16" job came back
  * landscape and every submit cost two renders' worth of credits. Set
  * Video, the job's aspect ratio and a single output before each submit.
- * Best effort — if the panel changes shape, generation still goes ahead.
+ * Flow's composer settings are a popover of radio buttons, not the separate
+ * Agent settings sheet. Both surfaces can cover the editor and must be closed.
+ *
+ * Flow keeps reshaping this menu, so it is best effort: "skipped" means the
+ * settings could not be confirmed but nothing is left covering the prompt
+ * box, and the run goes on (the prompt itself still asks for one clip in the
+ * right orientation). Only "blocked" — a panel still open over the composer —
+ * stops the clip.
  */
-async function flowEnsureSettings(aspectRatio: string): Promise<void> {
-  const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Settings trigger"]');
-  if (!trigger) return;
+type FlowSettingsResult = { state: "ok" } | { state: "skipped" | "blocked"; reason: string };
 
+/**
+ * The composer (prompt box + its toolbar), found by walking up from the
+ * editor until the Start button or a few toolbar buttons are inside. Keeps
+ * the top bar's own gear button — which opens something else — out of the
+ * search for the settings trigger.
+ */
+function flowComposerRoot(): HTMLElement | undefined {
+  const editor = flowFindEditor();
+  if (!editor) return undefined;
+  const start = flowFindStartButton();
+  let node: HTMLElement | null = editor;
+  for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+    if (start ? node.contains(start) : node.querySelectorAll("button").length >= 3) return node;
+  }
+  return undefined;
+}
+
+function flowButtonDescription(button: HTMLButtonElement): string {
+  const label = [button.getAttribute("aria-label"), button.getAttribute("title")].filter(Boolean).join(" / ");
+  const icon = button.querySelector("mat-icon, i, .material-symbols-outlined, .google-symbols")?.textContent?.trim();
+  return `${label || button.innerText.trim() || "(no label)"}${icon ? ` [icon:${icon}]` : ""}`;
+}
+
+async function flowEnsureSettings(aspectRatio: string): Promise<FlowSettingsResult> {
+  const onScreen = (element: HTMLElement) => {
+    const rect = element.getBoundingClientRect();
+    return element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) &&
+      rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 &&
+      rect.left < window.innerWidth && rect.top < window.innerHeight;
+  };
+  const agentHeading = () => Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, [role="heading"]')).find(
+    (element) => /^(Agent settings|การตั้งค่า\s*(Agent|เอเจนต์))$/i.test((element.textContent ?? "").trim()) && onScreen(element),
+  );
+  const action = (label: RegExp) => Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => onScreen(button) && (
+      label.test((button.getAttribute("aria-label") ?? "").trim()) ||
+      label.test((button.textContent ?? "").trim())
+    ),
+  );
+  const visibleRadios = () => Array.from(document.querySelectorAll<HTMLElement>('[role="radio"]')).filter(onScreen);
+  const labelOf = (radio: HTMLElement) => (
+    radio.getAttribute("aria-label") || radio.innerText || radio.textContent || ""
+  ).trim();
+  const menuOpen = () => visibleRadios().some((radio) => /(?:Video|วิดีโอ)$/i.test(labelOf(radio))) &&
+    visibleRadios().some((radio) => /(?:16:9|9:16)$/.test(labelOf(radio)));
+  const covered = () => Boolean(agentHeading()) || menuOpen();
   const ratio = aspectRatio === "16:9" ? "16:9" : "9:16";
-  const radios = () => Array.from(document.querySelectorAll<HTMLButtonElement>('mat-button-toggle button[role="radio"]'));
-  const wanted: ((label: string) => boolean)[] = [
-    (label) => /Video$/.test(label),
-    (label) => label.endsWith(ratio),
-    (label) => label === "x1",
-  ];
 
-  const panelWasOpen = radios().length > 0;
-  if (!panelWasOpen) {
-    trigger.click();
-    if (!(await flowWaitFor(() => (radios().length ? true : undefined), 5000, 200))) return;
+  const trustedClick = async (button: HTMLButtonElement) => {
+    const marker = "data-ai-affiliate-settings-click";
+    button.setAttribute(marker, "true");
+    try {
+      await new Promise<void>((resolve) => {
+        chrome.runtime.sendMessage({ type: "TRUSTED_CLICK", selector: `button[${marker}="true"]`, bringToFront: true }, () => {
+          void chrome.runtime.lastError;
+          resolve();
+        });
+      });
+    } catch {
+      // extension context gone — the synthetic click already happened
+    } finally {
+      button.removeAttribute(marker);
+    }
+  };
+
+  // Whatever this function opened, shut it again before handing back.
+  let trigger: HTMLButtonElement | undefined;
+  const closeSurfaces = async () => {
+    for (let attempt = 0; attempt < 3 && covered(); attempt++) {
+      const dismiss = agentHeading()
+        ? action(/^(Back|กลับ|Close|ปิด)$/i) ??
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            onScreen(button) && /^(arrow_back|chevron_left|close)$/.test(button.querySelector("mat-icon")?.textContent?.trim() ?? ""),
+          )
+        : trigger?.isConnected ? trigger : undefined;
+      if (dismiss) {
+        if (attempt === 0) dismiss.click();
+        else await trustedClick(dismiss);
+      }
+      for (const target of [document.activeElement, document]) {
+        target?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      }
+      await flowWaitFor(() => (covered() ? undefined : true), 2500, 200);
+    }
+  };
+  const giveUp = async (reason: string): Promise<FlowSettingsResult> => {
+    const root = flowComposerRoot();
+    console.warn(`[AI Affiliate Studio] Flow settings: ${reason}. Composer buttons:`,
+      Array.from((root ?? document).querySelectorAll<HTMLButtonElement>("button")).filter(onScreen).map(flowButtonDescription));
+    await closeSurfaces();
+    return covered() ? { state: "blocked", reason } : { state: "skipped", reason };
+  };
+
+  // Try the settings-looking controls in the composer first, then the known
+  // page-level labels. A click that opens something unrecognised is undone
+  // before the next candidate.
+  if (!covered()) {
+    const settingsLike = (button: HTMLButtonElement) => {
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""}`;
+      if (/add|เพิ่ม|start|เริ่ม|stop|หยุด|clear|ล้าง|ingredient|องค์ประกอบ|upload|อัปโหลด/i.test(label)) return false;
+      const icon = button.querySelector("mat-icon, i, .material-symbols-outlined, .google-symbols")?.textContent?.trim() ?? "";
+      return /setting|ตั้งค่า|option|ตัวเลือก|tune/i.test(label) || /^(tune|settings|page_info|instant_mix)$/.test(icon);
+    };
+    const root = flowComposerRoot();
+    const candidates = [
+      ...(root ? Array.from(root.querySelectorAll<HTMLButtonElement>("button")).filter((b) => onScreen(b) && settingsLike(b)) : []),
+      ...['button[aria-label="Settings trigger"]', 'button[aria-label="ทริกเกอร์การตั้งค่า"]', 'button[aria-label="การตั้งค่า"]']
+        .map((selector) => flowVisibleButton(selector))
+        .filter((b): b is HTMLButtonElement => Boolean(b)),
+    ].filter((button, index, all) => all.indexOf(button) === index);
+    if (!candidates.length) return giveUp("ไม่พบปุ่มตั้งค่าข้างช่องพรอมต์");
+
+    for (const candidate of candidates) {
+      trigger = candidate;
+      candidate.click();
+      if (await flowWaitFor(() => (covered() ? true : undefined), 4000, 200)) break;
+      // Opened something this code does not know (or nothing) — undo it.
+      for (const target of [document.activeElement, document]) {
+        target?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    if (!covered()) return giveUp("กดปุ่มตั้งค่าแล้วแต่ไม่เจอเมนูวิดีโอ/สัดส่วนภาพ");
   }
 
-  for (const matches of wanted) {
-    const option = radios().find((radio) => matches((radio.textContent ?? "").trim()));
-    if (option && option.getAttribute("aria-checked") !== "true") {
+  if (agentHeading()) {
+    const videoGroup = (kind: "ratio" | "count") => Array.from(document.querySelectorAll<HTMLElement>('[role="radiogroup"], [aria-label]'))
+      .filter((element) => {
+        const label = element.getAttribute("aria-label") ?? "";
+        return onScreen(element) && /video|วิดีโอ/i.test(label) &&
+          (kind === "ratio" ? /ratio|สัดส่วน/i : /output|เอาต์พุต|จำนวน/i).test(label) &&
+          element.querySelector('[role="radio"]');
+      })
+      .sort((a, b) => a.querySelectorAll('[role="radio"]').length - b.querySelectorAll('[role="radio"]').length)[0];
+    const choose = async (kind: "ratio" | "count", wanted: RegExp): Promise<boolean> => {
+      const group = videoGroup(kind);
+      const options = Array.from((group ?? document).querySelectorAll<HTMLElement>('[role="radio"]')).filter(
+        (radio) => radio.getBoundingClientRect().width > 0 && wanted.test(labelOf(radio)),
+      );
+      // When Flow supplies no group label, its image defaults are first and
+      // video defaults last. Never take the first identically named radio.
+      const option = group ? options[0] : options[options.length - 1];
+      if (!option) return false;
+      option.scrollIntoView({ block: "nearest" });
+      const selected = option.matches('[aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]') ||
+        /selected|checked/.test(option.className);
+      if (!selected) option.click();
+      // Flow's current toggle exposes its checked state to accessibility but
+      // not consistently as aria-checked on the button. Save and close are the
+      // reliable confirmation; don't fail while the correct option is shown.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return true;
+    };
+    if (!(await choose("ratio", new RegExp(`^${ratio}$`)))) return giveUp(`ไม่พบตัวเลือกสัดส่วน ${ratio}`);
+    if (!(await choose("count", /^x1$/i))) return giveUp("ไม่พบตัวเลือกจำนวน x1");
+    const save = action(/^(Save|บันทึก)$/i);
+    if (!save) return giveUp("ไม่พบปุ่มบันทึกในการตั้งค่า Agent");
+    save.click();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await closeSurfaces();
+    return covered() ? { state: "blocked", reason: "ปิดหน้าการตั้งค่า Agent ไม่ได้" } : { state: "ok" };
+  }
+
+  for (const wanted of [/(?:Video|วิดีโอ)$/i, new RegExp(`${ratio}$`), /x1$/i]) {
+    const option = visibleRadios().find((radio) => wanted.test(labelOf(radio)));
+    if (!option) return giveUp(`ไม่พบตัวเลือก ${wanted.source}`);
+    if (option.getAttribute("aria-checked") !== "true") {
       option.click();
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      if (!(await flowWaitFor(() => (option.getAttribute("aria-checked") === "true" ? true : undefined), 3000, 200))) {
+        return giveUp(`เลือก ${labelOf(option)} ไม่ติด`);
+      }
     }
   }
 
-  if (!panelWasOpen) {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flowWaitFor(() => (radios().length ? undefined : true), 3000, 200);
-    if (radios().length) trigger.click();
-  }
+  await closeSurfaces();
+  if (covered()) document.body.click();
+  return (await flowWaitFor(() => (covered() ? undefined : true), 3000, 200))
+    ? { state: "ok" }
+    : { state: "blocked", reason: "ปิดเมนูตั้งค่าไม่ได้" };
 }
 
 /** One attempt: type the prompt, submit, and wait for a result. Split out of flowGenerateClip so a wrong-media-type result can be retried without duplicating all of this. */
@@ -724,15 +1080,31 @@ async function flowSubmitAndWaitOnce(
     await flowWaitFor(() => (flowLeadingTiles().some(flowTileInProgress) ? undefined : true), FLOW_MAX_WAIT_MS, FLOW_POLL_MS);
   }
 
+  // Close settings first: an Agent sheet left open by an earlier failure can
+  // hide old ingredient chips, making a premature clear appear successful.
+  flowShowBanner(`AI Affiliate Studio: ${label} กำลังตั้งค่า Flow (Video · ${aspectRatio} · x1)...`, "#111827");
+  const settings = await flowEnsureSettings(aspectRatio);
+  if (settings.state === "blocked") {
+    flowShowBanner(`${label} ${settings.reason} — เมนูตั้งค่ายังบังช่องพรอมต์อยู่ ปิดเมนูแล้วสั่งใหม่`, "#dc2626");
+    return null;
+  }
+  if (settings.state === "skipped") {
+    flowShowBanner(`AI Affiliate Studio: ${label} ${settings.reason} — ทำต่อด้วยค่าเดิมของ Flow (ตรวจว่าตั้งไว้ Video · ${aspectRatio} · x1)`, "#d97706");
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
   // Start from an empty prompt box every time, then add this clip's ingredients.
-  await flowClearIngredients();
+  if (!(await flowClearIngredients())) {
+    flowShowBanner(`${label} ล้างรูปหรือคลิปเก่าจากช่องพรอมต์ไม่สำเร็จ — หยุดไว้เพื่อไม่ให้ใช้สินค้าผิด`, "#dc2626");
+    return null;
+  }
 
   let imageAttached = false;
   if (productImage) {
     flowShowBanner(`AI Affiliate Studio: ${label} กำลังแนบรูปสินค้า...`, "#111827");
     imageAttached = await flowAttachProductImage(productImage);
     if (!imageAttached) {
-      flowShowBanner(`${label} แนบรูปสินค้าไม่สำเร็จ — หยุดไว้ก่อนเพื่อไม่ให้ได้สินค้าผิด`, "#dc2626");
+      flowShowBanner(`${label} ${flowAttachFailure ?? "แนบรูปสินค้าไม่สำเร็จ"} — หยุดไว้ก่อนเพื่อไม่ให้ได้สินค้าผิด`, "#dc2626");
       return null;
     }
     // A freshly uploaded image is a grid tile too, and is briefly media-less
@@ -746,9 +1118,6 @@ async function flowSubmitAndWaitOnce(
     clipAttached = await flowAttachPreviousClip();
   }
 
-
-  flowShowBanner(`AI Affiliate Studio: ${label} กำลังตั้งค่า Flow (Video · ${aspectRatio} · x1)...`, "#111827");
-  await flowEnsureSettings(aspectRatio);
 
   flowShowBanner(`AI Affiliate Studio: ${label} กำลังกรอก prompt...`, "#111827");
 
@@ -878,7 +1247,7 @@ async function flowSubmitAndWaitOnce(
     // tile showing a percentage is the one just submitted (new renders
     // land first), and it is ours once no leading tile is in progress.
     const leading = flowLeadingTiles();
-    if (leading.some(flowTileInProgress) || document.querySelector('button[aria-label="Stop generation"]')) {
+    if (leading.some(flowTileInProgress) || document.querySelector('button[aria-label="Stop generation"], button[aria-label="หยุดสร้าง"]')) {
       sawGeneration = true;
       consecutiveImageOnlyPolls = 0;
       return undefined;
@@ -955,7 +1324,7 @@ async function flowGenerateClip(
   aspectRatio: string,
   productImage: FlowProductImage | null = null,
 ): Promise<string | null> {
-  const editor = await flowWaitFor(() => flowFindEditor(), 30000, 500);
+  const editor = await flowWaitFor(() => flowFindEditor(), 90000, 500);
   if (!editor) {
     flowShowBanner("ไม่พบช่อง prompt บนหน้า Flow (หน้าเว็บอาจเปลี่ยนไป)", "#dc2626");
     return null;
@@ -1065,6 +1434,7 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
 
   let mergeOutcome: { ok: boolean; seconds?: number; error?: string; warning?: string } | undefined;
   for (const clip of job.clips.slice(startIndex)) {
+    flowLastError = undefined;
     if (flowIsCancelled()) {
       flowShowBanner("ยกเลิกงานแล้ว", "#d97706");
       await flowClearActiveJob();
@@ -1078,8 +1448,7 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
           base64: job.imageBase64,
           // CDNs sometimes label images as octet-stream; Flow's upload only accepts image types.
           mimeType: /^image\/(png|jpeg|webp|gif)/.test(job.imageMimeType ?? "") ? job.imageMimeType!.split(";")[0] : "image/jpeg",
-          // Always .jpg: flowProductFile re-encodes the photo as a JPEG before uploading it.
-          name: `product-${job.videoId.slice(0, 8)}.jpg`,
+          name: `product-${job.videoId.slice(0, 8)}`,
         }
       : null;
     const src = await flowGenerateClip(clip, label, job.aspectRatio || "9:16", productImage);

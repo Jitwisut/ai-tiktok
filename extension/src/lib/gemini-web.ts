@@ -57,21 +57,118 @@ async function askGemini<T>(params: GenerateObjectParams): Promise<T> {
   }
 }
 
-/**
- * The composer turns typed newlines into lost text or stray blank lines, so
- * the prompt goes in as one line with its rules separated by " • ".
- */
-function buildWebPrompt(params: GenerateObjectParams): string {
+const FIELD_TYPE_LABEL: Record<string, string> = {
+  string: "ข้อความ",
+  integer: "จำนวนเต็ม",
+  number: "ตัวเลข",
+  boolean: "true/false",
+  object: "object",
+};
+
+/** The schema as a readable field list — a raw JSON Schema dump was hard for the chat apps to follow. */
+function describeFields(schema: JsonSchema, path = "", depth = 0): string[] {
+  const properties = (schema.properties ?? {}) as Record<string, JsonSchema>;
+  const required = new Set((schema.required ?? []) as string[]);
+  const lines: string[] = [];
+  for (const [key, field] of Object.entries(properties)) {
+    const name = path ? `${path}.${key}` : key;
+    const type = field.type as string;
+    const item = field.items as JsonSchema | undefined;
+    let kind = FIELD_TYPE_LABEL[type] ?? type;
+    if (type === "array") {
+      const itemType = item?.type as string | undefined;
+      const count = typeof field.minItems === "number" && typeof field.maxItems === "number"
+        ? ` ${field.minItems}-${field.maxItems} รายการ`
+        : "";
+      kind = `array ของ${FIELD_TYPE_LABEL[itemType ?? ""] ?? itemType ?? "ค่า"}${count}`;
+    } else if (typeof field.minimum === "number" && typeof field.maximum === "number") {
+      kind += ` ${field.minimum}-${field.maximum}`;
+    }
+    const note = field.description ? `: ${field.description}` : "";
+    lines.push(`${"  ".repeat(depth)}- ${name} (${kind}${required.has(key) ? ", ต้องมี" : ""})${note}`);
+    if (type === "object") lines.push(...describeFields(field, name, depth + 1));
+    if (type === "array" && item?.type === "object") lines.push(...describeFields(item, `${name}[]`, depth + 1));
+  }
+  return lines;
+}
+
+const ANSWER_FORMAT_RULES = [
+  "ตอบเป็น JSON object ก้อนเดียว ครอบด้วยบล็อก ```json ... ``` เท่านั้น ห้ามมีคำอธิบาย คำทักทาย หรือข้อความอื่นก่อนหรือหลังบล็อก",
+  "ใช้ชื่อฟิลด์ภาษาอังกฤษตรงตามรายการด้านล่างทุกตัวอักษร ห้ามเพิ่ม ลบ หรือเปลี่ยนชื่อฟิลด์ และใส่ครบทุกฟิลด์ที่ระบุว่า \"ต้องมี\"",
+  "ชื่อฟิลด์เป็นภาษาอังกฤษเสมอ ส่วนค่าในฟิลด์ให้เขียนเป็นภาษาตามที่กติกาและคำอธิบายฟิลด์กำหนด",
+  "JSON ต้อง parse ได้จริง: ใช้เครื่องหมายคำพูดคู่ \" ไม่มี comma เกินท้ายรายการ ไม่มีคอมเมนต์ ตัวเลขไม่ต้องครอบด้วยเครื่องหมายคำพูด ถ้าต้องขึ้นบรรทัดใหม่ในข้อความให้เขียน \\n",
+  "เขียน JSON ครั้งเดียวให้จบ ห้ามหยุดกลางคัน หรือเริ่มเขียนใหม่ซ้ำในคำตอบเดียวกัน",
+];
+
+type PromptPart = string | { code: string };
+
+function examplePart(params: GenerateObjectParams, multiline: boolean): PromptPart[] {
+  if (params.example === undefined) return [];
   return [
-    params.system,
-    params.prompt,
-    `รูปแบบคำตอบ: ตอบเป็น JSON ก้อนเดียวในบล็อกโค้ด \`\`\`json เท่านั้น ห้ามมีคำอธิบายหรือข้อความอื่นก่อนหรือหลัง ใช้ชื่อฟิลด์ภาษาอังกฤษตรงตาม JSON Schema นี้ และใส่ครบทุกฟิลด์ที่ required: ${JSON.stringify(params.schema)}`,
-  ]
-    .join("\n")
-    .split("\n")
-    .map((line) => line.trim())
+    "ตัวอย่างคำตอบที่ถูกรูปแบบ (สินค้าสมมติ ใช้ดูโครงสร้างและระดับความละเอียดเท่านั้น ห้ามคัดลอกเนื้อหา ให้เขียนจากสินค้าในงานนี้):",
+    { code: JSON.stringify(params.example, null, multiline ? 2 : undefined) },
+  ];
+}
+
+function renderPrompt(parts: PromptPart[], multiline: boolean): string {
+  if (multiline) {
+    return parts
+      .map((part) => (typeof part === "string" ? part : `\`\`\`json\n${part.code}\n\`\`\``))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  // Gemini's composer sends on a typed newline, so its prompt goes in as one
+  // line with the rules separated by " • ".
+  return parts
+    .map((part) => (typeof part === "string" ? part.trim().replace(/^- /, "") : `\`\`\`json ${part.code} \`\`\``))
     .filter(Boolean)
     .join(" • ");
+}
+
+/**
+ * The prompt for a chat app that has no responseSchema: role and rules, the
+ * task, the answer format as a field list, and a filled-in example. ChatGPT
+ * keeps line breaks (multiline); Gemini's composer needs a single line.
+ */
+export function buildWebPrompt(params: GenerateObjectParams, options: { multiline?: boolean } = {}): string {
+  const multiline = options.multiline ?? false;
+  const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return renderPrompt([
+    "## บทบาทและกติกา",
+    ...lines(params.system).map((line) => `- ${line}`),
+    "",
+    "## งาน",
+    ...lines(params.prompt),
+    "",
+    "## รูปแบบคำตอบ (ต้องทำตามทุกข้อ)",
+    ...ANSWER_FORMAT_RULES.map((rule) => `- ${rule}`),
+    "",
+    "ฟิลด์ที่ต้องตอบ:",
+    ...describeFields(params.schema),
+    "",
+    ...examplePart(params, multiline),
+    "",
+    "ตอบกลับด้วยบล็อก ```json เพียงบล็อกเดียวเท่านั้น",
+  ], multiline);
+}
+
+/** Follow-up in the same chat when a reply did not parse or missed fields. */
+export function buildRepairPrompt(params: GenerateObjectParams, problem: string, options: { multiline?: boolean } = {}): string {
+  const multiline = options.multiline ?? false;
+  return renderPrompt([
+    `คำตอบก่อนหน้านำไปใช้ไม่ได้: ${problem}`,
+    "เขียนคำตอบเดิมใหม่ให้ถูกรูปแบบ โดยใช้เนื้อหาเดิมจากคำตอบก่อนหน้า ไม่ต้องวิเคราะห์ใหม่",
+    "",
+    ...ANSWER_FORMAT_RULES.map((rule) => `- ${rule}`),
+    "",
+    "ฟิลด์ที่ต้องตอบ:",
+    ...describeFields(params.schema),
+    "",
+    ...examplePart(params, multiline),
+    "",
+    "ตอบกลับด้วยบล็อก ```json เพียงบล็อกเดียวเท่านั้น",
+  ], multiline);
 }
 
 async function openFreshChat(): Promise<number> {
@@ -142,9 +239,9 @@ function withTimeout<R>(promise: Promise<R>, ms: number): Promise<R> {
   });
 }
 
-function parseReply<T>(text: string, schema: JsonSchema): T {
+export function parseReply<T>(text: string, schema: JsonSchema, source = "Gemini"): T {
   const candidates = jsonCandidates(text);
-  if (candidates.length === 0) throw new Error(`Gemini ไม่ได้ตอบเป็น JSON: "${text.slice(0, 120)}"`);
+  if (candidates.length === 0) throw new Error(`${source} ไม่ได้ตอบเป็น JSON: "${text.slice(0, 120)}"`);
   let lastError: Error | undefined;
   for (const value of candidates) {
     try {
@@ -153,7 +250,7 @@ function parseReply<T>(text: string, schema: JsonSchema): T {
       lastError = err as Error;
     }
   }
-  throw lastError ?? new Error("JSON ที่ Gemini ตอบมาอ่านไม่ได้");
+  throw lastError ?? new Error(`JSON ที่ ${source} ตอบมาอ่านไม่ได้`);
 }
 
 /**

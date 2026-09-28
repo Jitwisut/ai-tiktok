@@ -465,7 +465,16 @@
         </div>
         <div id="ap-products" class="ap-products"></div>
 
-        <div class="section-title">2. ตั้งค่าวิดีโอและโพสต์</div>
+        <div class="section-title">2. ตั้งค่าวิเคราะห์ วิดีโอและโพสต์</div>
+        <div class="field">
+          <label for="ap-text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
+          <select id="ap-text-source">
+            <option value="gemini-web">เว็บ Gemini (gemini.google.com)</option>
+            <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com)</option>
+            <option value="api">Gemini API key</option>
+          </select>
+          <div class="hint">ใช้แหล่งนี้กับการวิเคราะห์สินค้า เขียนสคริปต์ และวางฉากตลอดรอบอัตโนมัติ ต้องล็อกอินเว็บที่เลือกไว้ใน Chrome</div>
+        </div>
         <div class="row">
           <select id="ap-style"></select>
           <select id="ap-duration">
@@ -526,11 +535,12 @@
         <label for="text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
         <select id="text-source">
           <option value="gemini-web">เว็บ Gemini (gemini.google.com) — ไม่ต้องใช้ API key</option>
+          <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com) — ไม่ต้องใช้ API key</option>
           <option value="api">Gemini API key</option>
         </select>
         <div class="hint">
-          แบบเว็บ Gemini: ระบบจะเปิดแท็บ gemini.google.com/app ถามทีละขั้น (วิเคราะห์ → สคริปต์ → ฉาก) แล้วส่งคำตอบไปสร้างวิดีโอต่อ
-          ต้องล็อกอิน Gemini ไว้ในเบราว์เซอร์นี้ ใช้โควต้าแชทของบัญชีนั้น และแต่ละครั้งจะเป็นแชทใหม่ในประวัติ Gemini
+          แบบเว็บ Gemini หรือ ChatGPT: ระบบจะเปิดแท็บของเว็บที่เลือก ถามทีละขั้น (วิเคราะห์ → สคริปต์ → ฉาก) แล้วส่งคำตอบไปสร้างวิดีโอต่อ
+          ต้องล็อกอินเว็บที่เลือกไว้ในเบราว์เซอร์นี้ ใช้โควต้าแชทของบัญชีนั้น และแต่ละครั้งจะเป็นแชทใหม่ในประวัติ
         </div>
       </div>
       <div class="field">

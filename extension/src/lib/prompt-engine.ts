@@ -76,8 +76,10 @@ function voiceRules(clipSeconds: number, clipCount: number, onScreen: boolean): 
   return [
     "Voice: a native Thai speaker with a clear standard Central Thai (Bangkok) accent and correct Thai tones, pronouncing every syllable fully at a relaxed conversational pace — not rushed, not robotic, not sing-song.",
     clipCount > 1 ? "Use the same voice (timbre, pitch and accent) as in the other parts of this advert." : "",
-    "Speak the quoted Thai exactly as written, word for word, and say each line ONLY ONCE.",
-    `Start speaking at about 0.5 seconds and finish the last word by about ${Math.max(2, clipSeconds - 1.5)} seconds. After the last line the voice stops completely: no repeating, no second take, no echo, no filler sounds, no extra or English words — the rest is silence with natural ambience while the action continues.`,
+    "Speak the quoted Thai exactly as written, word for word.",
+    `Start speaking at about 0.3 seconds and keep talking through the ${clipSeconds}-second shot at a natural pace, finishing the last word by about ${Math.max(2, clipSeconds - 0.5)} seconds — only short natural breathing pauses between sentences, no long silence.`,
+    "Delivery: warm, upbeat and persuasive, like a creator who genuinely recommends the product — never shouting and never an over-the-top announcer.",
+    "Say each line ONLY ONCE: no repeating, no second take, no echo, no filler sounds, no extra or English words.",
     onScreen
       ? "Lips move in sync only while the words are spoken and the mouth rests closed or smiling when silent; keep the face towards the camera and the head steady while talking."
       : "",
@@ -143,10 +145,11 @@ export function clipCountFor(targetDuration: number, clipSeconds: number): numbe
 /**
  * Speech longer than this in one clip makes the model rush, garble or cut the
  * line off; when a re-plan squeezes several clips' worth of lines into one,
- * later lines are dropped instead. Kept close to the 45-characters-per-8-seconds
- * budget the script writer is given (analysis-prompts.ts), with a little slack.
+ * later lines are dropped instead. Kept just above the 10-characters-per-second
+ * budget the script writer is given (analysis-prompts.ts), so a script written
+ * to that budget survives while a runaway one is still trimmed.
  */
-const MAX_SPEECH_CHARS_PER_SECOND = 6.5;
+const MAX_SPEECH_CHARS_PER_SECOND = 11;
 
 /**
  * Emoji, quotes and symbols in a spoken line are read out as noise or make the

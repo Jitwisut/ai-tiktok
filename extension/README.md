@@ -2,7 +2,7 @@
 
 Standalone Chrome extension for turning a TikTok Shop product into a
 TikTok-style ad, end to end, with no separate backend. Everything — product
-storage, Gemini analysis/scripting, and driving Google AI Studio/Flow to
+storage, Gemini or ChatGPT analysis/scripting, and driving Google AI Studio/Flow to
 render the clips — runs inside the extension itself. All control happens
 through one Side Panel.
 
@@ -20,8 +20,9 @@ npm run build
 2. Enable "Developer mode" (top right)
 3. "Load unpacked" → select this `extension/` folder
 4. Click the toolbar icon to open the side panel
-5. In the Settings tab, paste a Gemini API key (from [Google AI
-   Studio](https://aistudio.google.com/apikey)) and save
+5. In the Settings tab, choose Gemini web, ChatGPT web, or Gemini API.
+   Sign in to the chosen web app in Chrome first. Gemini API requires a key
+   from [Google AI Studio](https://aistudio.google.com/apikey).
 
 ## Using it
 
@@ -29,11 +30,18 @@ npm run build
    rows you want and click "ดึงจากหน้า TikTok", or click "+ เพิ่มจากหน้านี้"
    on any single product page. Select one product and step through
    วิเคราะห์สินค้า → สร้างฉาก → สร้างวิดีโอ.
+   Product analysis and scene writing use the text source selected in Settings.
+   The scene prompt also receives the saved target customer, pain points, and
+   selling points from product analysis.
 2. Creating a video opens (or reuses) an aistudio.google.com or
    flow.google.com tab and drives it automatically, clip by clip.
 3. **คลัง/งาน (Library)** — shows jobs in progress, content ready to film,
    and finished clips (previewable in-panel; also saved to your Downloads
    folder under `ai-affiliate/`).
+4. **อัตโนมัติ (Autopilot)** — choose Gemini web, ChatGPT web, or Gemini API
+   for each run. The selected source handles product analysis, script writing,
+   and scene planning. If an existing analysis came from a different source,
+   Autopilot regenerates it before writing the script.
 
 ## Notes / known limits
 
