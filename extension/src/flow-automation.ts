@@ -342,9 +342,17 @@ function flowAgentAnnouncedWithoutStarting(): boolean {
   );
 }
 
+/**
+ * Flow follows the account's language, so a Thai account shows "ล้มเหลว"
+ * (e.g. "สร้างเสียงไม่สำเร็จ" when Veo's audio pass fails) instead of
+ * "Failed". Missing it left the job reading the media-less tile as still
+ * rendering until it timed out.
+ */
 function flowTileFailed(tile: HTMLElement): boolean {
-  return /^\s*Failed\b|might violate|violates? our polic|not been charged|something went wrong|generation failed|couldn.t generate|try again/i.test(
-    tile.innerText ?? "",
+  const text = tile.innerText ?? "";
+  return (
+    /\bFailed\b|might violate|violates? our polic|not been charged|something went wrong|generation failed|couldn.t generate|try again/i.test(text) ||
+    /ล้มเหลว|ไม่สำเร็จ|ละเมิดนโยบาย|ไม่ได้เรียกเก็บเงิน|เกิดข้อผิดพลาด|ลองอีกครั้ง|ลองใช้พรอมต์อื่น/.test(text)
   );
 }
 
@@ -357,8 +365,12 @@ function flowTileFailed(tile: HTMLElement): boolean {
 function flowTileRetryButton(tile: HTMLElement): HTMLButtonElement | undefined {
   const find = () =>
     Array.from(tile.querySelectorAll<HTMLButtonElement>("button")).find((button) => {
-      const label = `${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.innerText}`;
-      return /retry|regenerate|try again|refresh|replay|autorenew/i.test(label) && !/delete|remove|reuse|undo/i.test(label);
+      // textContent, not innerText: the icon ligature is hidden until hover.
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.getAttribute("title") ?? ""} ${button.textContent ?? ""}`;
+      return (
+        /retry|regenerate|try again|refresh|replay|autorenew|ลองอีกครั้ง|ลองใหม่|สร้างใหม่|สร้างซ้ำ|สร้างอีกครั้ง/i.test(label) &&
+        !/delete|remove|reuse|undo|redo|ลบ|พรอมต์ซ้ำ|เลิกทำ/i.test(label)
+      );
     });
   let button = find();
   if (!button) {
@@ -371,6 +383,7 @@ function flowTileRetryButton(tile: HTMLElement): HTMLButtonElement | undefined {
 }
 
 const FLOW_MAX_TILE_RETRIES = 2;
+const FLOW_MAX_FRESH_RESUBMITS = 2;
 const FLOW_TILE_RETRY_SETTLE_MS = 20_000;
 
 /**
@@ -1156,6 +1169,9 @@ async function flowSubmitAndWaitOnce(
     return null;
   }
   const userBubblesBefore = flowUserBubbleCount();
+  // Failed tiles from an earlier attempt stay on the grid; only a tile that
+  // fails during this attempt is ours to retry.
+  const staleFailedTiles = new WeakSet<HTMLElement>(flowLeadingTiles().filter(flowTileFailed));
   start.click();
 
   // The agent asks to confirm the credit spend, but only when the account
@@ -1207,7 +1223,7 @@ async function flowSubmitAndWaitOnce(
 
     // Flow's policy filter rejected the render: press the tile's own retry
     // button before giving up on this prompt.
-    const failedTile = flowLeadingTiles().find(flowTileFailed);
+    const failedTile = flowLeadingTiles().find((tile) => flowTileFailed(tile) && !staleFailedTiles.has(tile));
     if (failedTile && promptPosted && Date.now() - lastTileRetryAt > FLOW_TILE_RETRY_SETTLE_MS) {
       const retry = tileRetries < FLOW_MAX_TILE_RETRIES ? flowTileRetryButton(failedTile) : undefined;
       if (retry) {
@@ -1268,7 +1284,7 @@ async function flowSubmitAndWaitOnce(
 
     const finished = leading[0];
     if (!finished) return undefined;
-    if (flowTileFailed(finished)) return "นโยบาย: Flow สร้างคลิปนี้ไม่สำเร็จ — ลองแก้ prompt ของฉากนี้แล้วรันใหม่";
+    if (flowTileFailed(finished) && !staleFailedTiles.has(finished)) return "นโยบาย: Flow สร้างคลิปนี้ไม่สำเร็จ — ลองแก้ prompt ของฉากนี้แล้วรันใหม่";
 
     const directSrc = finished.querySelector("video")?.getAttribute("src");
     if (flowTileIsVideo(finished) || directSrc) {
@@ -1332,6 +1348,7 @@ async function flowGenerateClip(
 
   let withContinuity = clip.index > 0;
   let image = productImage;
+  let freshResubmits = 0;
   for (let attempt = 1; attempt <= FLOW_MAX_IMAGE_RETRIES; ) {
     const result = await flowSubmitAndWaitOnce(clip, label, aspectRatio, withContinuity, image);
 
@@ -1347,6 +1364,18 @@ async function flowGenerateClip(
         image = null;
         flowShowBanner(`${label} Flow ปฏิเสธ prompt — ลองใหม่แบบไม่แนบรูปสินค้า (สินค้าในคลิปอาจไม่ตรง)...`, "#d97706");
       }
+      continue;
+    }
+
+    // A failed tile is not always the policy filter — Veo's audio pass
+    // ("สร้างเสียงไม่สำเร็จ") fails at random too. With nothing left to drop,
+    // send the whole prompt again as a new generation.
+    if (result?.startsWith("นโยบาย") && !flowCancelled && freshResubmits < FLOW_MAX_FRESH_RESUBMITS) {
+      freshResubmits += 1;
+      flowShowBanner(
+        `${label} Flow สร้างคลิปไม่สำเร็จ — สั่งสร้างวิดีโอใหม่อีกครั้ง (${freshResubmits}/${FLOW_MAX_FRESH_RESUBMITS})...`,
+        "#d97706",
+      );
       continue;
     }
 
