@@ -1,8 +1,10 @@
 import * as store from "./lib/store.js";
 import * as gemini from "./lib/gemini.js";
 import { generateObjectOnWeb } from "./lib/gemini-web.js";
+import { generateObjectOnChatGPT } from "./lib/chatgpt-web.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
+import { contentIssues, sceneIssues, generateValidated, creativeRepairPrompt } from "./lib/creative-quality.js";
 import {
   DEFAULT_VIDEO_SETTINGS,
   CLIP_SECONDS,
@@ -12,6 +14,7 @@ import {
   snapDuration,
   type GenerationSite,
   type PlanVariant,
+  type PresenterGender,
 } from "./lib/prompt-engine.js";
 import { concatMp4 } from "./lib/mp4-concat.js";
 import { createAutopilot } from "./lib/autopilot.js";
@@ -22,6 +25,9 @@ const VEO_STUDIO_URL = `https://aistudio.google.com/prompts/new_video?model=${VE
 
 const GEMINI_VIDEOS_URL = "https://gemini.google.com/videos";
 
+/** A brand-new Meta AI chat — see dispatchMetaJob for why every job starts in one. */
+const META_NEW_CHAT_URL = "https://www.meta.ai/";
+
 /**
  * Only a project page has the prompt box — Flow's home page has nothing to drive.
  * With several Google accounts signed in, Flow puts the account in the path
@@ -29,9 +35,20 @@ const GEMINI_VIDEOS_URL = "https://gemini.google.com/videos";
  */
 const FLOW_PROJECT_URL = /^https:\/\/flow\.google\.com\/(?:u\/\d+\/)?project\//;
 
+const META_TAB_URL = /^https:\/\/(?:www\.)?meta\.ai\//;
+
+/**
+ * A Meta AI chat that already holds messages. Sending a prompt moves the tab
+ * to /prompt/<uuid> (and older links use /c/<id>), so both count as "not a
+ * new chat" — matching only /c/ let a job be sent into the conversation a
+ * previous run had left open, on top of its messages and its videos.
+ */
+const META_EXISTING_CHAT = /^https:\/\/(?:www\.)?meta\.ai\/(?:c|prompt)\//;
+
 async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
   if (site === "aistudio") return VEO_STUDIO_URL;
   if (site === "gemini") return GEMINI_VIDEOS_URL;
+  if (site === "meta") return META_NEW_CHAT_URL;
   const { flowProjectUrl } = await store.getSettings();
   return FLOW_PROJECT_URL.test(flowProjectUrl) ? flowProjectUrl : null;
 }
@@ -39,7 +56,19 @@ async function siteTargetUrl(site: GenerationSite): Promise<string | null> {
 function siteMatchesTab(site: GenerationSite, url: string): boolean {
   if (site === "aistudio") return url.includes("aistudio.google.com");
   if (site === "gemini") return url.startsWith("https://gemini.google.com/");
+  if (site === "meta") return META_TAB_URL.test(url);
   return FLOW_PROJECT_URL.test(url);
+}
+
+/** A job stashed for a tab that never claimed it is dropped rather than started late. */
+const PENDING_JOB_STALE_MS = 30 * 60 * 1000;
+
+function stashPendingJob(job: VideoJob, site: GenerationSite): Promise<void> {
+  return chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: site, pendingVideoJobAt: Date.now() });
+}
+
+function clearPendingJob(): Promise<void> {
+  return chrome.storage.local.remove(["pendingVideoJob", "pendingVideoJobSite", "pendingVideoJobAt"]);
 }
 
 interface JobClip {
@@ -55,6 +84,47 @@ interface VideoJob {
   modelId: string;
   imageBase64?: string;
   imageMimeType?: string;
+}
+
+/**
+ * Meta navigates from the empty composer to /prompt/<id> after submit. A full
+ * navigation destroys the content script that was waiting for the videos, so
+ * this small durable record lets the new page resume the same job instead of
+ * starting over or leaving the side panel looking idle.
+ */
+type MetaJobPhase = "starting" | "composing" | "submitted";
+
+interface MetaActiveJob {
+  job: VideoJob;
+  tabId: number;
+  phase: MetaJobPhase;
+  at: number;
+}
+
+const META_ACTIVE_JOB_KEY = "metaActiveJob";
+const META_ACTIVE_JOB_STALE_MS = 30 * 60 * 1000;
+
+async function setMetaActiveJob(job: VideoJob, tabId: number, phase: MetaJobPhase): Promise<void> {
+  await chrome.storage.local.set({
+    [META_ACTIVE_JOB_KEY]: { job, tabId, phase, at: Date.now() } satisfies MetaActiveJob,
+  });
+}
+
+async function getMetaActiveJob(): Promise<MetaActiveJob | null> {
+  const stored = await chrome.storage.local.get(META_ACTIVE_JOB_KEY);
+  const active = stored[META_ACTIVE_JOB_KEY] as Partial<MetaActiveJob> | undefined;
+  if (!active?.job?.videoId || typeof active.tabId !== "number") return null;
+  if (active.at && Date.now() - active.at > META_ACTIVE_JOB_STALE_MS) {
+    await chrome.storage.local.remove(META_ACTIVE_JOB_KEY);
+    return null;
+  }
+  return active as MetaActiveJob;
+}
+
+async function clearMetaActiveJob(videoId?: string): Promise<void> {
+  const active = await getMetaActiveJob();
+  if (!active || (videoId && active.job.videoId !== videoId)) return;
+  await chrome.storage.local.remove(META_ACTIVE_JOB_KEY);
 }
 
 interface IncomingVideoJob {
@@ -148,6 +218,17 @@ interface FetchAndUploadMessage {
   clipTotal?: number;
 }
 
+/**
+ * Cuts a job's clip list down to the number of clips that actually came back.
+ * Only Meta AI needs it: one prompt there asks for every scene at once, and
+ * the reply can come back a scene short (meta-automation.ts).
+ */
+interface TrimVideoClipsMessage {
+  type: "TRIM_VIDEO_CLIPS";
+  videoId: string;
+  count: number;
+}
+
 interface ScrapedTikTokProduct {
   tiktokId: string;
   name: string;
@@ -203,6 +284,12 @@ interface GetPendingVideoJobMessage {
   site?: GenerationSite;
 }
 
+interface MetaJobPhaseMessage {
+  type: "META_JOB_PHASE";
+  videoId: string;
+  phase: MetaJobPhase;
+}
+
 interface GetSettingsMessage {
   type: "GET_SETTINGS";
 }
@@ -245,19 +332,32 @@ type ExtensionMessage =
   | RunJobFromPopupMessage
   | UploadVideoMessage
   | FetchAndUploadMessage
+  | TrimVideoClipsMessage
   | ImportTikTokProductsMessage
   | GetTikTokProductsMessage
   | DeleteTikTokProductsMessage
   | AnalyzeProductMessage
   | GenerateContentScenesMessage
   | GetPendingVideoJobMessage
+  | MetaJobPhaseMessage
   | GetSettingsMessage
   | SaveSettingsMessage
   | GetApiKeysStatusMessage
   | SaveApiKeysMessage
   | ResetKeyCooldownMessage
   | TestApiKeyMessage
+  | FocusMyTabMessage
   | TrustedClickMessage;
+
+/**
+ * Brings the sender's own tab to the front. Meta AI only finishes hydrating
+ * its composer while its tab is visible — Chrome throttles a background tab
+ * hard enough that the editor never replaces the placeholder textarea, and a
+ * job waiting on it just times out.
+ */
+interface FocusMyTabMessage {
+  type: "FOCUS_MY_TAB";
+}
 
 /** Clicks an element in the sender's tab with a real (trusted) mouse event — Gemini ignores synthetic clicks on send. */
 interface TrustedClickMessage {
@@ -290,6 +390,8 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
+    productLook: content.productLook,
+    presenter: video.presenter,
   });
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
@@ -328,12 +430,15 @@ const SITE_TAB_PATTERNS: Record<GenerationSite, string> = {
   // Broad on purpose: a match pattern can't express the optional /u/<n>/ — findSiteTab narrows it with siteMatchesTab.
   flow: "https://flow.google.com/*",
   gemini: "https://gemini.google.com/*",
+  // Meta AI answers on both meta.ai and www.meta.ai; "*.meta.ai" covers the bare domain too.
+  meta: "https://*.meta.ai/*",
 };
 
 const SITE_SCRIPTS: Record<GenerationSite, string[]> = {
   aistudio: ["dist/panel.js", "dist/ai-studio-automation.js"],
   flow: ["dist/panel.js", "dist/flow-automation.js"],
   gemini: ["dist/panel.js", "dist/gemini-automation.js"],
+  meta: ["dist/panel.js", "dist/meta-automation.js"],
 };
 
 /**
@@ -405,7 +510,7 @@ async function dispatchGeminiJob(job: VideoJob): Promise<DispatchResult> {
     }
   }
 
-  await chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: "gemini" });
+  await stashPendingJob(job, "gemini");
   const { geminiJobTabId } = await chrome.storage.local.get("geminiJobTabId");
   const reusable = tabs.find((tab) => tab.id === geminiJobTabId);
   if (reusable?.id) {
@@ -417,8 +522,64 @@ async function dispatchGeminiJob(job: VideoJob): Promise<DispatchResult> {
   return { ok: true, opened: true };
 }
 
+/**
+ * Meta AI returns every scene of the advert from one prompt, and the only way
+ * to tell which file belongs to which scene is the order the page downloads
+ * them in (meta-automation.ts). That holds only in a chat with no other
+ * videos in it, so a job always starts in a fresh chat — reusing an open Meta
+ * tab that is on one, else the tab the last Meta job ran in.
+ */
+async function dispatchMetaJob(job: VideoJob): Promise<DispatchResult> {
+  const tabs = (await chrome.tabs.query({ url: SITE_TAB_PATTERNS.meta })).filter((tab) => tab.id && META_TAB_URL.test(tab.url ?? ""));
+  const active = await getMetaActiveJob();
+  if (active) {
+    const activeTab = tabs.find((tab) => tab.id === active.tabId);
+    if (activeTab && active.job.videoId !== job.videoId) {
+      return { ok: false, error: "มีงานสร้างวิดีโอใน Meta AI กำลังทำอยู่ — รอให้งานเดิมเสร็จก่อน" };
+    }
+    if (activeTab?.id && active.job.videoId === job.videoId) {
+      await chrome.tabs.update(activeTab.id, { active: true });
+      return { ok: true, opened: true };
+    }
+    // The old Meta tab was closed. It is safe to replace the orphaned record.
+    await clearMetaActiveJob(active.job.videoId);
+  }
+  const onNewChat = tabs.find((tab) => !META_EXISTING_CHAT.test(tab.url ?? ""));
+  await stashPendingJob(job, "meta");
+  const { metaJobTabId } = await chrome.storage.local.get("metaJobTabId");
+  // Do not send directly into an already-loaded Meta page. Meta often
+  // navigates to /prompt/<id> immediately after submit; sending directly
+  // leaves the old content script waiting while the new document has no job
+  // to claim. Reloading the same tab with a pending job keeps the browser tab
+  // visible and lets the fresh content script own the whole lifecycle.
+  const reusable = onNewChat ?? tabs.find((tab) => tab.id === metaJobTabId);
+  if (reusable?.id) {
+    await setMetaActiveJob(job, reusable.id, "starting");
+    await chrome.storage.local.set({
+      jobProgress: { videoId: job.videoId, current: 0, total: job.clips.length, state: "generating", at: Date.now() },
+      jobStatusText: { text: "กำลังเปิดหน้า Meta AI และจะติดตามหน้าสร้างวิดีโอต่อให้", color: "#2563eb", at: Date.now() },
+    });
+    await chrome.tabs.update(reusable.id, { active: true });
+    if (onNewChat?.id === reusable.id) await chrome.tabs.reload(reusable.id);
+    else await chrome.tabs.update(reusable.id, { url: META_NEW_CHAT_URL, active: true });
+    await chrome.storage.local.set({ metaJobTabId: reusable.id });
+    return { ok: true, opened: true };
+  }
+
+  const created = await chrome.tabs.create({ url: META_NEW_CHAT_URL, active: true });
+  if (!created.id) throw new Error("เปิดแท็บ Meta AI ไม่สำเร็จ");
+  await setMetaActiveJob(job, created.id, "starting");
+  await chrome.storage.local.set({ metaJobTabId: created.id });
+  await chrome.storage.local.set({
+    jobProgress: { videoId: job.videoId, current: 0, total: job.clips.length, state: "generating", at: Date.now() },
+    jobStatusText: { text: "กำลังเปิดหน้า Meta AI และจะติดตามหน้าสร้างวิดีโอต่อให้", color: "#2563eb", at: Date.now() },
+  });
+  return { ok: true, opened: true };
+}
+
 async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<DispatchResult> {
   if (site === "gemini") return dispatchGeminiJob(job);
+  if (site === "meta") return dispatchMetaJob(job);
   const tab = await findSiteTab(site);
 
   if (tab?.id) {
@@ -438,12 +599,19 @@ async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<Dispatc
       error: "ตั้งค่า Google Flow Project URL (https://flow.google.com/project/... หรือ https://flow.google.com/u/1/project/...) ในแท็บ Settings ก่อน หรือเปิดหน้าโปรเจกต์ Flow ไว้แล้วกดใหม่",
     };
   }
-  await chrome.storage.local.set({ pendingVideoJob: job, pendingVideoJobSite: site });
+  await stashPendingJob(job, site);
   await chrome.tabs.create({ url });
   return { ok: true, opened: true };
 }
 
 /* ---------- creating jobs ---------- */
+
+/** The presenter for the next video: the fixed choice, or take turns woman/man across every video made. */
+async function nextPresenter(): Promise<PresenterGender> {
+  const choice = (await store.getSettings()).presenter ?? "alternate";
+  if (choice === "female" || choice === "male") return choice;
+  return (await store.countVideos()) % 2 === 0 ? "female" : "male";
+}
 
 async function createJobForContent(
   contentId: string,
@@ -456,6 +624,7 @@ async function createJobForContent(
   if (!content) throw new Error("ไม่พบคอนเทนต์");
   if (content.scenes.length === 0) throw new Error("ต้องสร้าง Scene ก่อนจึงจะสร้างวิดีโอได้");
   const product = await store.getProduct(content.productId);
+  const presenter = await nextPresenter();
   const planned = planClips({
     productName: product?.name ?? "-",
     scenes: prompts.toScenePromptInputs(content.scenes),
@@ -466,6 +635,8 @@ async function createJobForContent(
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
+    productLook: content.productLook,
+    presenter,
   });
   const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
   const video = await store.createVideoJob({
@@ -474,6 +645,7 @@ async function createJobForContent(
     duration: clips.length * clipSecondsForSite(site, targetDuration),
     aspectRatio: DEFAULT_VIDEO_SETTINGS.aspectRatio,
     targetDuration,
+    presenter,
   });
   return { video, clips, imageUrl: product?.images[0] ?? null };
 }
@@ -564,6 +736,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const progress = changes.jobProgress?.newValue as { videoId?: string; state?: string } | undefined;
   if (!progress?.videoId || (progress.state !== "done" && progress.state !== "failed")) return;
+  // A Meta page can be reloaded while it is rendering. Once the job reaches a
+  // terminal state its recovery record must disappear, otherwise a later
+  // visit to the same Meta tab could resume an old video.
+  void clearMetaActiveJob(progress.videoId);
   void advanceJobQueue(progress.videoId);
 });
 
@@ -856,26 +1032,30 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean, editorSe
   }
 }
 
-/** Product analysis, scripts and scenes: the Gemini web app by default, or the API keys when chosen in Settings. */
-async function generateObject<T>(params: gemini.GenerateObjectParams): Promise<T> {
-  const { textSource } = await store.getSettings();
-  return textSource === "api" ? gemini.generateObject<T>(params) : generateObjectOnWeb<T>(params);
+/** Product analysis, scripts and scenes use the selected text source. */
+async function generateObject<T>(params: gemini.GenerateObjectParams, source: store.TextSource | undefined, productId: string): Promise<T> {
+  const textSource = source ?? (await store.getSettings()).textSource;
+  if (textSource === "api") return gemini.generateObject<T>(params);
+  if (textSource === "chatgpt-web") return generateObjectOnChatGPT<T>(params, productId);
+  return generateObjectOnWeb<T>(params);
 }
 
-async function analyzeProduct(productId: string): Promise<store.ProductAnalysis> {
+async function analyzeProduct(productId: string, source?: store.TextSource): Promise<store.ProductAnalysis> {
   const product = await store.getProduct(productId);
   if (!product) throw new Error("ไม่พบสินค้า");
+  const textSource = source ?? (await store.getSettings()).textSource ?? "gemini-web";
   // Every image is sent inline as base64 on each call; a few angles are enough
   // to tell what the product is, and more only make the request slow enough to time out.
   const images = await gemini.loadImages(product.images.slice(0, 3));
-  const { system, prompt } = prompts.buildAnalysisPrompt(product, images.length > 0);
+  const { system, prompt, example } = prompts.buildAnalysisPrompt(product, images.length > 0);
   const analysis = await generateObject<store.ProductAnalysis>({
     system,
     prompt,
+    example,
     images,
     schema: prompts.PRODUCT_ANALYSIS_SCHEMA,
-  });
-  await store.saveAnalysis(product.id, analysis);
+  }, textSource, product.id);
+  await store.saveAnalysis(product.id, analysis, textSource);
   return analysis;
 }
 
@@ -884,6 +1064,9 @@ async function generateContentScenes(
   style: string,
   targetDuration: number,
   site: GenerationSite = "flow",
+  source?: store.TextSource,
+  resumeContentId?: string,
+  onContentReady?: (content: store.Content) => Promise<void>,
 ): Promise<{ content: store.Content; scenes: store.Scene[] }> {
   targetDuration = snapDuration(site, targetDuration);
   const clipSeconds = clipSecondsForSite(site, targetDuration);
@@ -894,40 +1077,61 @@ async function generateContentScenes(
   // calls only need the cover photo to keep the product's look right.
   const images = await gemini.loadImages(product.images.slice(0, 1));
 
-  // Rotate angles across generations so repeated runs for one product tell different stories.
-  const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
-  const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
-  const contentResult = await generateObject<{
-    hook: string;
-    script: string;
-    caption: string;
-    cta: string;
-    onScreenText?: string;
-    onScreenCta?: string;
-  }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA });
+  let content = resumeContentId ? await store.getContent(resumeContentId) : null;
+  if (content && (content.productId !== product.id || content.style !== style)) content = null;
+  if (content && contentIssues(content.script, style, targetDuration, clipSeconds).length) content = null;
+  if (!content) {
+    // Rotate angles across generations so repeated runs for one product tell different stories.
+    const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
+    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
+    const contentResult = await generateValidated<{
+      hook: string;
+      script: string;
+      caption: string;
+      cta: string;
+      onScreenText?: string;
+      onScreenCta?: string;
+    }>(
+      (repair) => generateObject({
+        ...contentPrompt,
+        prompt: contentPrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
+        images, schema: prompts.CONTENT_GENERATION_SCHEMA,
+      }, source, product.id),
+      (result) => contentIssues(result.script, style, targetDuration, clipSeconds),
+    );
 
-  const content = await store.createContent({
-    productId: product.id,
-    style,
-    hook: contentResult.hook,
-    script: contentResult.script,
-    caption: contentResult.caption,
-    cta: contentResult.cta,
-    // Short is what actually renders as legible Thai in Veo — anything longer
-    // that Gemini writes despite the prompt's instruction is dropped rather
-    // than risking garbled text on screen.
-    onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, prompts.ON_SCREEN_HEADLINE_MAX),
-    onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, prompts.ON_SCREEN_CTA_MAX),
-    angle,
-  });
+    content = await store.createContent({
+      productId: product.id,
+      style,
+      hook: contentResult.hook,
+      script: contentResult.script,
+      caption: contentResult.caption,
+      cta: contentResult.cta,
+      // Short is what actually renders as legible Thai in Veo — anything longer
+      // that the model writes despite the prompt's instruction is dropped.
+      onScreenText: prompts.cleanOnScreenText(contentResult.onScreenText, prompts.ON_SCREEN_HEADLINE_MAX),
+      onScreenCta: prompts.cleanOnScreenText(contentResult.onScreenCta, prompts.ON_SCREEN_CTA_MAX),
+      angle,
+    });
+    await onContentReady?.(content);
+  }
 
-  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0);
-  const sceneResult = await generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
-    ...scenePrompt,
-    images,
-    schema: prompts.SCENE_PLAN_SCHEMA,
-  });
-  await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions);
+  const clipCount = clipCountFor(targetDuration, clipSeconds);
+  if (content.scenes.length > 0 && !sceneIssues(content.scenes, content, clipCount, clipSeconds).length) {
+    return { content, scenes: content.scenes };
+  }
+
+  const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0, analysis);
+  const plannedContent = content;
+  const sceneResult = await generateValidated<{ scenes: store.Scene[]; castOptions?: store.CastOption[]; productLook?: string }>(
+    (repair) => generateObject({
+      ...scenePrompt,
+      prompt: scenePrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
+      images, schema: prompts.SCENE_PLAN_SCHEMA,
+    }, source, product.id),
+    (result) => sceneIssues(result.scenes, plannedContent, clipCount, clipSeconds),
+  );
+  await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions, sceneResult.productLook);
   return { content, scenes: sceneResult.scenes };
 }
 
@@ -1446,7 +1650,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         sendResponse({ ok: false, error: "วิดีโอนี้สร้างเสร็จแล้ว ยกเลิกไม่ได้" });
         return;
       }
-      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "pendingVideoJob", "pendingVideoJobSite"]);
+      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob", "pendingVideoJobSite"]);
       await chrome.storage.local.set({
         jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
       });
@@ -1477,18 +1681,78 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if (message.type === "FOCUS_MY_TAB") {
+    (async () => {
+      const tab = sender.tab;
+      if (!tab?.id) {
+        sendResponse({ ok: false, error: "no tab" });
+        return;
+      }
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === "META_JOB_PHASE") {
+    (async () => {
+      const active = await getMetaActiveJob();
+      if (!active || active.job.videoId !== message.videoId || active.tabId !== sender.tab?.id) {
+        sendResponse({ ok: false, error: "ไม่พบงาน Meta AI ที่กำลังติดตาม" });
+        return;
+      }
+      await setMetaActiveJob(active.job, active.tabId, message.phase);
+      sendResponse({ ok: true });
+    })().catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    return true;
+  }
+
   if (message.type === "GET_PENDING_VIDEO_JOB") {
     (async () => {
-      const stored = await chrome.storage.local.get(["pendingVideoJob", "pendingVideoJobSite"]);
+      const stored = await chrome.storage.local.get(["pendingVideoJob", "pendingVideoJobSite", "pendingVideoJobAt"]);
       const job = (stored.pendingVideoJob as VideoJob | undefined) ?? null;
       const forSite = stored.pendingVideoJobSite as GenerationSite | undefined;
       if (job && forSite && message.site && forSite !== message.site) {
         sendResponse({ job: null });
         return;
       }
+      // A job is stashed moments before its tab is opened, so one still
+      // waiting much later belongs to a run that never got going (the tab was
+      // closed, the site wanted a login). Starting it on whatever page the
+      // user happens to open next would spend a video allowance unasked.
+      const at = (stored.pendingVideoJobAt as number | undefined) ?? 0;
+      if (job && at && Date.now() - at > PENDING_JOB_STALE_MS) {
+        await clearPendingJob();
+        sendResponse({ job: null });
+        return;
+      }
       // Clear before responding so a second asker can't claim the same job.
-      if (job) await chrome.storage.local.remove(["pendingVideoJob", "pendingVideoJobSite"]);
-      sendResponse({ job });
+      if (job) {
+        if (message.site === "meta" && sender.tab?.id) {
+          await setMetaActiveJob(job, sender.tab.id, "starting");
+        }
+        await clearPendingJob();
+        sendResponse({ job, phase: message.site === "meta" ? ("starting" as MetaJobPhase) : undefined });
+        return;
+      }
+
+      // A full navigation after Meta accepts the prompt starts a fresh
+      // content script. Give that script the same job in "submitted" mode so
+      // it waits for the already-requested videos instead of submitting the
+      // prompt a second time.
+      if (message.site === "meta" && sender.tab?.id) {
+        const active = await getMetaActiveJob();
+        if (active?.tabId === sender.tab.id) {
+          sendResponse({ job: active.job, phase: active.phase });
+          return;
+        }
+      }
+      sendResponse({ job: null });
     })();
     return true;
   }
@@ -1545,6 +1809,28 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "RESET_KEY_COOLDOWN") {
     (async () => {
       await store.clearKeyCooldown(message.key);
+      sendResponse({ ok: true });
+    })();
+    return true;
+  }
+
+  if (message.type === "TRIM_VIDEO_CLIPS") {
+    (async () => {
+      // Meta AI can answer with fewer scenes than it was asked for. The clips
+      // that did render are still worth keeping, but mergeVideoClips refuses
+      // to join anything while the library holds fewer clips than the job
+      // record lists — so the record is cut down to what arrived first.
+      const video = await store.getVideo(message.videoId);
+      const count = Math.max(1, Math.min(message.count ?? 0, video?.clips.length ?? 0));
+      if (!video || count >= video.clips.length) {
+        sendResponse({ ok: true });
+        return;
+      }
+      const perClip = video.clips.length > 0 ? video.duration / video.clips.length : 0;
+      await store.updateVideoJob(message.videoId, {
+        clips: video.clips.slice(0, count),
+        duration: Math.round(perClip * count) || video.duration,
+      });
       sendResponse({ ok: true });
     })();
     return true;

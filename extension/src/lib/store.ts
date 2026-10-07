@@ -18,6 +18,8 @@ export interface ProductAnalysis {
   angles: string[];
 }
 
+export type TextSource = "gemini-web" | "chatgpt-web" | "api";
+
 export interface Scene {
   duration: number;
   /** Thai summary of the shot, shown in the side panel. */
@@ -38,7 +40,11 @@ export interface Scene {
 export interface CastOption {
   person: string;
   setting: string;
+  gender?: "female" | "male";
 }
+
+/** Who presents the videos: always a woman, always a man, or take turns video by video. */
+export type PresenterChoice = "alternate" | "female" | "male";
 
 export interface Content {
   id: string;
@@ -55,6 +61,8 @@ export interface Content {
   angle?: string;
   /** Alternative looks; repeated runs of the same content take the next one. */
   castOptions?: CastOption[];
+  /** English description of the product as seen in its photo, repeated in every clip prompt. */
+  productLook?: string;
   scenes: Scene[];
 }
 
@@ -81,6 +89,8 @@ export interface VideoJob {
   mergeError?: string | null;
   /** Last TikTok Studio posting attempt (tiktok-upload.ts). */
   tiktokPost?: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
+  /** Presenter picked when the job was created, so a re-plan keeps the same person. */
+  presenter?: "female" | "male";
 }
 
 export interface Settings {
@@ -89,10 +99,12 @@ export interface Settings {
   /** Press TikTok's Post button after filling the form, instead of stopping for review. */
   tiktokAutoPost?: boolean;
   /**
-   * Who analyses products and writes scripts and scenes: the Gemini web app in
-   * this browser (default) or the API keys below.
+   * Who analyses products and writes scripts and scenes: Gemini web (default),
+   * ChatGPT web, or the Gemini API keys below.
    */
-  textSource?: "gemini-web" | "api";
+  textSource?: TextSource;
+  /** Presenter for new videos; missing means "alternate". */
+  presenter?: PresenterChoice;
 }
 
 /**
@@ -124,6 +136,7 @@ export function maskKey(key: string): string {
 interface StoreShape {
   products: Product[];
   analyses: Record<string, ProductAnalysis>;
+  analysisSources: Record<string, TextSource>;
   contents: Content[];
   videos: VideoJob[];
   settings: Settings;
@@ -133,6 +146,7 @@ interface StoreShape {
 const DEFAULTS: StoreShape = {
   products: [],
   analyses: {},
+  analysisSources: {},
   contents: [],
   videos: [],
   settings: { geminiModel: "gemini-flash-latest", flowProjectUrl: "" },
@@ -279,6 +293,9 @@ export async function deleteProducts(ids: string[]): Promise<number> {
   const analyses = await getAll("analyses");
   for (const id of ids) delete analyses[id];
   await setAll("analyses", analyses);
+  const analysisSources = await getAll("analysisSources");
+  for (const id of ids) delete analysisSources[id];
+  await setAll("analysisSources", analysisSources);
 
   const contents = await getAll("contents");
   const deadContentIds = new Set(contents.filter((c) => idSet.has(c.productId)).map((c) => c.id));
@@ -341,10 +358,18 @@ export async function getAnalysis(productId: string): Promise<ProductAnalysis | 
   return analyses[productId] ?? null;
 }
 
-export async function saveAnalysis(productId: string, analysis: ProductAnalysis): Promise<void> {
+export async function getAnalysisSource(productId: string): Promise<TextSource | null> {
+  const sources = await getAll("analysisSources");
+  return sources[productId] ?? null;
+}
+
+export async function saveAnalysis(productId: string, analysis: ProductAnalysis, source: TextSource): Promise<void> {
   const analyses = await getAll("analyses");
   analyses[productId] = analysis;
   await setAll("analyses", analyses);
+  const sources = await getAll("analysisSources");
+  sources[productId] = source;
+  await setAll("analysisSources", sources);
 }
 
 /* ---------- contents ---------- */
@@ -390,12 +415,13 @@ export async function countContents(productId: string): Promise<number> {
   return contents.filter((c) => c.productId === productId).length;
 }
 
-export async function setScenes(contentId: string, scenes: Scene[], castOptions?: CastOption[]): Promise<void> {
+export async function setScenes(contentId: string, scenes: Scene[], castOptions?: CastOption[], productLook?: string): Promise<void> {
   const contents = await getAll("contents");
   const content = contents.find((c) => c.id === contentId);
   if (!content) return;
   content.scenes = scenes;
   if (castOptions) content.castOptions = castOptions;
+  if (productLook?.trim()) content.productLook = productLook.trim();
   await setAll("contents", contents);
 }
 
@@ -447,12 +473,18 @@ export async function getVideo(videoId: string): Promise<VideoJob | null> {
   return videos.find((v) => v.id === videoId) ?? null;
 }
 
+/** All videos ever created — "alternate" takes turns on this, across contents and autopilot runs. */
+export async function countVideos(): Promise<number> {
+  return (await getAll("videos")).length;
+}
+
 export async function createVideoJob(input: {
   contentId: string;
   clips: VideoJobClip[];
   duration: number;
   aspectRatio: string;
   targetDuration: number;
+  presenter?: "female" | "male";
 }): Promise<VideoJob> {
   const videos = await getAll("videos");
   const video: VideoJob = {
@@ -463,6 +495,7 @@ export async function createVideoJob(input: {
     duration: input.duration,
     aspectRatio: input.aspectRatio,
     targetDuration: input.targetDuration,
+    presenter: input.presenter,
     clipsReceived: 0,
     errorMessage: null,
     createdAt: Date.now(),

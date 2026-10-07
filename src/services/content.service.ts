@@ -1,3 +1,4 @@
+import { contentIssues, generateValidated, creativeRepairPrompt } from "@/lib/prompt-engine/creative-quality";
 import { prisma } from "@/lib/db/prisma";
 import { getLLMProvider } from "@/lib/ai";
 import { loadProductImages } from "@/lib/ai/product-images";
@@ -6,8 +7,18 @@ import {
   ON_SCREEN_CTA_MAX,
   ON_SCREEN_HEADLINE_MAX,
   type UpdateContentInput,
+  type ContentGenerationResult,
 } from "@/lib/validation/content";
-import { SPEAKABLE_SCRIPT_RULE, getStylePlaybook, stylePlaybookPrompt, styleUsesOnScreenText } from "@/lib/prompt-engine/style-playbooks";
+import {
+  NATURAL_SPEECH_RULE,
+  SPEAKABLE_SCRIPT_RULE,
+  getStylePlaybook,
+  sellingScriptRule,
+  speechBudget,
+  styleStoryRule,
+  stylePlaybookPrompt,
+  styleUsesOnScreenText,
+} from "@/lib/prompt-engine/style-playbooks";
 
 const MOCK_CONTENT = {
   hook: "ใครกำลังหาไอเท็มที่ใช้สะดวกต้องดู",
@@ -18,8 +29,6 @@ const MOCK_CONTENT = {
   onScreenCta: "กดดูเลย",
 };
 
-const THAI_CHARS_PER_SECOND = 45 / 8;
-
 function cleanOnScreenText(text: string | undefined, maxChars: number): string | undefined {
   const cleaned = (text ?? "")
     .replace(/[^\u0E00-\u0E7F0-9\s!?]/g, "")
@@ -28,12 +37,6 @@ function cleanOnScreenText(text: string | undefined, maxChars: number): string |
     .trim();
   if (!cleaned || !/[\u0E00-\u0E7F]/.test(cleaned)) return undefined;
   return Array.from(cleaned).length <= maxChars ? cleaned : undefined;
-}
-
-function scriptStructure(targetDuration: number): string {
-  if (targetDuration <= 8) return "hook สั้นมาก + จุดขายหลัก 1 ข้อ + CTA สั้น";
-  if (targetDuration <= 16) return "hook + จุดขาย/การใช้งาน 2 จังหวะ + CTA";
-  return "hook + ปัญหา/บริบท + สาธิตการใช้งาน + ประโยชน์ + CTA";
 }
 
 function reviewRules(): string[] {
@@ -75,18 +78,18 @@ export async function generateContent(
   ]);
   const angle = angleFor(product.analysis?.angles, generationIndex);
   const playbook = getStylePlaybook(style);
-  const speechBudget = Math.round(targetDuration * THAI_CHARS_PER_SECOND);
+  const budget = speechBudget(targetDuration, playbook.speech);
 
   const llm = getLLMProvider();
-  const result = await llm.generateObject({
+  const request = {
     system: [
       "คุณเป็นนักเขียนครีเอทีฟและนักวางโฆษณา TikTok affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น",
       "เขียน hook, script, caption, cta และข้อความบนจอเป็นภาษาไทยที่เป็นธรรมชาติแบบภาษาพูด แม้ข้อมูลสินค้าและคำสั่งส่วนอื่นจะเป็นภาษาอังกฤษ",
-      "script คือคำพูดที่ได้ยินจริงทั้งหมด เรียงตามเวลา ขึ้นต้นด้วย hook จบด้วย CTA ประโยคสั้น พูดจบได้ในเวลาที่กำหนดโดยไม่ต้องเร่ง และเว้นจังหวะให้ภาพเล่าเรื่อง",
+      playbook.speech === "silent" ? 'script เป็นสตริงว่าง "" เพราะไม่มีบทพูด hook อธิบายภาพเปิด ส่วน cta ใช้ใน caption' : "script คือคำพูดที่ได้ยินจริงทั้งหมด เรียงตามเวลา ใช้ประโยคครบความตามสไตล์ และเว้นจังหวะให้ภาพเล่าเรื่อง",
       SPEAKABLE_SCRIPT_RULE,
       "hook ต้องดึงความสนใจภายใน 1-2 วินาทีแรก ห้ามขึ้นต้นด้วยการแนะนำตัวหรือคำว่า วันนี้จะมารีวิว...",
       "ยึดรูปสินค้าและข้อมูลที่ให้มาเป็นหลัก ห้ามแต่งคุณสมบัติหรือการใช้งานที่ไม่สมเหตุสมผลกับประเภทสินค้า",
-      ...reviewRules(),
+      ...(style === "Review" ? reviewRules() : []),
       ...claimSafetyRules(),
       "caption ต้องไม่คัดลอก hook แบบคำต่อคำ ให้พูดถึงประโยชน์หรือความน่าสนใจหลักเพียงหนึ่งเรื่อง ใช้แฮชแท็กที่เกี่ยวข้อง 4-6 อัน ไม่สแปมแฮชแท็ก",
       `แนวทางเฉพาะของสไตล์ ${style}: ${playbook.writing}`,
@@ -108,8 +111,11 @@ export async function generateContent(
         ? `มุมการขายที่เลือก: "${angle}" — hook, script, caption และ CTA ต้องอยู่ในมุมนี้ตลอดทั้งชิ้น ห้ามเปลี่ยนมุมกลางคลิป`
         : "เลือกมุมการขายที่เหมาะกับสินค้าและสไตล์นี้เพียงหนึ่งมุม แล้วรักษามุมเดิมตลอดทั้งชิ้น",
       `ความยาวเป้าหมาย: ${targetDuration} วินาที`,
-      `โครงเรื่องตามความยาว: ${scriptStructure(targetDuration)}`,
-      `งบคำพูดโดยประมาณ: ไม่เกิน ${speechBudget} ตัวอักษรไทยรวมสระและวรรณยุกต์ (เหลือเวลาสำหรับภาพและ CTA)`,
+      styleStoryRule(targetDuration),
+      playbook.speech === "silent" ? "" : NATURAL_SPEECH_RULE,
+      `แบ่ง script เป็นไม่เกิน ${Math.ceil(targetDuration / 8)} บรรทัดตาม clip แต่ละบรรทัดเป็นประโยคครบความและไม่เกิน ${speechBudget(8, playbook.speech)[1]} ตัวอักษร ห้ามตัดประโยคข้าม clip`,
+      `งบคำพูด: script ประมาณ ${budget[0]}-${budget[1]} ตัวอักษรไทยรวมสระ วรรณยุกต์และช่องว่าง ห้ามเกิน ${budget[1]} ตัวอักษร เว้นเวลาสำหรับหายใจ การสาธิต และภาพผลลัพธ์ ถ้ายาวเกินให้เขียนใหม่โดยลดจุดขาย ไม่ตัดกลางประโยค`,
+      sellingScriptRule(playbook.speech),
       "ส่งฟิลด์ hook, script, caption, cta ให้ครบ",
       styleUsesOnScreenText(style)
         ? `ส่ง onScreenText เป็นพาดหัวภาษาไทยล้วนจาก hook/จุดขาย ไม่เกิน ${ON_SCREEN_HEADLINE_MAX} ตัวอักษร และ onScreenCta เป็น CTA ภาษาไทยล้วน ไม่เกิน ${ON_SCREEN_CTA_MAX} ตัวอักษร — ทั้งสองฟิลด์คือข้อความจริงที่จะถูกคัดลอกลงวิดีโอ ห้ามใส่เครื่องหมายคำพูดไว้ในค่า เพราะระบบจะครอบด้วยเครื่องหมาย \"...\" เอง`
@@ -119,8 +125,12 @@ export async function generateContent(
       .join("\n"),
     images,
     schema: contentGenerationResultSchema,
-    mock: MOCK_CONTENT,
-  });
+    mock: { ...MOCK_CONTENT, script: playbook.speech === "silent" ? "" : playbook.speech === "light" ? "ดูที่ตะกร้าได้เลย" : "ใช้สะดวกขึ้นนะ กดดูที่ตะกร้าได้เลย" },
+  };
+  const result = await generateValidated<ContentGenerationResult>(
+    (repair) => llm.generateObject({ ...request, prompt: request.prompt + (repair ? creativeRepairPrompt(repair) : "") }),
+    (value) => contentIssues(value.script, style, targetDuration, 8),
+  );
 
   return prisma.content.create({
     data: {
