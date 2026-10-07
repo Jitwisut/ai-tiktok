@@ -4,6 +4,7 @@ import { generateObjectOnWeb } from "./lib/gemini-web.js";
 import { generateObjectOnChatGPT } from "./lib/chatgpt-web.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
+import { contentIssues, sceneIssues, generateValidated, creativeRepairPrompt } from "./lib/creative-quality.js";
 import {
   DEFAULT_VIDEO_SETTINGS,
   CLIP_SECONDS,
@@ -13,6 +14,7 @@ import {
   snapDuration,
   type GenerationSite,
   type PlanVariant,
+  type PresenterGender,
 } from "./lib/prompt-engine.js";
 import { concatMp4 } from "./lib/mp4-concat.js";
 import { createAutopilot } from "./lib/autopilot.js";
@@ -388,6 +390,8 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
+    productLook: content.productLook,
+    presenter: video.presenter,
   });
   const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
   await store.updateVideoJob(videoId, {
@@ -602,6 +606,13 @@ async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<Dispatc
 
 /* ---------- creating jobs ---------- */
 
+/** The presenter for the next video: the fixed choice, or take turns woman/man across every video made. */
+async function nextPresenter(): Promise<PresenterGender> {
+  const choice = (await store.getSettings()).presenter ?? "alternate";
+  if (choice === "female" || choice === "male") return choice;
+  return (await store.countVideos()) % 2 === 0 ? "female" : "male";
+}
+
 async function createJobForContent(
   contentId: string,
   targetDuration: number,
@@ -613,6 +624,7 @@ async function createJobForContent(
   if (!content) throw new Error("ไม่พบคอนเทนต์");
   if (content.scenes.length === 0) throw new Error("ต้องสร้าง Scene ก่อนจึงจะสร้างวิดีโอได้");
   const product = await store.getProduct(content.productId);
+  const presenter = await nextPresenter();
   const planned = planClips({
     productName: product?.name ?? "-",
     scenes: prompts.toScenePromptInputs(content.scenes),
@@ -623,6 +635,8 @@ async function createJobForContent(
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
     castOptions: content.castOptions,
+    productLook: content.productLook,
+    presenter,
   });
   const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
   const video = await store.createVideoJob({
@@ -631,6 +645,7 @@ async function createJobForContent(
     duration: clips.length * clipSecondsForSite(site, targetDuration),
     aspectRatio: DEFAULT_VIDEO_SETTINGS.aspectRatio,
     targetDuration,
+    presenter,
   });
   return { video, clips, imageUrl: product?.images[0] ?? null };
 }
@@ -1064,18 +1079,26 @@ async function generateContentScenes(
 
   let content = resumeContentId ? await store.getContent(resumeContentId) : null;
   if (content && (content.productId !== product.id || content.style !== style)) content = null;
+  if (content && contentIssues(content.script, style, targetDuration, clipSeconds).length) content = null;
   if (!content) {
     // Rotate angles across generations so repeated runs for one product tell different stories.
     const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
     const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
-    const contentResult = await generateObject<{
+    const contentResult = await generateValidated<{
       hook: string;
       script: string;
       caption: string;
       cta: string;
       onScreenText?: string;
       onScreenCta?: string;
-    }>({ ...contentPrompt, images, schema: prompts.CONTENT_GENERATION_SCHEMA }, source, product.id);
+    }>(
+      (repair) => generateObject({
+        ...contentPrompt,
+        prompt: contentPrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
+        images, schema: prompts.CONTENT_GENERATION_SCHEMA,
+      }, source, product.id),
+      (result) => contentIssues(result.script, style, targetDuration, clipSeconds),
+    );
 
     content = await store.createContent({
       productId: product.id,
@@ -1093,15 +1116,22 @@ async function generateContentScenes(
     await onContentReady?.(content);
   }
 
-  if (content.scenes.length > 0) return { content, scenes: content.scenes };
+  const clipCount = clipCountFor(targetDuration, clipSeconds);
+  if (content.scenes.length > 0 && !sceneIssues(content.scenes, content, clipCount, clipSeconds).length) {
+    return { content, scenes: content.scenes };
+  }
 
   const scenePrompt = prompts.buildScenePrompt(product, content, targetDuration, clipSeconds, images.length > 0, analysis);
-  const sceneResult = await generateObject<{ scenes: store.Scene[]; castOptions?: store.CastOption[] }>({
-    ...scenePrompt,
-    images,
-    schema: prompts.SCENE_PLAN_SCHEMA,
-  }, source, product.id);
-  await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions);
+  const plannedContent = content;
+  const sceneResult = await generateValidated<{ scenes: store.Scene[]; castOptions?: store.CastOption[]; productLook?: string }>(
+    (repair) => generateObject({
+      ...scenePrompt,
+      prompt: scenePrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
+      images, schema: prompts.SCENE_PLAN_SCHEMA,
+    }, source, product.id),
+    (result) => sceneIssues(result.scenes, plannedContent, clipCount, clipSeconds),
+  );
+  await store.setScenes(content.id, sceneResult.scenes, sceneResult.castOptions, sceneResult.productLook);
   return { content, scenes: sceneResult.scenes };
 }
 

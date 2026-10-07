@@ -515,11 +515,13 @@ async function geminiSubmitAndWait(job: GeminiVideoJob, clip: GeminiClip, label:
   }
 
   const productReference = imageAttached
-    ? " The attached photo shows the exact product being advertised: the product in the video must match it — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as the video's opening frame or background. No other brand's logo or packaging may appear."
+    ? " The attached photo shows the exact product being advertised and is the only reference for how the product looks. In every frame the product must match it exactly — same shape, proportions, size, colours, pattern, material, cap or lid, logo position and label design — never a similar, generic or redesigned item, and no text on it is added or re-lettered. Use the photo only as the product reference, not as the video's opening frame or background. No other brand's logo or packaging may appear."
     : "";
   const continuation =
     clip.index > 0
-      ? " The previous video in this chat is the part before this one: continue directly from its last frame with the same person, wardrobe, location, product, lighting and camera position, without replaying it."
+      ? ` The previous video in this chat is the part before this one: continue directly from its last frame with the same person, wardrobe, location, lighting and camera position, without replaying it.${
+          imageAttached ? " Take the product's look from the attached product photo, not from the previous video." : " Keep the same product."
+        }`
       : "";
   const orientation = job.aspectRatio === "16:9" ? "16:9 landscape (horizontal)" : "9:16 portrait (vertical)";
 

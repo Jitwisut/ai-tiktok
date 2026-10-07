@@ -1,9 +1,18 @@
+import { sceneIssues, generateValidated, creativeRepairPrompt } from "@/lib/prompt-engine/creative-quality";
 import { prisma } from "@/lib/db/prisma";
 import { getLLMProvider } from "@/lib/ai";
-import { scenePlanResultSchema } from "@/lib/validation/scene";
+import { scenePlanResultSchema, type ScenePlanResult } from "@/lib/validation/scene";
 import { loadProductImages } from "@/lib/ai/product-images";
 import { CLIP_SECONDS, MAX_CLIPS } from "@/lib/prompt-engine/clip-planner";
-import { SPEAKABLE_SCRIPT_RULE, stylePlaybookPrompt, styleUsesOnScreenText } from "@/lib/prompt-engine/style-playbooks";
+import {
+  SPEAKABLE_SCRIPT_RULE,
+  getStylePlaybook,
+  presenterRule,
+  speechBudget,
+  shotPlanningRule,
+  stylePlaybookPrompt,
+  styleUsesOnScreenText,
+} from "@/lib/prompt-engine/style-playbooks";
 
 const MOCK_SCENES = {
   scenes: [
@@ -61,20 +70,28 @@ export async function planScenes(
   const images = await loadProductImages(content.productId);
   const { clipCount, clipSeconds } = clipPlanFor(targetDuration);
   const totalDuration = clipCount * clipSeconds;
+  const playbook = getStylePlaybook(content.style);
+  const budget = speechBudget(clipSeconds, playbook.speech);
 
   const llm = getLLMProvider();
-  const result = await llm.generateObject({
+  const request = {
     system: [
       "คุณเป็น storyboard artist สำหรับวิดีโอ TikTok affiliate ตอบเป็น JSON ตาม schema เท่านั้น",
       `วิดีโอนี้แบ่งเป็น ${clipCount} clip โดย clip แต่ละอันสร้างแยกกันยาว ${clipSeconds} วินาที แล้วนำมาต่อกัน — clip ใช้เลข 0 ถึง ${clipCount - 1}`,
-      `ต้องมีฉากครบทุก clip และ duration ของฉากใน clip เดียวกันรวมกันเท่ากับ ${clipSeconds} วินาทีโดยประมาณ ใช้ 1-3 ฉากต่อ clip${clipCount === 1 ? "" : " และห้ามปล่อย clip ใดว่าง"}`,
+      `ต้องมีฉากครบทุก clip และ duration ของฉากใน clip เดียวกันรวมกันเท่ากับ ${clipSeconds} วินาทีโดยประมาณ ใช้ 1-2 ฉากต่อ clip${clipCount === 1 ? "" : " และห้ามปล่อย clip ใดว่าง"}`,
       "ภายใน clip เดียวกันให้เป็นการเคลื่อนไหวต่อเนื่อง ไม่มี jump cut; ข้าม clip ให้เรื่องเดินหน้าและเปลี่ยนการกระทำ มุมกล้อง หรือระยะภาพอย่างมีเหตุผล แต่คน ชุด สถานที่ แสง และสินค้าต้องต่อเนื่อง",
       "description เป็นสรุปฉากภาษาไทยสั้นๆ สำหรับผู้ใช้ตรวจ, visual เป็นคำบรรยายภาพภาษาอังกฤษที่เป็นรูปธรรมสำหรับโมเดลวิดีโอ, cameraMotion เป็นคำสั่งกล้องภาษาอังกฤษที่ต่อจากฉากก่อน",
-      "visual ต่อฉากให้มีการกระทำหลักเพียงอย่างเดียวที่ช้าและเรียบง่าย (เช่น หยิบสินค้าขึ้นมา, เปิดฝา, กดใช้) คนในภาพหันหน้าเข้ากล้องเป็นหลัก ห้ามมีท่าหมุนตัว หันหลัง สะบัดหัว เต้น กระโดด โยนสินค้า หรือการเคลื่อนไหวเร็ว เพราะโมเดลวิดีโอจะทำให้หัวหรือร่างกายบิดผิดธรรมชาติ",
+      "visual ต่อฉากให้มีการกระทำหลักเพียงอย่างเดียวที่ช้าและเรียบง่าย (เช่น หยิบสินค้าขึ้นมา, เปิดฝา, กดใช้) ห้ามมีท่าหมุนตัว หันหลัง สะบัดหัว เต้น กระโดด โยนสินค้า หรือการเคลื่อนไหวเร็ว เพราะโมเดลวิดีโอจะทำให้หัวหรือร่างกายบิดผิดธรรมชาติ",
       "cameraMotion ใช้ได้เฉพาะการเคลื่อนที่ช้าและนิ่ง: static, slow push-in, slow pull-back, gentle tilt up/down, small slow pan ห้ามใช้ orbit, arc, 360, วนรอบตัวคน, whip pan หรือ zoom เร็ว",
-      "dialogue คือประโยคภาษาไทยที่คนในภาพพูด, voiceover คือประโยคภาษาไทยของเสียงบรรยายนอกจอ ฉากหนึ่งควรใช้เพียงช่องเดียว หรือเว้นทั้งคู่ถ้าเป็นภาพล้วน",
-      "แบ่ง script ลงใน dialogue/voiceover ตามลำดับและใช้ข้อความตามต้นฉบับทุกคำ ทุกประโยคต้องปรากฏครั้งเดียวในทั้งวิดีโอ ห้ามใส่ประโยคเดิมซ้ำในฉากหรือ clip อื่น ห้ามตัด hook หรือ CTA และห้ามแต่งบทพูดเพิ่ม",
-      `ใน 1 clip ให้มีผู้พูดแบบเดียว (dialogue หรือ voiceover อย่างใดอย่างหนึ่ง) แต่พูดขายต่อเนื่องเกือบตลอด clip รวมประมาณ ${Math.round(10 * clipSeconds * 0.85)}-${10 * clipSeconds} ตัวอักษร ห้ามใส่แค่ประโยคสั้นประโยคเดียวแล้วปล่อยให้เงียบ`,
+      presenterRule(playbook.presenter),
+      shotPlanningRule(content.style),
+      `dialogue คือประโยคภาษาไทยที่คนในภาพพูด, voiceover คือประโยคภาษาไทยของเสียงบรรยายนอกจอ ฉากหนึ่งควรใช้เพียงช่องเดียว ${
+        playbook.speech === "silent" ? "ทุกฉากทั้ง dialogue และ voiceover เป็นสตริงว่าง ให้เสียงสัมผัสจริงของสินค้าเป็นเสียงหลัก" : "เว้นช่วงให้ภาพและเสียงของสินค้าเล่าเรื่องได้ ไม่ต้องพูดเต็มทุกวินาที"
+      }`,
+      "แบ่ง script ตามรอยต่อประโยคเท่านั้น ห้ามตัดกลางประโยค แต่ละฉากได้ประโยคที่ครบความ และคำพูดในฉากต้องพูดถึงสิ่งที่กำลังเห็นในภาพของฉากนั้น",
+      "ทั้งวิดีโอเป็นเรื่องเดียวต่อเนื่อง: คนเดิม สถานที่เดิม ช่วงเวลาเดียวกัน ฉากถัดไปเริ่มจากสิ่งที่ฉากก่อนจบไว้ (ท่าทาง ตำแหน่งสินค้า) ห้ามเปลี่ยนสถานที่หรือขึ้นเหตุการณ์ใหม่ที่ไม่เกี่ยวกันในแต่ละ clip",
+      "แบ่งเฉพาะคำพูดใน script ลงใน dialogue/voiceover ตามลำดับ ใช้ข้อความตามต้นฉบับครบ ไม่ซ้ำ ไม่เพิ่มคำพูดจาก hook หรือ cta ที่ไม่ได้อยู่ใน script",
+      `ใน 1 clip ใช้ผู้พูดแบบเดียว คำพูดรวมไม่เกิน ${budget[1]} ตัวอักษร เว้นเวลาสำหรับการกระทำและการหายใจ แบ่งคำพูดเป็นประโยคครบความ ห้ามตัดคำพูดทิ้ง`,
       SPEAKABLE_SCRIPT_RULE,
       "ถ้าเป็น Review ให้เห็นหลักฐานจากการสาธิตก่อนพูดจุดเด่น และห้ามแต่งประสบการณ์ว่าใช้มานาน ซื้อซ้ำ หรือเห็นผลในจำนวนวัน ถ้าไม่มีข้อมูลยืนยัน",
       "ถ้ามีรูปสินค้า ให้ยึดรูปทรง สี วัสดุ โลโก้ และวิธีใช้งานที่สมเหตุสมผลตามรูป ห้ามเปลี่ยนเป็นสินค้าทั่วไปหรือใส่ฟีเจอร์ที่ไม่มีข้อมูล",
@@ -87,6 +104,7 @@ export async function planScenes(
       `รายละเอียดสินค้า: ${content.product.description ?? "-"}`,
       `สไตล์: ${content.style}`,
       stylePlaybookPrompt(content.style),
+      `แนวภาพของสไตล์นี้ (ใช้กับ visual และ cameraMotion ทุกฉาก): ${playbook.videoDirection} / กล้อง: ${playbook.camera} / แสง: ${playbook.lighting}`,
       content.angle ? `มุมการขาย: ${content.angle}` : "",
       `hook: ${content.hook}`,
       `script (ต้องรักษาคำพูดไว้ครบ): ${content.script}`,
@@ -104,8 +122,18 @@ export async function planScenes(
       .join("\n"),
     images,
     schema: scenePlanResultSchema,
-    mock: MOCK_SCENES,
-  });
+    mock: {
+      scenes: Array.from({ length: clipCount }, (_, clip) => ({
+        ...MOCK_SCENES.scenes[1], clip, duration: clipSeconds,
+        dialogue: playbook.presenter === "hands" || playbook.speech === "silent" || clip > 0 ? "" : content.script,
+        voiceover: playbook.presenter === "hands" && playbook.speech !== "silent" && clip === 0 ? content.script : "",
+      })),
+    },
+  };
+  const result = await generateValidated<ScenePlanResult>(
+    (repair) => llm.generateObject({ ...request, prompt: request.prompt + (repair ? creativeRepairPrompt(repair) : "") }),
+    (value) => sceneIssues(value.scenes, content, clipCount, clipSeconds),
+  );
 
   await prisma.scene.deleteMany({ where: { contentId } });
 

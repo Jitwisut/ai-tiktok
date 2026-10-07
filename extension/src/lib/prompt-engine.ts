@@ -1,6 +1,6 @@
 /** Ported from src/lib/prompt-engine/{types,prompt-builder,clip-planner}.ts — pure functions, no server dependency. */
 
-import { styleUsesOnScreenText, styleVideoDirection } from "./style-playbooks.js";
+import { getStylePlaybook, assertSpeechFits, stylePerformance, styleCameraMotion, styleUsesOnScreenText, type PresenterMode, type SpeechAmount, type StylePlaybook } from "./style-playbooks.js";
 
 export interface VideoSettings {
   duration: number;
@@ -39,6 +39,36 @@ export interface ScenePromptInput {
 export interface CastLook {
   person: string;
   setting: string;
+  /** Missing on looks planned before presenters could be chosen; read from the person text then. */
+  gender?: PresenterGender;
+}
+
+/** Gender of a look: the planner's own field, else the English description ("Thai woman …", "a man's hands …"). */
+export function castGender(cast: CastLook): PresenterGender | undefined {
+  if (cast.gender === "female" || cast.gender === "male") return cast.gender;
+  if (/\b(woman|women|female|girl|lady|woman's)\b/i.test(cast.person)) return "female";
+  if (/\b(man|men|male|guy|boy|man's)\b/i.test(cast.person)) return "male";
+  return undefined;
+}
+
+/**
+ * Looks for the chosen presenter, in planner order. Older plans may have no
+ * look of that gender (or only ungendered hands) — then one is written here,
+ * keeping the first plan's setting so the place still fits the storyboard.
+ */
+function castsFor(all: CastLook[], gender: PresenterGender | undefined, presenter: PresenterMode): CastLook[] {
+  if (!gender) return all;
+  const matching = all.filter((cast) => castGender(cast) === gender);
+  if (matching.length) return matching;
+  const setting = all[0]?.setting ?? "a bright, tidy Thai home by a window, soft daylight";
+  const person = presenter === "hands"
+    ? gender === "female"
+      ? "hands only — a Thai woman's hands with short natural nails and plain sleeves"
+      : "hands only — a Thai man's hands with short clean nails and plain sleeves"
+    : gender === "female"
+      ? "Thai woman in her late 20s, natural makeup, black hair, plain casual top"
+      : "Thai man in his late 20s, short neat black hair, plain casual T-shirt";
+  return [{ person, setting, gender }];
 }
 
 /**
@@ -46,11 +76,19 @@ export interface CastLook {
  * No orbits or arcs — when asked to circle a subject the video model tends to
  * spin the person (head turning 360°) instead of moving the camera.
  */
-const DEFAULT_CAMERA_MOTIONS = [
-  "slow gentle push-in from a medium shot towards the person and the product",
-  "steady medium close-up with a slight tilt down to the product in the hands",
-  "gentle slow pull-back to a medium shot that settles on the product",
-];
+function defaultCameraMotions(presenter: PresenterMode): string[] {
+  return presenter === "hands"
+    ? [
+        "slow gentle push-in towards the hands and the product",
+        "steady close-up with a slight tilt down to the product in the hands",
+        "gentle slow pull-back that settles on the product",
+      ]
+    : [
+        "slow gentle push-in from a medium shot towards the person and the product",
+        "steady medium close-up with a slight tilt down to the product in the hands",
+        "gentle slow pull-back to a medium shot that settles on the product",
+      ];
+}
 
 /**
  * Camera words that make the model rotate the subject or smear the frame.
@@ -58,32 +96,89 @@ const DEFAULT_CAMERA_MOTIONS = [
  */
 const UNSTABLE_CAMERA = /\b(orbit\w*|arcs?|arcing|circl\w*|360|spin\w*|rotat\w*|whip\w*|swirl\w*|around the (subject|person|product))\b/i;
 
-function safeCameraMotion(motion: string | undefined): string | undefined {
+function safeCameraMotion(motion: string | undefined, presenter: PresenterMode): string | undefined {
   const value = motion?.trim();
   if (!value) return undefined;
-  return UNSTABLE_CAMERA.test(value) ? "slow steady push-in towards the person and the product" : value;
+  return UNSTABLE_CAMERA.test(value) ? defaultCameraMotions(presenter)[0] : value;
 }
 
 /**
  * Anatomy and motion rules repeated in every part. Stated positively as well as
  * in [AVOID]: video models follow "what to do" far better than "what not to do".
  */
-const MOTION_RULES =
-  "[MOTION] Real-world physics at normal speed. One simple, slow, deliberate action at a time. The person stays facing the camera (turned no more than about 45° away); the head moves only with small natural nods and tilts and always stays aligned with the shoulders and body. Exactly two arms and two hands with five fingers each; hands grip the product naturally. Face, hair and body keep a stable shape in every frame.";
+/**
+ * What makes it read as a seller's own TikTok Shop video rather than a TV
+ * advert or an AI render. Camera and light stay with the style.
+ */
+const REAL_AD_LOOK =
+  "[REALISM] Believable materials, natural skin texture when visible, everyday surroundings appropriate to the style, and the product at its true scale. Keep the background uncluttered and the contact point visible; leave the outer edges clear for TikTok UI.";
 
-/** Rules that stop the model rushing, mangling or repeating Thai speech. */
-function voiceRules(clipSeconds: number, clipCount: number, onScreen: boolean): string {
+function motionRules(presenter: PresenterMode): string {
+  const framing =
+    presenter === "hands"
+      ? "Only the hands and forearms appear with the product — no face or head in frame."
+      : presenter === "mixed" ? "The person looks at the task naturally; eye contact with the lens only when addressing it. Keep identity and anatomy stable." : "Natural eye contact while addressing the lens; look at the product while using it. Keep identity and anatomy stable.";
+  return `[MOTION] Real-world physics at normal speed. One simple, slow, deliberate action at a time. ${framing} Hands grip the product naturally with correct anatomy; contact and movement follow real-world physics.`;
+}
+
+/** How much of the shot is filled with speech, per the style's speech amount. */
+function pacingRule(speech: SpeechAmount, clipSeconds: number): string {
+  return speech === "light"
+    ? `Speak the lines softly at about 0.5 seconds and in between the product sounds, finishing by about ${Math.max(2, clipSeconds - 0.5)} seconds; calm pauses between lines are welcome so the natural sounds are heard.`
+    : `Speak at a relaxed conversational pace, with breathing pauses and room for the product action. Finish by ${Math.max(2, clipSeconds - 1)} seconds; let the final result be seen without adding words.`;
+}
+
+/**
+ * The clip's lines as the model should hear them. Numbered lines were spoken
+ * as separate slogans with a reset between each, so consecutive lines from
+ * the same speaker become one quoted monologue. Long single generations keep
+ * per-line timing so each line lands on its beat; in short clips narrow
+ * windows made the model rush.
+ */
+function scriptText(speech: SpeechLine[], clipSeconds: number): string {
+  const who = (kind: SpeechLine["kind"]) => (kind === "dialogue" ? "The person on screen says in Thai" : "An off-screen narrator says in Thai");
+  if (clipSeconds > 10) {
+    return speech
+      .map((line, i) => `${speech.length > 1 ? `${i + 1}) ` : ""}[${line.start}-${line.end}s] ${who(line.kind)}: ${quoteExact(line.text)}`)
+      .join(" ");
+  }
+  const blocks: { kind: SpeechLine["kind"]; text: string }[] = [];
+  for (const line of speech) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.kind === line.kind) last.text = `${last.text} ${line.text}`;
+    else blocks.push({ kind: line.kind, text: line.text });
+  }
+  return blocks
+    .map((block, i) => `${blocks.length > 1 ? `${i + 1}) ` : ""}${who(block.kind)}, as one natural continuous monologue: ${quoteExact(block.text)}`)
+    .join(" ");
+}
+
+/** Separately rendered parts otherwise each sound like a fresh video: a new greeting, a new pitch, a goodbye. */
+function talkFlow(index: number, clipCount: number): string {
+  if (clipCount === 1) return "";
+  const parts = [
+    index > 0
+      ? `The talk is already under way: this part picks up the same story mid-flow from part ${index} — no greeting, no re-introducing the product, just the next sentences.`
+      : "",
+    index < clipCount - 1 ? "Do not wrap up or say goodbye — the talk continues in the next part." : "",
+  ];
+  return parts.filter(Boolean).join(" ");
+}
+
+/** Rules that stop the model rushing, mangling or repeating Thai speech; tone and sound come from the style. */
+function voiceRules(clipSeconds: number, clipCount: number, onScreen: boolean, playbook: StylePlaybook, gender?: PresenterGender): string {
   return [
-    "Voice: a native Thai speaker with a clear standard Central Thai (Bangkok) accent and correct Thai tones, pronouncing every syllable fully at a relaxed conversational pace — not rushed, not robotic, not sing-song.",
+    `Voice: ${gender === "female" ? "a native Thai woman — the presenter's own voice —" : gender === "male" ? "a native Thai man — the presenter's own voice —" : "a native Thai speaker"} with a clear standard Central Thai (Bangkok) accent and correct Thai tones, pronouncing every syllable fully at a relaxed conversational pace — not rushed, not robotic, not sing-song.`,
     clipCount > 1 ? "Use the same voice (timbre, pitch and accent) as in the other parts of this advert." : "",
-    "Speak the quoted Thai exactly as written, word for word.",
-    `Start speaking at about 0.3 seconds and keep talking through the ${clipSeconds}-second shot at a natural pace, finishing the last word by about ${Math.max(2, clipSeconds - 0.5)} seconds — only short natural breathing pauses between sentences, no long silence.`,
-    "Delivery: warm, upbeat and persuasive, like a creator who genuinely recommends the product — never shouting and never an over-the-top announcer.",
+    "Speak the quoted Thai exactly as written, word for word, with the sentences flowing into each other as one connected thought in natural spoken Thai intonation — like telling a friend, not reading a list of slogans.",
+    // Garbled Thai is mostly wrong tones, clipped final consonants and brand names read in English.
+    pacingRule(playbook.speech, clipSeconds),
+    `Delivery: ${playbook.delivery}; any energy comes from tone and emphasis, never from speed, so every word stays clear — never shouting and never an over-the-top announcer.`,
     "Say each line ONLY ONCE: no repeating, no second take, no echo, no filler sounds, no extra or English words.",
     onScreen
       ? "Lips move in sync only while the words are spoken and the mouth rests closed or smiling when silent; keep the face towards the camera and the head steady while talking."
       : "",
-    "Soft background music kept low under the voice, natural room ambience.",
+    `Sound: ${playbook.soundBed}.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -142,14 +237,6 @@ export function clipCountFor(targetDuration: number, clipSeconds: number): numbe
   return Math.min(MAX_CLIPS, Math.max(1, Math.round(targetDuration / clipSeconds)));
 }
 
-/**
- * Speech longer than this in one clip makes the model rush, garble or cut the
- * line off; when a re-plan squeezes several clips' worth of lines into one,
- * later lines are dropped instead. Kept just above the 10-characters-per-second
- * budget the script writer is given (analysis-prompts.ts), so a script written
- * to that budget survives while a runaway one is still trimmed.
- */
-const MAX_SPEECH_CHARS_PER_SECOND = 11;
 
 /**
  * Emoji, quotes and symbols in a spoken line are read out as noise or make the
@@ -162,6 +249,31 @@ export function speakableThai(text: string | undefined): string {
     .replace(/\s+/g, " ")
     .replace(/\s+([!?,.])/g, "$1")
     .trim();
+}
+
+export type PresenterGender = "female" | "male";
+
+/** Thai question words: a woman ends a question with คะ, a statement with ค่ะ. */
+const THAI_QUESTION = /(ไหม(?!้)|มั้ย|หรือเปล่า|รึเปล่า|หรือยัง|อะไร|ยังไง|อย่างไร|ทำไม|ที่ไหน|ไหน|เท่าไหร่|เท่าไร|กี่|ใคร|เมื่อไหร่)/;
+
+/**
+ * Scripts are written before the presenter is chosen, so the polite particle
+ * is matched to the speaker here. Only particles change — never pronouns
+ * (ผม also means hair) — and only at a word boundary, so คะแนน survives.
+ */
+export function politeParticles(text: string, gender: PresenterGender): string {
+  const boundary = "(?=[\\s!?,.]|$)";
+  if (gender === "male") {
+    return text.replace(new RegExp(`(?:ค่ะ|คะ)${boundary}`, "g"), "ครับ");
+  }
+  return text
+    .replace(new RegExp(`ครับผม${boundary}`, "g"), "ครับ")
+    .replace(new RegExp(`ครับ${boundary}`, "g"), (_match, offset: number, whole: string) => {
+      if (whole.slice(Math.max(0, offset - 2), offset) === "นะ") return "คะ";
+      const clause = whole.slice(0, offset).split(/[\s!?,.]/).pop() ?? "";
+      const asked = whole[offset + 4] === "?" || THAI_QUESTION.test(clause);
+      return asked ? "คะ" : "ค่ะ";
+    });
 }
 
 /** Which run this is when the same content is generated several times in a row. */
@@ -196,10 +308,15 @@ export function describeAspectRatio(aspectRatio: string): string {
 
 /** No-text rule: the prompt carries quoted Thai speech, which models otherwise draw as subtitles in made-up letters. */
 const NO_TEXT_RULE =
-  "[ON-SCREEN TEXT] None. The video contains no written words at all — no captions, subtitles, titles, stickers, labels, signs, handwriting or made-up letters in any alphabet. The spoken Thai lines are heard only and are never written on screen.";
+  "[ON-SCREEN TEXT] None. Nothing is written over the video — no captions, subtitles, titles, stickers, signs, handwriting or made-up letters in any alphabet; the only printing in the frame is the product's own logo and label exactly as in the product photo. The spoken Thai lines are heard only and are never written on screen.";
 
+/**
+ * The label must look like the photo, but asking for its lettering invites
+ * made-up Thai glyphs — so copy the design, never re-letter it, and stay out
+ * of small-print close-ups.
+ */
 const PACKAGING_RULE =
-  "The product packaging shows only its real logo and colours as in the product photo; all other small printing stays soft and unreadable, never invented letters.";
+  "The product's logo, label layout, colours and printed design look exactly as in the product photo. Never add, rewrite or re-letter any text on the product or packaging, and do not zoom in on small print.";
 
 /** One short quoted Thai string, copied as-is; everything else stays text-free. */
 function quotedTextRule(items: string[], scope: string): string {
@@ -216,7 +333,7 @@ function quotedTextRule(items: string[], scope: string): string {
 export function textAvoidList(hasText: boolean): string {
   return hasText
     ? "any text other than the quoted Thai, subtitles, captions, made-up or alien-looking letters, gibberish characters, misspelled Thai, English words"
-    : "any on-screen text, letters, numbers or symbols, subtitles, captions, made-up or alien-looking letters, gibberish characters, English words";
+    : "overlaid on-screen text, letters, numbers or symbols, subtitles, captions, made-up or alien-looking letters, gibberish characters, English words";
 }
 
 /**
@@ -311,39 +428,35 @@ interface SpeechLine {
   end: number;
 }
 
-/**
- * Keeps lines within the character budget. The last line (usually the CTA)
- * is always kept; lines before it are dropped from the end when over budget.
- */
-function fitSpeech<T extends { text: string }>(lines: T[], budget: number): T[] {
-  const length = (line: T) => Array.from(line.text).length;
-  if (lines.length <= 1) return lines;
-  const last = lines[lines.length - 1];
-  let used = length(last);
-  const kept: T[] = [];
-  for (const line of lines.slice(0, -1)) {
-    if (kept.length > 0 && used + length(line) > budget) break;
-    used += length(line);
-    kept.push(line);
-  }
-  return [...kept, last];
-}
+
 
 /**
- * Spoken lines for one clip, in order, trimmed to what fits in the clip.
+ * Spoken lines for one clip, in order; reject overflow without dropping sentences.
  * `spoken` holds lines earlier clips already say, so a line the plan put in
  * two clips is heard once rather than twice in the joined video.
  */
-function speechLines(beats: ReturnType<typeof timeline>, clipSeconds: number, spoken: Set<string>): SpeechLine[] {
+function speechLines(
+  beats: ReturnType<typeof timeline>,
+  clipSeconds: number,
+  spoken: Set<string>,
+  playbook: StylePlaybook,
+  gender?: PresenterGender,
+): SpeechLine[] {
+  if (playbook.speech === "silent") return [];
   const lines: SpeechLine[] = [];
   for (const { start, end, scene } of beats) {
     for (const [kind, raw] of [["dialogue", scene.dialogue], ["voiceover", scene.voiceover]] as const) {
-      const text = speakableThai(raw);
+      const plain = speakableThai(raw);
+      const text = gender ? politeParticles(plain, gender) : plain;
       if (!text || spoken.has(text) || lines.some((line) => line.text === text)) continue;
       lines.push({ kind, text, start, end });
     }
   }
-  return fitSpeech(lines, MAX_SPEECH_CHARS_PER_SECOND * clipSeconds);
+  // No face in a hands-only style, so even older on-screen dialogue is narrated off screen.
+  if (playbook.presenter === "hands") lines.forEach((line) => (line.kind = "voiceover"));
+  // Reject overflow before spending video credits; never silently discard a sentence.
+  assertSpeechFits(lines.map((line) => line.text).join(" "), clipSeconds, playbook.speech);
+  return lines;
 }
 
 export interface PlanClipsInput {
@@ -359,6 +472,26 @@ export interface PlanClipsInput {
   style?: string;
   /** Looks planned with the storyboard; the variant picks which one this run uses. */
   castOptions?: CastLook[];
+  /** Who presents this video; picks a look of that gender and matches voice and ครับ/ค่ะ to it. */
+  presenter?: PresenterGender;
+  /** English description of the product as it looks in its photo (missing on older scene plans). */
+  productLook?: string;
+}
+
+/**
+ * Repeated in every part so the product stays the same even when the photo
+ * could not be attached, or a later part only sees the part before it.
+ */
+function productRule(productName: string, productLook: string | undefined): string {
+  const look = productLook?.trim().replace(/[.。]$/, "");
+  return [
+    `[PRODUCT] ${productName}.`,
+    look ? `Exact appearance, identical in every frame: ${look}.` : "",
+    "Exactly one unit of this same product throughout. It keeps the same shape, proportions, size, colours, material and label design in every frame, never morphs or changes, and is never replaced by a generic, similar or redesigned item.",
+    "Show it clearly in good light with its front and logo towards the camera; hands never cover the logo or the front label.",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
@@ -376,9 +509,14 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
 
   const style = input.style || settings.style;
   const text = styleUsesOnScreenText(style) ? input.text : undefined;
-  const look = `${settings.lighting}, one consistent colour grade, ${style}-style ${settings.camera} footage`;
-  const casts = (input.castOptions ?? []).filter((c) => c.person?.trim() && c.setting?.trim());
+  // Camera, light, voice and sound come from the style, so a POV or ASMR advert is not shot like a talking-head UGC one.
+  const playbook = getStylePlaybook(style);
+  const look = `${playbook.lighting}, one consistent colour grade, ${style}-style footage shot with a ${playbook.camera}`;
+  const hands = playbook.presenter === "hands";
+  const planned = (input.castOptions ?? []).filter((c) => c.person?.trim() && c.setting?.trim());
+  const casts = castsFor(planned, input.presenter, playbook.presenter);
   const cast = casts.length ? casts[(variant?.index ?? 0) % casts.length] : undefined;
+  const gender = input.presenter ?? (cast ? castGender(cast) : undefined);
   const groups = groupScenes(scenes, clipCount);
   const spoken = new Set<string>();
 
@@ -398,19 +536,28 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     sections.push(
       `[FORMAT] ${describeAspectRatio(settings.aspectRatio)} video. ${look}. Sharp focus, natural motion, realistic hands and faces.`,
     );
-    sections.push(`[PRODUCT] ${productName}. The same single product throughout, never replaced by a generic or similar item.`);
-    sections.push(`[STYLE EXECUTION] ${styleVideoDirection(style)}`);
+    sections.push(productRule(productName, input.productLook));
+    sections.push(`[STYLE EXECUTION] ${playbook.videoDirection}.`);
+    sections.push(REAL_AD_LOOK);
 
     if (cast) {
-      sections.push(`[CAST] ${cast.person}. Exactly this person and wardrobe in every part — same face, hair, body and clothes.`);
+      sections.push(
+        hands
+          ? `[CAST] ${cast.person}. Only these hands are seen — the same hands, nails and sleeves in every part, and never a face.`
+          : `[CAST] ${cast.person}. Exactly this person and wardrobe in every part — same face, hair, body and clothes.`,
+      );
       sections.push(`[SETTING] ${cast.setting}. Same location, time of day and light direction in every part.`);
     } else if (longTake) {
-      sections.push("[CAST & SETTING] One person, one wardrobe and one location for the whole video — face, hair, clothes, time of day and light direction never change.");
+      sections.push(
+        hands
+          ? "[CAST & SETTING] One pair of hands, one set of sleeves and one location for the whole video — hands, sleeves, time of day and light direction never change."
+          : "[CAST & SETTING] One person, one wardrobe and one location for the whole video — face, hair, clothes, time of day and light direction never change.",
+      );
     } else if (clipCount > 1) {
       sections.push(
         isFirst
-          ? "[CAST & SETTING] Establish one person, wardrobe and location that every later part must keep."
-          : `[CAST & SETTING] Identical person (face, hair, body), wardrobe, location, time of day and light direction as part ${index}.`,
+          ? `[CAST & SETTING] Establish ${hands ? "one pair of hands, sleeves" : "one person, wardrobe"} and location that every later part must keep.`
+          : `[CAST & SETTING] Identical ${hands ? "hands, nails, sleeves" : "person (face, hair, body), wardrobe"}, location, time of day and light direction as part ${index}.`,
       );
     }
 
@@ -434,53 +581,49 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
     );
 
     // A continuation clip does not re-speak the lines its first stage already said.
-    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats, clipSeconds, spoken);
+    const speech = group.continuation && group.continuation.part > 1 ? [] : speechLines(beats, clipSeconds, spoken, playbook, gender);
     speech.forEach((line) => spoken.add(line.text));
     const onScreenSpeaker = speech.some((line) => line.kind === "dialogue");
     sections.push(
       speech.length
         ? [
             `[AUDIO] The complete spoken script for this ${clipCount === 1 ? "video" : "part"}, in this order:`,
-            speech
-              .map((line, i) =>
-                // Long single generations keep per-line timing so each line lands on its beat; in 8-second clips narrow windows made the model rush.
-                `${speech.length > 1 ? `${i + 1}) ` : ""}${clipSeconds > 10 ? `[${line.start}-${line.end}s] ` : ""}${line.kind === "dialogue" ? "The person on screen says in Thai" : "An off-screen narrator says in Thai"}: ${quoteExact(line.text)}`,
-              )
-              .join(" "),
-            voiceRules(clipSeconds, clipCount, onScreenSpeaker),
+            scriptText(speech, clipSeconds),
+            talkFlow(index, clipCount),
+            voiceRules(clipSeconds, clipCount, onScreenSpeaker, playbook, gender),
           ].join(" ")
-        : "[AUDIO] No speech or voiceover — nobody talks and lips stay closed. Natural ambient sound and light upbeat background music only.",
+        : `[AUDIO] No dialogue or narration. ${playbook.soundBed}.`,
     );
 
-    sections.push(MOTION_RULES);
+    sections.push(motionRules(playbook.presenter));
+    sections.push(`[PERFORMANCE] ${stylePerformance(style)}`);
 
-    const motions = group.scenes.map((scene) => safeCameraMotion(scene.cameraMotion)).filter(Boolean).join(", then ");
-    const motion =
-      motions || (longTake ? DEFAULT_CAMERA_MOTIONS.join(", then ") : DEFAULT_CAMERA_MOTIONS[Math.min(index, DEFAULT_CAMERA_MOTIONS.length - 1)]);
+    const motions = group.scenes.map((scene) => safeCameraMotion(scene.cameraMotion, playbook.presenter)).find(Boolean);
+    const subject = playbook.presenter === "hands" ? "the hands and the product" : "the same person and product";
+    const noSpin = playbook.presenter === "hands" ? "the product is not spun around" : "the person does not spin or turn around";
+    const motion = styleCameraMotion(style, motions);
     sections.push(
       longTake
-        ? `[CAMERA] ${motion}. Slow, stable, motivated camera moves on a steady handheld or gimbal; a clean cut between beats is fine, but no jarring jump cuts, and the person, product, location and lighting look identical in every shot.`
+        ? `[CAMERA] ${motion}. Slow, stable, motivated camera moves; a clean cut between beats is fine, but no jarring jump cuts, and ${playbook.presenter === "hands" ? "the hands" : "the person"}, product, location and lighting look identical in every shot.`
         : isFirst || clipCount === 1
-        ? `[CAMERA] One continuous, stable take with no cuts: ${motion}. The camera moves slowly; the person does not spin or turn around.`
-        : `[CAMERA] Open on a calm, steady medium shot of the same person and product, continuing naturally from the end of part ${index}, then ${motion}. One continuous, stable take; the person does not spin or turn around.`,
+        ? `[CAMERA] One continuous, stable take with no cuts: ${motion}. The camera moves slowly; ${noSpin}.`
+        : `[CAMERA] Open on a calm, steady shot of ${subject}, continuing naturally from the end of part ${index}, then ${motion}. One continuous, stable take; ${noSpin}.`,
     );
 
     // Repeated runs of the same content would otherwise come back as near-identical videos.
     if (variant && variant.total > 1) {
       sections.push(
-        cast && casts.length > 1
+        // A fixed [CAST] line already names the person, so only the framing can change.
+        cast
           ? `[VARIATION] Version ${variant.index + 1} of ${variant.total}: use a noticeably different camera angle and framing from the other versions while following the timeline above.`
-          : `[VARIATION] Version ${variant.index + 1} of ${variant.total}: make it clearly different from the other versions — a different person, setting and camera angle — while keeping the same product and message.`,
+          : `[VARIATION] Version ${variant.index + 1} of ${variant.total}: make it clearly different from the other versions — ${hands ? "different hands styling" : "a different person"}, setting and camera angle — while keeping the same product and message.`,
       );
     }
 
     const onScreen = onScreenTextRule(index, clipCount, text);
     sections.push(onScreen.rule);
     sections.push(
-      "[AVOID] Head or body spinning or rotating unnaturally, head turning past the shoulders, twisted neck, the person turning their back to the camera, limbs bending the wrong way, hands passing through objects, morphing face or body, product changing shape or colour, duplicate products, deformed hands or extra fingers, sudden face, clothing, location or lighting change" +
-        (isFirst ? "" : ", a jump cut at the start") +
-        (clipCount === 1 ? `, ending before ${clipSeconds} seconds` : "") +
-        ", looping or replaying earlier moments, repeated or stuttered words, speaking a line twice, mumbling or garbled Thai speech, lips moving without speech, fake logos, watermarks, " + textAvoidList(onScreen.hasText) + ".",
+      "[AVOID] Deformed anatomy, impossible contact, product redesign or morphing, duplicate copies of the advertised product, unstable camera, sudden identity or lighting changes, replayed actions, repeated words, garbled speech, lip movement without dialogue, watermarks, " + textAvoidList(onScreen.hasText) + ".",
     );
 
     return {

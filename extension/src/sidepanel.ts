@@ -1304,11 +1304,13 @@ interface KeyStatus {
 }
 
 function loadSettings() {
-  send<{ ok: boolean; settings?: { geminiModel: string; flowProjectUrl: string; textSource?: string } }>({
+  send<{ ok: boolean; settings?: { geminiModel: string; flowProjectUrl: string; textSource?: string; presenter?: string } }>({
     type: "GET_SETTINGS",
   }).then((result) => {
     const settings = result?.settings;
     if (!settings) return;
+    ($("presenter") as HTMLSelectElement).value =
+      settings.presenter === "female" || settings.presenter === "male" ? settings.presenter : "alternate";
     ($("text-source") as HTMLSelectElement).value =
       settings.textSource === "api" || settings.textSource === "chatgpt-web" ? settings.textSource : "gemini-web";
     ($("gemini-model") as HTMLInputElement).value = settings.geminiModel;
@@ -1410,6 +1412,11 @@ $("save-settings").addEventListener("click", () => {
       renderKeyStatus();
     },
   );
+});
+
+// Saved as soon as it changes: every way of starting a video (button, batch, autopilot) reads it.
+$("presenter").addEventListener("change", () => {
+  void send({ type: "SAVE_SETTINGS", settings: { presenter: ($("presenter") as HTMLSelectElement).value } });
 });
 
 /* ---------- boot ---------- */

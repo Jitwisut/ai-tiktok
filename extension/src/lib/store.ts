@@ -40,7 +40,11 @@ export interface Scene {
 export interface CastOption {
   person: string;
   setting: string;
+  gender?: "female" | "male";
 }
+
+/** Who presents the videos: always a woman, always a man, or take turns video by video. */
+export type PresenterChoice = "alternate" | "female" | "male";
 
 export interface Content {
   id: string;
@@ -57,6 +61,8 @@ export interface Content {
   angle?: string;
   /** Alternative looks; repeated runs of the same content take the next one. */
   castOptions?: CastOption[];
+  /** English description of the product as seen in its photo, repeated in every clip prompt. */
+  productLook?: string;
   scenes: Scene[];
 }
 
@@ -83,6 +89,8 @@ export interface VideoJob {
   mergeError?: string | null;
   /** Last TikTok Studio posting attempt (tiktok-upload.ts). */
   tiktokPost?: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
+  /** Presenter picked when the job was created, so a re-plan keeps the same person. */
+  presenter?: "female" | "male";
 }
 
 export interface Settings {
@@ -95,6 +103,8 @@ export interface Settings {
    * ChatGPT web, or the Gemini API keys below.
    */
   textSource?: TextSource;
+  /** Presenter for new videos; missing means "alternate". */
+  presenter?: PresenterChoice;
 }
 
 /**
@@ -405,12 +415,13 @@ export async function countContents(productId: string): Promise<number> {
   return contents.filter((c) => c.productId === productId).length;
 }
 
-export async function setScenes(contentId: string, scenes: Scene[], castOptions?: CastOption[]): Promise<void> {
+export async function setScenes(contentId: string, scenes: Scene[], castOptions?: CastOption[], productLook?: string): Promise<void> {
   const contents = await getAll("contents");
   const content = contents.find((c) => c.id === contentId);
   if (!content) return;
   content.scenes = scenes;
   if (castOptions) content.castOptions = castOptions;
+  if (productLook?.trim()) content.productLook = productLook.trim();
   await setAll("contents", contents);
 }
 
@@ -462,12 +473,18 @@ export async function getVideo(videoId: string): Promise<VideoJob | null> {
   return videos.find((v) => v.id === videoId) ?? null;
 }
 
+/** All videos ever created — "alternate" takes turns on this, across contents and autopilot runs. */
+export async function countVideos(): Promise<number> {
+  return (await getAll("videos")).length;
+}
+
 export async function createVideoJob(input: {
   contentId: string;
   clips: VideoJobClip[];
   duration: number;
   aspectRatio: string;
   targetDuration: number;
+  presenter?: "female" | "male";
 }): Promise<VideoJob> {
   const videos = await getAll("videos");
   const video: VideoJob = {
@@ -478,6 +495,7 @@ export async function createVideoJob(input: {
     duration: input.duration,
     aspectRatio: input.aspectRatio,
     targetDuration: input.targetDuration,
+    presenter: input.presenter,
     clipsReceived: 0,
     errorMessage: null,
     createdAt: Date.now(),

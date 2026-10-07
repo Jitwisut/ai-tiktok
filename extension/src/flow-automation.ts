@@ -383,7 +383,6 @@ function flowTileRetryButton(tile: HTMLElement): HTMLButtonElement | undefined {
 }
 
 const FLOW_MAX_TILE_RETRIES = 2;
-const FLOW_MAX_FRESH_RESUBMITS = 2;
 const FLOW_TILE_RETRY_SETTLE_MS = 20_000;
 
 /**
@@ -935,11 +934,25 @@ async function flowEnsureSettings(aspectRatio: string): Promise<FlowSettingsResu
     ),
   );
   const visibleRadios = () => Array.from(document.querySelectorAll<HTMLElement>('[role="radio"]')).filter(onScreen);
-  const labelOf = (radio: HTMLElement) => (
-    radio.getAttribute("aria-label") || radio.innerText || radio.textContent || ""
-  ).trim();
-  const menuOpen = () => visibleRadios().some((radio) => /(?:Video|วิดีโอ)$/i.test(labelOf(radio))) &&
-    visibleRadios().some((radio) => /(?:16:9|9:16)$/.test(labelOf(radio)));
+  // Flow draws each option's icon as ligature text, so "9:16" reads as
+  // "crop_9_16 9:16" — in the text and sometimes in aria-label too. Strip the
+  // icon's own text and any snake_case icon name before matching.
+  const labelsOf = (radio: HTMLElement) => {
+    const icons = Array.from(radio.querySelectorAll("mat-icon, i, .material-symbols-outlined, .google-symbols"))
+      .map((icon) => icon.textContent?.trim() ?? "")
+      .filter(Boolean);
+    return [radio.getAttribute("aria-label"), radio.innerText, radio.textContent]
+      .map((raw) => {
+        let text = raw ?? "";
+        for (const name of icons) text = text.split(name).join(" ");
+        return text.replace(/\b[a-z]+(?:_[a-z0-9]+)+\b/g, " ").replace(/\s+/g, " ").trim();
+      })
+      .filter(Boolean);
+  };
+  const labelOf = (radio: HTMLElement) => labelsOf(radio)[0] ?? "";
+  const labelMatches = (radio: HTMLElement, wanted: RegExp) => labelsOf(radio).some((label) => wanted.test(label));
+  const menuOpen = () => visibleRadios().some((radio) => labelMatches(radio, /(?:Video|วิดีโอ)$/i)) &&
+    visibleRadios().some((radio) => labelMatches(radio, /(?:16:9|9:16)$/));
   const covered = () => Boolean(agentHeading()) || menuOpen();
   const ratio = aspectRatio === "16:9" ? "16:9" : "9:16";
 
@@ -1021,19 +1034,29 @@ async function flowEnsureSettings(aspectRatio: string): Promise<FlowSettingsResu
   }
 
   if (agentHeading()) {
+    // Newer Flow renders the choices as plain toggle buttons rather than role="radio".
+    const OPTION = '[role="radio"], button';
     const videoGroup = (kind: "ratio" | "count") => Array.from(document.querySelectorAll<HTMLElement>('[role="radiogroup"], [aria-label]'))
       .filter((element) => {
         const label = element.getAttribute("aria-label") ?? "";
         return onScreen(element) && /video|วิดีโอ/i.test(label) &&
           (kind === "ratio" ? /ratio|สัดส่วน/i : /output|เอาต์พุต|จำนวน/i).test(label) &&
-          element.querySelector('[role="radio"]');
+          element.querySelector(OPTION);
       })
-      .sort((a, b) => a.querySelectorAll('[role="radio"]').length - b.querySelectorAll('[role="radio"]').length)[0];
+      .sort((a, b) => a.querySelectorAll(OPTION).length - b.querySelectorAll(OPTION).length)[0];
     const choose = async (kind: "ratio" | "count", wanted: RegExp): Promise<boolean> => {
-      const group = videoGroup(kind);
-      const options = Array.from((group ?? document).querySelectorAll<HTMLElement>('[role="radio"]')).filter(
-        (radio) => radio.getBoundingClientRect().width > 0 && wanted.test(labelOf(radio)),
+      const found = (scope: ParentNode) => Array.from(scope.querySelectorAll<HTMLElement>(OPTION)).filter(
+        (radio) => radio.getBoundingClientRect().width > 0 && labelMatches(radio, wanted),
       );
+      // A labelled group that turns out not to hold the options is no help — fall back to the page.
+      let group: HTMLElement | undefined = videoGroup(kind);
+      let matches = group ? found(group) : [];
+      if (!matches.length) {
+        group = undefined;
+        matches = found(document);
+      }
+      // A button inside a role="radio" matches twice; keep the outer one.
+      const options = matches.filter((radio) => !matches.some((other) => other !== radio && other.contains(radio)));
       // When Flow supplies no group label, its image defaults are first and
       // video defaults last. Never take the first identically named radio.
       const option = group ? options[0] : options[options.length - 1];
@@ -1048,7 +1071,13 @@ async function flowEnsureSettings(aspectRatio: string): Promise<FlowSettingsResu
       await new Promise((resolve) => setTimeout(resolve, 250));
       return true;
     };
-    if (!(await choose("ratio", new RegExp(`^${ratio}$`)))) return giveUp(`ไม่พบตัวเลือกสัดส่วน ${ratio}`);
+    if (!(await choose("ratio", new RegExp(`^${ratio}$`)))) {
+      // Show what the matcher actually read, so the next Flow redesign is a one-line fix.
+      console.warn("[AI Affiliate Studio] Flow ratio labels:", Array.from(document.querySelectorAll<HTMLElement>('[role="radio"], button'))
+        .filter((el) => /\d+:\d+/.test(el.textContent ?? "") || /\d+:\d+/.test(el.getAttribute("aria-label") ?? ""))
+        .map((el) => `${el.tagName.toLowerCase()}${el.getAttribute("role") ? `[role=${el.getAttribute("role")}]` : ""} aria=${JSON.stringify(el.getAttribute("aria-label"))} text=${JSON.stringify(el.innerText)} -> ${JSON.stringify(labelsOf(el))} w=${Math.round(el.getBoundingClientRect().width)}`));
+      return giveUp(`ไม่พบตัวเลือกสัดส่วน ${ratio}`);
+    }
     if (!(await choose("count", /^x1$/i))) return giveUp("ไม่พบตัวเลือกจำนวน x1");
     const save = action(/^(Save|บันทึก)$/i);
     if (!save) return giveUp("ไม่พบปุ่มบันทึกในการตั้งค่า Agent");
@@ -1059,7 +1088,7 @@ async function flowEnsureSettings(aspectRatio: string): Promise<FlowSettingsResu
   }
 
   for (const wanted of [/(?:Video|วิดีโอ)$/i, new RegExp(`${ratio}$`), /x1$/i]) {
-    const option = visibleRadios().find((radio) => wanted.test(labelOf(radio)));
+    const option = visibleRadios().find((radio) => labelMatches(radio, wanted));
     if (!option) return giveUp(`ไม่พบตัวเลือก ${wanted.source}`);
     if (option.getAttribute("aria-checked") !== "true") {
       option.click();
@@ -1129,6 +1158,10 @@ async function flowSubmitAndWaitOnce(
   if (clip.index > 0 && withContinuity) {
     flowShowBanner(`AI Affiliate Studio: ${label} กำลังแนบคลิปก่อนหน้า...`, "#111827");
     clipAttached = await flowAttachPreviousClip();
+    if (!clipAttached) {
+      flowShowBanner(`${label} แนบคลิปอ้างอิงก่อนหน้าไม่สำเร็จ — ลองสร้างช่วงนี้ใหม่`, "#dc2626");
+      return null;
+    }
   }
 
 
@@ -1138,12 +1171,15 @@ async function flowSubmitAndWaitOnce(
   // first. Say what to copy from it and what must differ — asking only for a
   // match makes the agent re-render the same shot.
   const continuation = clipAttached
-    ? " The attached video is the previous part. Start this part as a direct continuation of its LAST frame — same person, wardrobe, location, product, lighting, colour grade and camera position — then follow the [TIMELINE] and [CAMERA] above so the two parts join without a visible cut. Do not replay or copy the attached footage."
+    ? ` The attached video is the previous part. Start this part as a direct continuation of its LAST frame — same person, wardrobe, location, lighting, colour grade and camera position — then follow the [TIMELINE] and [CAMERA] above so the two parts join without a visible cut. Do not replay or copy the attached footage.${
+        // Copying the product from the previous part lets small errors pile up part after part.
+        imageAttached ? " Take the product's look from the attached product photo, not from the previous part." : " Keep the same product."
+      }`
     : "";
 
   // Without this the product in the clip is whatever the model imagines from the name.
   const productReference = imageAttached
-    ? " The attached photo shows the exact product being advertised. The product in the video must look exactly like that photo — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as the video's first frame or background. No other brand's logo or packaging may appear anywhere in the frame."
+    ? " The attached photo shows the exact product being advertised and is the only reference for how the product looks. In every frame the product must match it exactly — same shape, proportions, size, colours, pattern, material, cap or lid, logo position and label design — never a similar, generic or redesigned item, and no text on it is added or re-lettered. Use the photo only as the product reference, not as the video's first frame or background. No other brand's logo or packaging may appear."
     : "";
 
   // Flow's agent decides between image and video on its own, so say it outright.
@@ -1346,39 +1382,13 @@ async function flowGenerateClip(
     return null;
   }
 
-  let withContinuity = clip.index > 0;
-  let image = productImage;
-  let freshResubmits = 0;
+  const withContinuity = clip.index > 0;
+  const image = productImage;
   for (let attempt = 1; attempt <= FLOW_MAX_IMAGE_RETRIES; ) {
     const result = await flowSubmitAndWaitOnce(clip, label, aspectRatio, withContinuity, image);
 
-    // Veo's safety filter is inconsistent, and a clip of a real-looking
-    // person attached as a reference trips it far more often than the text
-    // alone. Retry without the previous clip first — the product photo is
-    // what keeps the product right, so it is dropped only as a last resort.
-    if (result?.startsWith("นโยบาย") && !flowCancelled && (withContinuity || image)) {
-      if (withContinuity) {
-        withContinuity = false;
-        flowShowBanner(`${label} Flow ปฏิเสธ prompt — ลองใหม่แบบไม่แนบคลิปก่อนหน้า...`, "#d97706");
-      } else {
-        image = null;
-        flowShowBanner(`${label} Flow ปฏิเสธ prompt — ลองใหม่แบบไม่แนบรูปสินค้า (สินค้าในคลิปอาจไม่ตรง)...`, "#d97706");
-      }
-      continue;
-    }
-
-    // A failed tile is not always the policy filter — Veo's audio pass
-    // ("สร้างเสียงไม่สำเร็จ") fails at random too. With nothing left to drop,
-    // send the whole prompt again as a new generation.
-    if (result?.startsWith("นโยบาย") && !flowCancelled && freshResubmits < FLOW_MAX_FRESH_RESUBMITS) {
-      freshResubmits += 1;
-      flowShowBanner(
-        `${label} Flow สร้างคลิปไม่สำเร็จ — สั่งสร้างวิดีโอใหม่อีกครั้ง (${freshResubmits}/${FLOW_MAX_FRESH_RESUBMITS})...`,
-        "#d97706",
-      );
-      continue;
-    }
-
+    // Keep product and continuity references on every attempt. A policy
+    // rejection stops this clip rather than degrading its visual identity.
     if (result !== IMAGE_INSTEAD_OF_VIDEO) {
       // null (a real failure, already banner'd) or a genuine video src.
       if (result?.startsWith("เครดิต") || result?.startsWith("นโยบาย")) return null;

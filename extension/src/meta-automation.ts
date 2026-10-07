@@ -495,7 +495,7 @@ function metaComposePrompt(job: MetaVideoJob, imageAttached: boolean): string {
       : `Generate one ${orientation} video, about ${seconds} seconds long, with spoken Thai audio.`;
 
   const productReference = imageAttached
-    ? " The attached photo shows the exact product being advertised: the product in every video must match it — same shape, colours, pattern, material and packaging design — and must not be replaced by a similar or generic item. Use the photo only as the product reference, not as an opening frame or background. No other brand's logo or packaging may appear."
+    ? " The attached photo shows the exact product being advertised and is the only reference for how the product looks. In every frame of every video the product must match it exactly — same shape, proportions, size, colours, pattern, material, cap or lid, logo position and label design — never a similar, generic or redesigned item, and no text on it is added or re-lettered. Use the photo only as the product reference, not as an opening frame or background. No other brand's logo or packaging may appear."
     : "";
 
   const scenes = job.clips
