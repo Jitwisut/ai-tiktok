@@ -48,3 +48,6 @@ next-env.d.ts
 /src/generated/prisma
 extension/dist/
 extension/node_modules/
+phone-bridge/node_modules/
+
+extension/release/

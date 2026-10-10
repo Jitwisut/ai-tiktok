@@ -187,6 +187,30 @@ function scrapeSelectedProducts(): ScrapedTikTokProduct[] {
 }
 
 chrome.runtime.onMessage.addListener((message: { type?: string }, _sender, sendResponse) => {
+  if (message?.type === "SCRAPE_SHOPEE_PRODUCTS") {
+    const productUrl = /(?:-i\.\d+\.\d+|\/product\/\d+\/\d+)(?:\/|$)/;
+    if (!/(^|\.)shopee\.co\.th$/.test(location.hostname)) { sendResponse({ error: "หน้านี้ไม่ใช่ Shopee" }); return; }
+    if (productUrl.test(location.pathname)) {
+      const extracted = extractProduct();
+      sendResponse("error" in extracted ? extracted : { products: [extracted] });
+      return;
+    }
+    const products: ExtractedProduct[] = [];
+    const seen = new Set<string>();
+    for (const box of findCheckedProductBoxes()) {
+      const row = findRow(box);
+      if (!row) continue;
+      const link = Array.from(row.querySelectorAll<HTMLAnchorElement>("a[href]")).find((a) => productUrl.test(new URL(a.href).pathname) && /(^|\.)shopee\.co\.th$/.test(new URL(a.href).hostname));
+      if (!link || seen.has(link.href)) continue;
+      const price = extractPrice(row.innerText);
+      const name = link.textContent?.trim() || row.querySelector("img")?.alt?.trim();
+      if (!name) continue;
+      seen.add(link.href);
+      products.push({ url: link.href, name, price: price === undefined ? undefined : String(price), image: extractRowImage(row) });
+    }
+    sendResponse(products.length ? { products } : { error: "เปิดหน้าสินค้า Shopee จริง หรือเลือกแถวสินค้าที่มีลิงก์สินค้า ก่อนกดนำเข้า" });
+    return;
+  }
   if (message?.type === "EXTRACT_PRODUCT") {
     sendResponse(extractProduct());
     return;

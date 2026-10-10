@@ -51,6 +51,9 @@
       .view[hidden] {
         display: none;
       }
+      #view-phone .hint { color: #b3bed0; line-height: 1.65; }
+      #view-phone textarea { background: #1f2937; color: #f9fafb; border: 1px solid #374151; border-radius: 6px; padding: 8px; }
+      #phone-transfers section { scroll-margin-top: 60px; }
       .section-title {
         font-size: 11px;
         font-weight: 700;
@@ -340,12 +343,25 @@
       <button id="tab-products" class="active">สินค้า</button>
       <button id="tab-library">คลัง/งาน</button>
       <button id="tab-autopilot">อัตโนมัติ</button>
+      <button id="tab-phone">มือถือ</button>
       <button id="tab-settings">ตั้งค่า</button>
     </div>
+
+    <section style="padding:12px 14px;border-bottom:1px solid #374151" aria-label="สิทธิ์ใช้โปรแกรม">
+      <strong>License ใช้งานโปรแกรม</strong>
+      <p id="license-status" role="status" aria-live="polite">กำลังตรวจสิทธิ์...</p>
+      <p id="license-remaining" class="hint"></p>
+      <label for="license-key">License Key จากผู้ขาย (แยกจาก Gemini API Key)</label>
+      <input id="license-key" type="password" autocomplete="off" placeholder="AAS_..." style="margin:6px 0" />
+      <button id="license-activate" class="btn btn-primary">เปิดใช้คีย์</button>
+      <button id="license-refresh" class="btn">ตรวจสิทธิ์อีกครั้ง</button>
+      <button id="license-resume" class="btn">ทำงานที่พักต่อ</button>
+    </section>
 
     <div id="view-products" class="view">
       <div class="section-title">คลังสินค้า</div>
       <div class="row">
+        <button id="get-shopee-product" class="btn btn-primary">ดึงจากหน้า Shopee</button>
         <button id="get-product" class="btn btn-primary">ดึงจากหน้า TikTok</button>
         <button id="sync-showcase" class="btn btn-primary">ดึงสินค้าจาก Showcase</button>
         <button id="add-current-page" class="btn">+ เพิ่มจากหน้านี้</button>
@@ -354,6 +370,7 @@
         <button id="download-json" class="btn">Download JSON</button>
         <input id="import-file" type="file" accept="application/json" style="display: none" />
       </div>
+      <div id="shopee-import-status" role="status" aria-live="polite" style="color:#9ca3af;font-size:12px;margin-bottom:8px">Shopee: เปิดหน้าสินค้า หรือข้อเสนอผลิตภัณฑ์ในเว็บ Affiliate แล้วกดดึง เพื่อนำเข้าโปรแกรมสำหรับสร้างวิดีโอ</div>
       <div id="catalog-status"></div>
 
       <div class="section-title">การเลือก</div>
@@ -364,6 +381,7 @@
 
       <div class="section-title">รีวิวและสร้างวิดีโอ</div>
       <div class="row">
+        <select id="publish-platform" title="แพลตฟอร์มของวิดีโอ"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
         <select id="style"></select>
         <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
           <option value="8">8 วิ · คลิปเดียว</option>
@@ -481,6 +499,7 @@
           <div class="hint">ใช้แหล่งนี้กับการวิเคราะห์สินค้า เขียนสคริปต์ และวางฉากตลอดรอบอัตโนมัติ ต้องล็อกอินเว็บที่เลือกไว้ใน Chrome</div>
         </div>
         <div class="row">
+          <select id="ap-platform" title="ปลายทางโพสต์"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
           <select id="ap-style"></select>
           <select id="ap-duration">
             <option value="8" selected>8 วิ · คลิปเดียว</option>
@@ -502,7 +521,7 @@
             <option value="none">สร้างวิดีโออย่างเดียว ไม่โพสต์</option>
           </select>
         </div>
-        <div class="hint">
+        <div class="hint" id="ap-post-hint">
           โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง
         </div>
 
@@ -520,7 +539,7 @@
           <button id="ap-start" class="btn btn-success">เริ่มระบบอัตโนมัติ</button>
         </div>
         <div class="hint">
-          ระหว่างทำงาน เปิด Chrome ค้างไว้และอย่าให้เครื่องหลับ — เบราว์เซอร์ที่ย่อไว้หรือเครื่องที่หลับจะหยุดการอัปโหลดของ Flow/TikTok
+          ระหว่างทำงาน เปิด Chrome ค้างไว้และอย่าให้เครื่องหลับ — เบราว์เซอร์ที่ย่อไว้หรือเครื่องที่หลับจะหยุดการอัปโหลดของ เว็บสร้างวิดีโอและเว็บโพสต์
         </div>
       </div>
 
@@ -533,6 +552,33 @@
 
       <div class="section-title">ประวัติ</div>
       <div id="ap-history"></div>
+    </div>
+
+    <div id="view-phone" class="view" hidden>
+      <div class="section-title">โพสต์ Shopee ผ่าน Android / iPhone</div>
+      <p class="hint">รับคลิป แคปชัน และลิงก์สินค้าผ่าน Wi-Fi เดียวกัน จากนั้นปักสินค้าและกดโพสต์ในแอป Shopee ใช้ได้ทั้ง Windows และ macOS</p>
+      <details>
+        <summary>ติดตั้งและเปิด Phone Bridge ครั้งแรก</summary>
+        <p class="hint">ติดตั้ง Node.js 20 ขึ้นไป แล้วเปิดโฟลเดอร์ phone-bridge ที่มาพร้อมโปรแกรม</p>
+        <p class="hint">Windows: ดับเบิลคลิก start-windows.cmd<br>macOS: ดับเบิลคลิก start-mac.command<br>หรือเปิด Terminal ในโฟลเดอร์โปรแกรมแล้วรัน npm run phone:setup ตามด้วย npm run phone:bridge</p>
+        <p class="hint">เปิดหน้าต่าง Phone Bridge ไว้ คัดลอกรหัส 6 หลักด้านล่าง หาก Firewall ถาม ให้อนุญาต Node.js ในเครือข่ายส่วนตัว ไม่ใช้ Wi-Fi สาธารณะ คลิปจะส่งผ่านเครือข่ายนี้โดยไม่อัปโหลดขึ้นคลาวด์</p>
+      </details>
+      <div id="phone-connect-form">
+        <div class="field"><label for="phone-code">รหัส 6 หลักจาก Phone Bridge</label><input id="phone-code" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="123456"></div>
+        <div class="field"><label for="phone-port">พอร์ต (ใช้ค่าเดิมหากไม่ได้เปลี่ยน)</label><input id="phone-port" type="text" inputmode="numeric" value="47832"></div>
+        <button id="phone-connect" class="btn btn-primary">เชื่อมต่อ Phone Bridge</button>
+      </div>
+      <div id="phone-connected" hidden>
+        <div class="row"><button id="phone-refresh" class="btn">อัปเดตสถานะ</button><button id="phone-disconnect" class="btn">ตัดการเชื่อมต่อ</button></div>
+        <div class="field"><label for="phone-address">IP สำหรับมือถือ (Wi-Fi เดียวกัน)</label><select id="phone-address"></select></div>
+        <div class="field"><label for="phone-video">คลิป Shopee ที่สร้างเสร็จแล้ว</label><select id="phone-video"></select></div>
+        <div class="field"><label for="phone-caption">แคปชัน (ไม่เกิน 150 ตัวอักษร)</label><textarea id="phone-caption" rows="3" maxlength="150" style="width:100%"></textarea></div>
+        <p id="phone-product" class="hint"></p>
+        <button id="phone-send" class="btn btn-primary">ส่งคลิปและสร้าง QR รับบนมือถือ</button>
+        <div id="phone-transfers"></div>
+      </div>
+      <p id="phone-status" class="hint" role="status" aria-live="polite">ยังไม่ได้เชื่อมต่อ Phone Bridge</p>
+      <p class="hint">ลิงก์รับคลิปมีอายุ 30 นาที เก็บเฉพาะคลิปที่คุณเลือก ไม่ส่งรหัสผ่าน Shopee หากสแกนไม่ได้ ปิด VPN หรือเลือก IP Wi-Fi อื่น และตรวจ Firewall / การแยกอุปกรณ์บนเราเตอร์</p>
     </div>
 
     <div id="view-settings" class="view" hidden>

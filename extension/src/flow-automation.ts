@@ -7,6 +7,7 @@ interface FlowClip {
 }
 
 interface FlowVideoJob {
+  startIndex?: number;
   videoId: string;
   clips: FlowClip[];
   duration: number;
@@ -144,14 +145,14 @@ function flowReportProgress(videoId: string, current: number, total: number, sta
 }
 
 async function flowWaitFor<T>(
-  fn: () => T | undefined,
+  fn: () => T | undefined | Promise<T | undefined>,
   timeoutMs: number,
   intervalMs: number,
 ): Promise<T | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (flowCancelled) return undefined;
-    const result = fn();
+    const result = await fn();
     if (result) return result;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
@@ -1208,6 +1209,7 @@ async function flowSubmitAndWaitOnce(
   // Failed tiles from an earlier attempt stay on the grid; only a tile that
   // fails during this attempt is ours to retry.
   const staleFailedTiles = new WeakSet<HTMLElement>(flowLeadingTiles().filter(flowTileFailed));
+  await extensionRequireLicense();
   start.click();
 
   // The agent asks to confirm the credit spend, but only when the account
@@ -1219,7 +1221,7 @@ async function flowSubmitAndWaitOnce(
     90000,
     1000,
   );
-  if (outcome && outcome !== "generating") (outcome as HTMLElement).click();
+  if (outcome && outcome !== "generating") { await extensionRequireLicense(); (outcome as HTMLElement).click(); }
 
   flowShowBanner(
     `AI Affiliate Studio: ${label} กำลังสร้าง (Flow อาจเข้าคิวหลายนาที) — ห้ามปิดแท็บนี้`,
@@ -1243,13 +1245,14 @@ async function flowSubmitAndWaitOnce(
   let tileRetries = 0;
   let lastTileRetryAt = 0;
   let policySeenAt = 0;
-  const pollForResult = () => {
+  const pollForResult = async () => {
     // The agent can take a while to think before it asks, and while it
     // thinks its send button shows "stop" — so the pre-wait above can
     // move on before the card appears. Keep answering it here.
     const approve = flowFindApprove();
     if (approve && !approvedCards.has(approve)) {
       approvedCards.add(approve);
+      await extensionRequireLicense();
       approve.click();
     }
 
@@ -1267,6 +1270,7 @@ async function flowSubmitAndWaitOnce(
         lastTileRetryAt = Date.now();
         sawGeneration = false;
         lastKickAt = Date.now();
+        await extensionRequireLicense();
         retry.click();
         flowShowBanner(
           `AI Affiliate Studio: ${label} Flow บล็อกคลิป (อาจผิดนโยบาย) — กดสร้างใหม่ให้อัตโนมัติ (${tileRetries}/${FLOW_MAX_TILE_RETRIES})...`,
@@ -1341,6 +1345,7 @@ async function flowSubmitAndWaitOnce(
     flowShowBanner(`AI Affiliate Studio: ${label} Flow ยังไม่เริ่มสร้าง — สั่งให้เริ่ม (${nudges}/${FLOW_MAX_NUDGES})...`, "#111827");
     if (await flowSetPromptVerified("Go ahead and generate that video now.")) {
       await new Promise((resolve) => setTimeout(resolve, 800));
+      await extensionRequireLicense();
       flowFindStartButton()?.click();
     }
     lastKickAt = Date.now();
@@ -1479,6 +1484,7 @@ async function flowRunJob(job: FlowVideoJob, startIndex: number) {
       await flowClearActiveJob();
       return;
     }
+    await extensionRequireLicense();
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     flowReportProgress(job.videoId, clip.index + 1, total, "generating");
 
@@ -1551,7 +1557,8 @@ function flowStartJob(job: FlowVideoJob, startIndex = 0) {
   const heartbeat = setInterval(flowHeartbeat, FLOW_HEARTBEAT_MS);
   flowSaveActiveJob(job, startIndex)
     .then(() => flowRunJob(job, startIndex))
-    .catch((err) => {
+    .catch(async (err) => {
+      await extensionReportLicensePause(job.videoId, err);
       const text = err instanceof Error ? err.message : String(err);
       flowShowBanner(
         /context invalidated/i.test(text)
@@ -1576,7 +1583,7 @@ chrome.runtime.onMessage.addListener(
       return;
     }
     if (message.type !== "RUN_VIDEO_JOB" || !message.job) return;
-    const started = flowStartJob(message.job);
+    const started = flowStartJob(message.job, message.job.startIndex ?? 0);
     sendResponse({ ok: started, error: started ? undefined : "มีงานกำลังทำอยู่แล้วในแท็บนี้" });
   },
 );
@@ -1604,7 +1611,7 @@ if (flowOnProjectPage) flowShowBanner("AI Affiliate Studio: กำลังต�
 
 if (flowOnProjectPage) chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "flow" }, (result: { job: FlowVideoJob | null }) => {
   if (result?.job) {
-    flowStartJob(result.job);
+    flowStartJob(result.job, result.job.startIndex ?? 0);
     return;
   }
   // No new job, but Flow may have reloaded out from under one that was

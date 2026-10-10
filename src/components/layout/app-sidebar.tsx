@@ -36,7 +36,7 @@ const NAV_ITEMS = [
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
-export function AppSidebar() {
+export function AppSidebar({ licenseAdmin = false }: { licenseAdmin?: boolean }) {
   const pathname = usePathname();
   const router = useRouter();
 
@@ -51,7 +51,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.map((item) => (
+              {(licenseAdmin ? [...NAV_ITEMS, { title: "Licenses", url: "/admin/licenses", icon: Settings }] : NAV_ITEMS).map((item) => (
                 <SidebarMenuItem key={item.url}>
                   <SidebarMenuButton
                     isActive={pathname.startsWith(item.url)}

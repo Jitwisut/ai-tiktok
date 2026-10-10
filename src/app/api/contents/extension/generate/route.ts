@@ -6,6 +6,7 @@ import { SUPPORTED_TARGET_DURATIONS } from "@/lib/prompt-engine/clip-planner";
 import { CONTENT_STYLES, contentStyleSchema } from "@/lib/validation/content";
 
 function unauthorized(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") return NextResponse.json({ error: "Legacy extension endpoint disabled" }, { status: 404 });
   const token = process.env.EXTENSION_UPLOAD_TOKEN;
   if (!token) {
     return NextResponse.json({ error: "EXTENSION_UPLOAD_TOKEN is not set" }, { status: 503 });

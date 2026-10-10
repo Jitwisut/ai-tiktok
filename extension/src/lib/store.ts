@@ -1,3 +1,4 @@
+import { shopeeProductLink, type PublishPlatform } from "./commerce.js";
 /** chrome.storage.local-backed replacement for product.service/content.service/scene.service/video.service.ts. Single-user, so no userId scoping. */
 
 export interface Product {
@@ -47,6 +48,7 @@ export interface CastOption {
 export type PresenterChoice = "alternate" | "female" | "male";
 
 export interface Content {
+  platform?: PublishPlatform;
   id: string;
   productId: string;
   style: string;
@@ -74,6 +76,7 @@ export interface VideoJobClip {
 }
 
 export interface VideoJob {
+  generationSite?: "flow" | "aistudio" | "gemini" | "meta";
   id: string;
   contentId: string;
   status: VideoStatus;
@@ -87,8 +90,10 @@ export interface VideoJob {
   /** Set once the clips were joined into one file (library index MERGED_CLIP_INDEX). */
   mergedAt?: number | null;
   mergeError?: string | null;
+  /** Last Shopee Seller Centre posting attempt. Ambiguous results require manual verification. */
+  shopeePost?: { status: "preparing" | "ready" | "posted" | "failed" | "submitting" | "uncertain"; at: number; error: string | null } | null;
   /** Last TikTok Studio posting attempt (tiktok-upload.ts). */
-  tiktokPost?: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
+  tiktokPost?: { status: "preparing" | "ready" | "posted" | "failed" | "submitting" | "uncertain"; at: number; error: string | null } | null;
   /** Presenter picked when the job was created, so a re-plan keeps the same person. */
   presenter?: "female" | "male";
 }
@@ -282,6 +287,23 @@ export async function createProduct(input: {
   return product;
 }
 
+export async function importShopeeProducts(rows: { url: string; name: string; description?: string; price?: string; image?: string; images?: string[] }[]): Promise<Product[]> {
+  const products = await getAll("products");
+  const imported: Product[] = [];
+  for (const row of rows) {
+    const link = shopeeProductLink(row.url);
+    if (!link || !row.name?.trim()) throw new Error("ข้อมูลสินค้า Shopee ต้องมีชื่อและลิงก์สินค้าจริง");
+    const images = (row.images?.length ? row.images : row.image ? [row.image] : []).filter((url) => /^https:\/\//.test(url)).slice(0, 8);
+    const price = Number(row.price?.replace(/[^\d.]/g, ""));
+    const existing = products.find((product) => shopeeProductLink(product.sourceUrl)?.url === link.url);
+    const fields = { name: row.name.trim(), source: "shopee", sourceUrl: link.url, currency: "THB", price: Number.isFinite(price) && price > 0 ? price : existing?.price ?? null, description: row.description ?? existing?.description ?? null, images: images.length ? images : existing?.images ?? [] };
+    if (existing) { Object.assign(existing, fields); imported.push(existing); }
+    else { const product: Product = { id: newId(), ...fields }; products.push(product); imported.push(product); }
+  }
+  await setAll("products", products);
+  return imported;
+}
+
 export async function deleteProducts(ids: string[]): Promise<number> {
   const idSet = new Set(ids);
   const products = await getAll("products");
@@ -392,6 +414,7 @@ export async function getContent(contentId: string): Promise<Content | null> {
 }
 
 export async function createContent(input: {
+  platform?: PublishPlatform;
   productId: string;
   style: string;
   hook: string;
@@ -434,6 +457,8 @@ type VideoWithInfo = VideoJob & {
   imageUrl: string | null;
   /** Set when the product came from TikTok, so its video can carry a product link. */
   productTikTokId: string | null;
+  productShopeeUrl: string | null;
+  platform: PublishPlatform;
 };
 
 export function tiktokIdFromSourceUrl(sourceUrl: string | null | undefined): string | null {
@@ -456,6 +481,8 @@ async function listVideosWithInfo(filter: (v: VideoJob) => boolean): Promise<Vid
         caption: content?.caption ?? "",
         imageUrl: product?.images[0] ?? null,
         productTikTokId: tiktokIdFromSourceUrl(product?.sourceUrl),
+        productShopeeUrl: shopeeProductLink(product?.sourceUrl)?.url ?? null,
+        platform: content?.platform ?? "tiktok",
       };
     });
 }

@@ -1,4 +1,8 @@
+import { activateLicense, checkLicense, requireLicense, isLicenseFailure } from "./lib/license-client.js";
+import { SHOPEE_UPLOAD_URL, validShopeeVideo, type PendingShopeePost } from "./lib/shopee-post.js";
+import { platformForStyle, shopeeProductLink, isShopeeSellerUrl, type PublishPlatform } from "./lib/commerce.js";
 import * as store from "./lib/store.js";
+import { collectShopeeProducts } from "./lib/shopee-import.js";
 import * as gemini from "./lib/gemini.js";
 import { generateObjectOnWeb } from "./lib/gemini-web.js";
 import { generateObjectOnChatGPT } from "./lib/chatgpt-web.js";
@@ -78,6 +82,7 @@ interface JobClip {
 
 interface VideoJob {
   videoId: string;
+  startIndex?: number;
   clips: JobClip[];
   duration: number;
   aspectRatio: string;
@@ -276,6 +281,7 @@ interface GenerateContentScenesMessage {
   targetDuration: number;
   /** Plans the storyboard in this site's clip length. */
   site?: GenerationSite;
+  platform?: PublishPlatform;
 }
 
 interface GetPendingVideoJobMessage {
@@ -389,6 +395,7 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
     clipSeconds: clipSecondsForSite(site, targetDuration),
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
+    platform: content.platform,
     castOptions: content.castOptions,
     productLook: content.productLook,
     presenter: video.presenter,
@@ -477,7 +484,7 @@ async function sendJobToTab(
       // Page-world half of the product-photo upload (see flow-file-picker.ts).
       await chrome.scripting.executeScript({ target: { tabId }, files: ["dist/flow-file-picker.js"], world: "MAIN" });
     }
-    await chrome.scripting.executeScript({ target: { tabId }, files: SITE_SCRIPTS[site] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["dist/license-guard.js", ...SITE_SCRIPTS[site]] });
     return (await chrome.tabs.sendMessage(tabId, { type: "RUN_VIDEO_JOB", job })) ?? { ok: true };
   }
 }
@@ -578,6 +585,11 @@ async function dispatchMetaJob(job: VideoJob): Promise<DispatchResult> {
 }
 
 async function dispatchJob(job: VideoJob, site: GenerationSite): Promise<DispatchResult> {
+  try { await requireLicense(); }
+  catch (error) {
+    if (isLicenseFailure(error)) await chrome.storage.local.set({ jobProgress: { videoId: job.videoId, current: job.startIndex ?? 0, total: job.clips.length, state: "paused", error: error instanceof Error ? error.message : String(error), at: Date.now() } });
+    throw error;
+  }
   if (site === "gemini") return dispatchGeminiJob(job);
   if (site === "meta") return dispatchMetaJob(job);
   const tab = await findSiteTab(site);
@@ -619,6 +631,7 @@ async function createJobForContent(
   site: GenerationSite,
   variant?: PlanVariant,
 ): Promise<{ video: store.VideoJob; clips: JobClip[]; imageUrl: string | null }> {
+  await requireLicense();
   targetDuration = snapDuration(site, targetDuration);
   const content = await store.getContent(contentId);
   if (!content) throw new Error("ไม่พบคอนเทนต์");
@@ -634,6 +647,7 @@ async function createJobForContent(
     variant,
     text: { headline: content.onScreenText, cta: content.onScreenCta },
     style: content.style,
+    platform: content.platform,
     castOptions: content.castOptions,
     productLook: content.productLook,
     presenter,
@@ -647,6 +661,7 @@ async function createJobForContent(
     targetDuration,
     presenter,
   });
+  await store.updateVideoJob(video.id, { generationSite: site });
   return { video, clips, imageUrl: product?.images[0] ?? null };
 }
 
@@ -710,6 +725,7 @@ async function advanceJobQueue(finishedVideoId: string) {
 
     while (queue.pending.length) {
       const [next, ...rest] = queue.pending;
+      await requireLicense();
       queue = { current: next.videoId, pending: rest };
       await setJobQueue(queue);
 
@@ -727,6 +743,18 @@ async function advanceJobQueue(finishedVideoId: string) {
       queue = await getJobQueue();
     }
     await setJobQueue({ current: null, pending: [] });
+  } catch (error) {
+    if (isLicenseFailure(error)) {
+      await chrome.storage.local.set({ licenseQueuePaused: true });
+      // Rights can expire during the delay after selecting the next queued video.
+      // Keep that unstarted video attached, so resume does not skip it.
+      const current = (await getJobQueue()).current;
+      const video = current ? await store.getVideo(current) : null;
+      if (video && ["queued", "processing"].includes(video.status)) {
+        await chrome.storage.local.set({ jobProgress: { videoId: video.id, state: "paused", current: video.clipsReceived, total: video.clips.length, error: error instanceof Error ? error.message : String(error), at: Date.now() } });
+      }
+    }
+    else console.error("ไม่สามารถเริ่มงานถัดไปในคิว");
   } finally {
     queueAdvancing = false;
   }
@@ -1034,6 +1062,7 @@ async function typeIntoTab(tabId: number, text: string, isMac: boolean, editorSe
 
 /** Product analysis, scripts and scenes use the selected text source. */
 async function generateObject<T>(params: gemini.GenerateObjectParams, source: store.TextSource | undefined, productId: string): Promise<T> {
+  await requireLicense();
   const textSource = source ?? (await store.getSettings()).textSource;
   if (textSource === "api") return gemini.generateObject<T>(params);
   if (textSource === "chatgpt-web") return generateObjectOnChatGPT<T>(params, productId);
@@ -1067,6 +1096,7 @@ async function generateContentScenes(
   source?: store.TextSource,
   resumeContentId?: string,
   onContentReady?: (content: store.Content) => Promise<void>,
+  platform: PublishPlatform = platformForStyle(style),
 ): Promise<{ content: store.Content; scenes: store.Scene[] }> {
   targetDuration = snapDuration(site, targetDuration);
   const clipSeconds = clipSecondsForSite(site, targetDuration);
@@ -1078,12 +1108,12 @@ async function generateContentScenes(
   const images = await gemini.loadImages(product.images.slice(0, 1));
 
   let content = resumeContentId ? await store.getContent(resumeContentId) : null;
-  if (content && (content.productId !== product.id || content.style !== style)) content = null;
+  if (content && (content.productId !== product.id || content.style !== style || (content.platform ?? "tiktok") !== platform)) content = null;
   if (content && contentIssues(content.script, style, targetDuration, clipSeconds).length) content = null;
   if (!content) {
     // Rotate angles across generations so repeated runs for one product tell different stories.
     const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
-    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle);
+    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle, platform);
     const contentResult = await generateValidated<{
       hook: string;
       script: string;
@@ -1097,10 +1127,11 @@ async function generateContentScenes(
         prompt: contentPrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
         images, schema: prompts.CONTENT_GENERATION_SCHEMA,
       }, source, product.id),
-      (result) => contentIssues(result.script, style, targetDuration, clipSeconds),
+      (result) => [...contentIssues(result.script, style, targetDuration, clipSeconds), ...(platform === "shopee" && (!result.caption.trim() || result.caption.length > 150) ? ["แคปชัน Shopee ต้องมี 1–150 ตัวอักษรรวมแฮชแท็ก"] : [])],
     );
 
     content = await store.createContent({
+      platform,
       productId: product.id,
       style,
       hook: contentResult.hook,
@@ -1135,14 +1166,17 @@ async function generateContentScenes(
   return { content, scenes: sceneResult.scenes };
 }
 
+const tiktokSubmitting = new Set<string>();
 async function prepareTikTokPost(
   videoId: string,
   caption: string,
   autoPost: boolean,
   productId: string | null,
 ): Promise<{ ok: boolean; error?: string; tabId?: number }> {
+  await requireLicense();
   const video = await store.getVideo(videoId);
   if (!video || video.status !== "completed") return { ok: false, error: "วิดีโอนี้ยังไม่เสร็จ" };
+  if (["submitting", "uncertain", "posted"].includes(video.tiktokPost?.status ?? "")) return { ok: false, error: "งานนี้ส่งโพสต์แล้วหรือยังยืนยันผลไม่ได้ — ตรวจ TikTok แล้วบันทึกผลในคลังก่อน" };
   const clip = await postableClip(videoId);
   if (!clip) return { ok: false, error: "ไม่พบไฟล์วิดีโอในคลัง (หรือต่อคลิปไม่สำเร็จ)" };
 
@@ -1160,15 +1194,94 @@ async function prepareTikTokPost(
       productId,
     },
   };
-  await chrome.storage.local.set({ pendingTikTokPost: pending });
-  await chrome.tabs.update(tab.id!, { url: TIKTOK_UPLOAD_URL });
+  await chrome.storage.local.set({ pendingTikTokPost: pending, [`tiktokPostTab:${videoId}`]: tab.id });
   await store.updateVideoJob(videoId, { tiktokPost: { status: "preparing", at: Date.now(), error: null } });
+  await chrome.tabs.update(tab.id!, { url: TIKTOK_UPLOAD_URL });
   return { ok: true, tabId: tab.id };
+}
+
+const shopeePreparing = new Set<string>();
+async function prepareShopeePost(videoId: string, caption: string, autoPost: boolean, productUrl: string | null): Promise<{ ok: boolean; error?: string; tabId?: number }> {
+  if (shopeePreparing.has(videoId)) return { ok: false, error: "กำลังเปิดงานของวิดีโอนี้" };
+  shopeePreparing.add(videoId);
+  try { return await prepareShopeePostImpl(videoId, caption, autoPost, productUrl); }
+  finally { shopeePreparing.delete(videoId); }
+}
+
+async function prepareShopeePostImpl(videoId: string, caption: string, autoPost: boolean, productUrl: string | null): Promise<{ ok: boolean; error?: string; tabId?: number }> {
+  await requireLicense();
+  const video = await store.getVideo(videoId);
+  if (!video || video.status !== "completed") return { ok: false, error: "วิดีโอนี้ยังไม่เสร็จ" };
+  const product = shopeeProductLink(productUrl);
+  if (!product) return { ok: false, error: "ต้องเลือกลิงก์สินค้า Shopee ที่ตรงกับวิดีโอเพื่อปักสินค้า" };
+  const contentProduct = await store.getProduct((await store.getContent(video.contentId))?.productId ?? "");
+  if (shopeeProductLink(contentProduct?.sourceUrl)?.url !== product.url) return { ok: false, error: "สินค้าที่ปักต้องตรงกับสินค้าที่ใช้สร้างวิดีโอนี้" };
+  const clip = await postableClip(videoId);
+  if (!clip) return { ok: false, error: "ไม่พบไฟล์วิดีโอเต็มในคลัง" };
+  const invalid = validShopeeVideo(video.duration, clip.blob.size, clip.mimeType || "video/mp4");
+  if (invalid) return { ok: false, error: invalid };
+  const key = `shopeePost:${videoId}`;
+  const previous = (await chrome.storage.local.get(key))[key] as PendingShopeePost | undefined;
+  if (previous) return { ok: false, error: "มีงานของวิดีโอนี้อยู่แล้ว — ตรวจแท็บ Shopee หรือยืนยันผลในคลังก่อน" };
+  if (!caption.trim() || caption.length > 150) return { ok: false, error: "แคปชัน Shopee ต้องมี 1–150 ตัวอักษร" };
+  if (["uncertain", "submitting", "posted"].includes(video.shopeePost?.status ?? "")) return { ok: false, error: "ผลโพสต์ก่อนหน้ายังไม่ชัดเจน — ตรวจบัญชี Shopee ก่อนเริ่มใหม่" };
+  const tab = await chrome.tabs.create({ url: "about:blank", active: true });
+  const autoState = (await chrome.storage.local.get("autopilot")).autopilot as { current?: { videoId?: string }; startedAt?: number } | undefined;
+  const pending: PendingShopeePost = {
+    autopilotRun: autoPost && autoState?.current?.videoId === videoId ? autoState.startedAt : undefined,
+    tabId: tab.id!, at: Date.now(),
+    job: { videoId, caption, autoPost, productName: contentProduct!.name, fileName: `${videoId.slice(0, 8)}-shopee.mp4`, productUrl: product.url, itemId: product.itemId, shopId: product.shopId },
+  };
+  await chrome.storage.local.set({ [key]: pending, [`shopeePostTab:${pending.tabId}`]: videoId });
+  await store.updateVideoJob(videoId, { shopeePost: { status: "preparing", at: Date.now(), error: null } });
+  await chrome.tabs.update(tab.id!, { url: SHOPEE_UPLOAD_URL });
+  return { ok: true, tabId: tab.id };
+}
+
+async function resumeLicensedVideo(videoId: string) {
+  await requireLicense();
+  const video = await store.getVideo(videoId);
+  if (!video || video.status === "cancelled") throw new Error("ไม่พบงานที่พักไว้");
+  if (video.status === "completed") return;
+  const site = video.generationSite;
+  if (!site) throw new Error("งานเก่านี้ไม่มีข้อมูลเว็บไซต์สร้างวิดีโอ กรุณาเริ่มงานใหม่");
+  const job = await jobFromStore(video.id, site);
+  if (!job) throw new Error("ไม่พบงานที่พักไว้");
+  job.startIndex = video.clipsReceived;
+  const tab = await findSiteTab(site);
+  const result = tab?.id ? await sendJobToTab(tab.id, site, job) : await dispatchJob(job, site);
+  if (!result.ok) throw new Error(result.error ?? "เริ่มงานต่อไม่สำเร็จ");
+  await chrome.storage.local.set({ jobProgress: { videoId, state: "generating", current: video.clipsReceived + 1, total: video.clips.length, at: Date.now() } });
+}
+async function resumeLicensedPost(videoId: string) {
+  await requireLicense();
+  const video = await store.getVideo(videoId);
+  if (!video) throw new Error("ไม่พบงานโพสต์ที่พักไว้");
+  const key = `shopeePost:${videoId}`;
+  const pending = (await chrome.storage.local.get(key))[key] as PendingShopeePost | undefined;
+  if (pending) {
+    if (pending.submittedAt) throw new Error("งานนี้ส่งโพสต์ไปแล้ว ตรวจผลในคลังก่อนเพื่อป้องกันโพสต์ซ้ำ");
+    const { claimedAt: _claimed, ...reset } = pending;
+    await chrome.storage.local.set({ [key]: { ...reset, at: Date.now() } });
+    await chrome.tabs.reload(pending.tabId);
+  } else {
+    if (["submitting", "uncertain", "posted"].includes(video.tiktokPost?.status ?? "")) throw new Error("ตรวจผลโพสต์ TikTok ในคลังก่อน ห้ามส่งโพสต์ซ้ำ");
+    const content = await store.getContent(video.contentId);
+    const product = await store.getProduct(content?.productId ?? "");
+    const state = (await chrome.storage.local.get("autopilot")).autopilot as { settings?: { postMode?: string }; current?: { videoId?: string } } | undefined;
+    const auto = state?.current?.videoId === videoId && state.settings?.postMode === "auto";
+    const result = await prepareTikTokPost(videoId, content?.caption ?? "", auto, store.tiktokIdFromSourceUrl(product?.sourceUrl));
+    if (!result.ok) throw new Error(result.error ?? "เริ่มเตรียมโพสต์ต่อไม่สำเร็จ");
+  }
+  await chrome.storage.local.set({ jobProgress: { videoId, state: "posting", current: 0, total: 0, at: Date.now() } });
 }
 
 /* ---------- autopilot ---------- */
 
 const autopilot = createAutopilot({
+  requireLicense,
+  resumeVideo: resumeLicensedVideo,
+  resumePost: resumeLicensedPost,
   analyzeProduct,
   generateContentScenes,
   async startVideo(contentId, targetDuration, site) {
@@ -1180,7 +1293,13 @@ const autopilot = createAutopilot({
       aspectRatio: video.aspectRatio,
       imageUrl,
     });
-    const result = await dispatchJob(job, site);
+    let result: DispatchResult;
+    try { result = await dispatchJob(job, site); }
+    catch (error) {
+      // The record exists but rendering has not started. Preserve it for explicit resume.
+      if (isLicenseFailure(error)) return video.id;
+      throw error;
+    }
     if (!result.ok) {
       await store.updateVideoJob(video.id, { status: "cancelled", errorMessage: result.error ?? null });
       throw new Error(result.error ?? "เริ่มสร้างวิดีโอไม่สำเร็จ");
@@ -1188,6 +1307,7 @@ const autopilot = createAutopilot({
     return video.id;
   },
   prepareTikTokPost,
+  prepareShopeePost,
   async isManualJobRunning() {
     const queue = await getJobQueue();
     if (queue.current || queue.pending.length) return true;
@@ -1280,6 +1400,8 @@ async function saveClip(
   downloadUrl: string,
 ): Promise<{ ok: boolean; error?: string; merged?: MergeResult }> {
   try {
+    const existingVideo = await store.getVideo(videoId);
+    if (!existingVideo || !Number.isInteger(clipIndex) || clipIndex < 0 || clipIndex >= existingVideo.clips.length || clipTotal !== existingVideo.clips.length) return { ok: false, error: "คลิปไม่ตรงกับงานที่สร้าง" };
     await library.putClip(videoId, clipIndex, blob, mimeType);
 
     const ext = mimeType.includes("mp4") ? "mp4" : "webm";
@@ -1290,7 +1412,10 @@ async function saveClip(
     });
 
     const video = await store.getVideo(videoId);
-    const clipsReceived = (video?.clipsReceived ?? 0) + 1;
+    const savedClips = (await library.getClipsForVideo(videoId)).filter(clip => clip.index >= 0);
+    const receivedIndexes = new Set(savedClips.map(clip => clip.index));
+    let clipsReceived = 0;
+    while (receivedIndexes.has(clipsReceived)) clipsReceived += 1;
     const done = clipsReceived >= clipTotal;
     await store.updateVideoJob(videoId, {
       clipsReceived,
@@ -1304,11 +1429,11 @@ async function saveClip(
   }
 }
 
-chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
+function handleExtensionMessage(message: ExtensionMessage, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) {
   // Dev bridge only (dev-bridge.ts, localhost pages): picks up a rebuilt
   // dist without a trip to chrome://extensions.
   if ((message as { type: string }).type === "DEV_RELOAD_EXTENSION") {
-    if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(sender.url ?? "")) {
+    if (!chrome.runtime.getManifest().content_scripts?.some(script => script.js?.includes("dist/dev-bridge.js")) || !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(sender.url ?? "")) {
       sendResponse({ ok: false, error: "not allowed" });
       return;
     }
@@ -1317,13 +1442,31 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return;
   }
 
+  if ((message as { type: string }).type === "FETCH_SHOPEE_PRODUCTS") {
+    const request = message as unknown as { tabId: number };
+    (async () => {
+      const collected = await collectShopeeProducts(request.tabId);
+      const products = await store.importShopeeProducts(collected.products);
+      const missingImages = products.filter(product => !product.images.length).length;
+      if (missingImages) collected.warnings.push(`${missingImages} รายการยังไม่มีรูปสินค้า ให้เปิดหน้าสินค้าจริงแล้วกดดึงอีกครั้งเพื่ออัปเดตรูป`);
+      sendResponse({ ok: true, products, warnings: collected.warnings });
+    })().catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if ((message as { type: string }).type === "IMPORT_SHOPEE_PRODUCTS") {
+    const request = message as unknown as { products: Parameters<typeof store.importShopeeProducts>[0] };
+    store.importShopeeProducts(request.products).then((products) => sendResponse({ ok: true, products })).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
   if (message.type === "ADD_PRODUCT") {
     (async () => {
       const product = await store.createProduct({
         name: message.product.name || message.product.url,
         description: message.product.description,
         price: message.product.price ? Number(message.product.price) : undefined,
-        source: "extension",
+        source: shopeeProductLink(message.product.url) ? "shopee" : "extension",
         sourceUrl: message.product.url,
         images: message.product.images?.length ? message.product.images : message.product.image ? [message.product.image] : [],
       });
@@ -1359,7 +1502,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
   if (message.type === "GENERATE_CONTENT_SCENES") {
     (async () => {
       try {
-        const { content, scenes } = await generateContentScenes(message.productId, message.style, message.targetDuration, message.site);
+        const { content, scenes } = await generateContentScenes(message.productId, message.style, message.targetDuration, message.site, undefined, undefined, undefined, message.platform);
         sendResponse({
           ok: true,
           content: {
@@ -1431,9 +1574,12 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
           caption: v.caption,
           productTikTokId: v.productTikTokId,
           tiktokPost: v.tiktokPost ?? null,
+          shopeePost: v.shopeePost ?? null,
+          productShopeeUrl: v.productShopeeUrl,
+          platform: v.platform,
         })),
       });
-    })();
+    })().catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
     return true;
   }
 
@@ -1466,6 +1612,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
 
   if (message.type === "RUN_BATCH") {
     (async () => {
+      const created: Awaited<ReturnType<typeof createJobForContent>>[] = [];
       try {
         if (await autopilot.isBusy()) {
           sendResponse({ ok: false, error: "ระบบอัตโนมัติกำลังใช้ Flow อยู่ — หยุดชั่วคราวในแท็บอัตโนมัติก่อน" });
@@ -1481,7 +1628,6 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
           return;
         }
         const count = Math.min(10, Math.max(1, Math.round(message.count || 1)));
-        const created = [];
         for (let i = 0; i < count; i++) {
           created.push(await createJobForContent(message.contentId, message.targetDuration, message.site, { index: i, total: count }));
         }
@@ -1506,6 +1652,11 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         }
         sendResponse({ ...result, videoIds: created.map((c) => c.video.id) });
       } catch (err) {
+        if (isLicenseFailure(err) && created.length) {
+          const queue = await getJobQueue();
+          if (!queue.current) await setJobQueue({ current: created[0].video.id, pending: created.slice(1).map(c => ({ videoId: c.video.id, site: message.site })) });
+          await chrome.storage.local.set({ licenseQueuePaused: true, jobProgress: { videoId: (await getJobQueue()).current, current: 0, total: created[0].clips.length, state: "paused", error: err instanceof Error ? err.message : String(err), at: Date.now() } });
+        }
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "สร้างงานไม่สำเร็จ" });
       }
     })();
@@ -1541,6 +1692,81 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : "ดึงสินค้าไม่สำเร็จ" });
       }
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "RESOLVE_SHOPEE_POST") {
+    (async () => {
+      try {
+        if (sender.tab || !sender.url?.startsWith(chrome.runtime.getURL("sidepanel.html"))) throw new Error("not allowed");
+        const request = message as unknown as { videoId: string; posted: boolean };
+        if (typeof request.posted !== "boolean") throw new Error("ระบุผลที่ตรวจใน Shopee ก่อน");
+        const key = `shopeePost:${request.videoId}`;
+        const pending = (await chrome.storage.local.get(key))[key] as PendingShopeePost | undefined;
+        if (pending) {
+          await chrome.storage.local.remove([key, `shopeePostTab:${pending.tabId}`]);
+          await chrome.tabs.remove(pending.tabId).catch(() => {});
+        }
+        await store.updateVideoJob(request.videoId, { shopeePost: { status: request.posted ? "posted" : "failed", at: Date.now(), error: request.posted ? null : "ผู้ใช้ตรวจแล้วว่ายังไม่โพสต์ สามารถเตรียมใหม่ได้" } });
+        sendResponse({ ok: true });
+      } catch (error) { sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
+    })();
+    return true;
+  }
+
+  if ((message as { type: string }).type === "PREPARE_SHOPEE_POST") {
+    const request = message as unknown as { videoId: string; caption: string; autoPost: boolean; productUrl: string | null };
+    prepareShopeePost(request.videoId, request.caption, request.autoPost, request.productUrl)
+      .then(sendResponse).catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+    return true;
+  }
+
+  if (["CLAIM_SHOPEE_POST", "GET_SHOPEE_POST_FILE", "SHOPEE_POST_RESULT", "SHOPEE_POST_SUBMITTING", "SHOPEE_TYPE_CAPTION", "SHOPEE_CHECK_JOB"].includes((message as { type: string }).type)) {
+    (async () => {
+      try {
+        if (!sender.tab?.id || !isShopeeSellerUrl(sender.tab.url ?? "")) { sendResponse({ ok: false, error: "not allowed" }); return; }
+        const pointer = `shopeePostTab:${sender.tab.id}`;
+        const videoId = (await chrome.storage.local.get(pointer))[pointer] as string | undefined;
+        const key = `shopeePost:${videoId}`;
+        const pending = (await chrome.storage.local.get(key))[key] as PendingShopeePost | undefined;
+        if (!pending || pending.tabId !== sender.tab.id || (!pending.claimedAt && Date.now() - pending.at > 20 * 60_000)) { sendResponse({ job: null, ok: false, error: "งานโพสต์หมดอายุหรือไม่ใช่แท็บของงานนี้" }); return; }
+        const request = message as unknown as { type: string; videoId?: string; caption?: string; isMac?: boolean; status?: "ready" | "posted" | "failed" | "uncertain"; error?: string };
+        if (request.type !== "CLAIM_SHOPEE_POST" && request.videoId !== pending.job.videoId) { sendResponse({ ok: false, error: "งานไม่ตรงกัน" }); return; }
+        if (pending.autopilotRun && ["SHOPEE_CHECK_JOB", "SHOPEE_POST_SUBMITTING"].includes(request.type)) {
+          const state = (await chrome.storage.local.get("autopilot")).autopilot as { status?: string; startedAt?: number; current?: { videoId?: string } } | undefined;
+          if (state?.status !== "running" || state.startedAt !== pending.autopilotRun || state.current?.videoId !== pending.job.videoId) throw new Error("งานอัตโนมัติถูกพักหรือหยุดแล้ว");
+        }
+        if (request.type === "CLAIM_SHOPEE_POST") {
+          if (pending.claimedAt || pending.submittedAt) { sendResponse({ job: null }); return; }
+          pending.claimedAt = Date.now();
+          await chrome.storage.local.set({ [key]: pending });
+          sendResponse({ job: pending.job });
+        } else if (request.type === "SHOPEE_CHECK_JOB") {
+          sendResponse({ ok: !pending.submittedAt });
+        } else if (request.type === "GET_SHOPEE_POST_FILE") {
+          const clip = await postableClip(pending.job.videoId);
+          if (!clip) throw new Error("ไม่พบไฟล์วิดีโอ");
+          sendResponse({ ok: true, base64: bytesToBase64(new Uint8Array(await clip.blob.arrayBuffer())), mimeType: clip.mimeType || "video/mp4" });
+        } else if (request.type === "SHOPEE_TYPE_CAPTION") {
+          await typeIntoTab(sender.tab.id, pending.job.caption, !!request.isMac, '[data-ai-shopee-caption="true"]');
+          sendResponse({ ok: true });
+        } else if (request.type === "SHOPEE_POST_SUBMITTING") {
+          if (pending.submittedAt) throw new Error("งานนี้เริ่มโพสต์แล้ว ห้ามส่งซ้ำ");
+          pending.submittedAt = Date.now();
+          await chrome.storage.local.set({ [key]: pending });
+          await store.updateVideoJob(pending.job.videoId, { shopeePost: { status: "submitting", at: Date.now(), error: "กำลังรอยืนยันผลโพสต์" } });
+          sendResponse({ ok: true });
+        } else {
+          if (!["ready", "posted", "failed", "uncertain"].includes(request.status ?? "")) throw new Error("สถานะไม่ถูกต้อง");
+          if (request.status === "ready" && pending.submittedAt) throw new Error("งานเริ่มโพสต์แล้ว ไม่สามารถย้อนกลับเป็นเตรียมโพสต์ได้");
+          if (request.status === "posted" && !pending.submittedAt) throw new Error("ยังไม่ได้ส่งโพสต์");
+          const status = pending.submittedAt && request.status === "failed" ? "uncertain" : request.status!;
+          await store.updateVideoJob(pending.job.videoId, { shopeePost: { status, at: Date.now(), error: request.error ?? null } });
+          if (status === "posted" || status === "failed") await chrome.storage.local.remove([key, pointer]);
+          sendResponse({ ok: true });
+        }
+      } catch (error) { sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
     })();
     return true;
   }
@@ -1605,10 +1831,29 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     return true;
   }
 
+  if ((message as { type: string }).type === "TIKTOK_POST_SUBMITTING") {
+    const videoId = (message as unknown as { videoId: string }).videoId;
+    if (tiktokSubmitting.has(videoId)) { sendResponse({ ok: false, error: "งานนี้กำลังส่งโพสต์แล้ว" }); return true; }
+    tiktokSubmitting.add(videoId);
+    (async () => {
+      const boundTab = (await chrome.storage.local.get(`tiktokPostTab:${videoId}`))[`tiktokPostTab:${videoId}`];
+      const video = await store.getVideo(videoId);
+      if (!sender.tab?.id || boundTab !== sender.tab.id || !/^https:\/\/www\.tiktok\.com\/tiktokstudio\//.test(sender.tab.url ?? "") || !video || ["submitting", "uncertain", "posted"].includes(video.tiktokPost?.status ?? "")) throw new Error("งานนี้เริ่มโพสต์แล้วหรือแท็บไม่ถูกต้อง");
+      await store.updateVideoJob(videoId, { tiktokPost: { status: "submitting", at: Date.now(), error: "กำลังรอยืนยันผลโพสต์" } });
+      await chrome.storage.local.set({ [`tiktokSubmitTab:${videoId}`]: sender.tab.id });
+      sendResponse({ ok: true });
+    })().catch(error => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) })).finally(() => tiktokSubmitting.delete(videoId));
+    return true;
+  }
+
   if ((message as { type: string }).type === "TIKTOK_POST_RESULT") {
     (async () => {
       const { videoId, status, error } = message as unknown as { videoId: string; status: "ready" | "posted" | "failed"; error?: string };
-      await store.updateVideoJob(videoId, { tiktokPost: { status, at: Date.now(), error: error ?? null } });
+      const boundTab = (await chrome.storage.local.get(`tiktokPostTab:${videoId}`))[`tiktokPostTab:${videoId}`];
+      if (!sender.tab?.id || boundTab !== sender.tab.id || !["ready", "posted", "failed"].includes(status)) { sendResponse({ ok: false, error: "not allowed" }); return; }
+      const video = await store.getVideo(videoId);
+      const outcome = status === "failed" && video?.tiktokPost?.status === "submitting" ? "uncertain" : status;
+      await store.updateVideoJob(videoId, { tiktokPost: { status: outcome, at: Date.now(), error: error ?? null } });
       sendResponse({ ok: true });
       // Autopilot opens one upload tab per post; once it's published the tab has done its job.
       if (status === "posted" && sender.tab?.id && (await autopilot.ownsVideo(videoId))) {
@@ -1650,7 +1895,7 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
         sendResponse({ ok: false, error: "วิดีโอนี้สร้างเสร็จแล้ว ยกเลิกไม่ได้" });
         return;
       }
-      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob", "pendingVideoJobSite"]);
+      await chrome.storage.local.remove(["activeFlowJob", "activeGeminiJob", "activeStudioJob", "metaActiveJob", "pendingVideoJob", "pendingVideoJobSite"]);
       await chrome.storage.local.set({
         jobProgress: { videoId: message.videoId, current: 0, total: 0, state: "cancelled", at: Date.now() },
       });
@@ -1905,6 +2150,67 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRes
     })();
     return true;
   }
+}
+
+const LICENSED_MESSAGES = new Set(["FETCH_SHOPEE_PRODUCTS", "IMPORT_SHOPEE_PRODUCTS", "ADD_PRODUCT", "RUN_JOB_FROM_POPUP", "ANALYZE_PRODUCT", "GENERATE_CONTENT_SCENES", "CREATE_JOB", "RUN_BATCH", "IMPORT_TIKTOK_PRODUCT_DETAILS", "SYNC_TIKTOK_SHOWCASE", "PREPARE_SHOPEE_POST", "PREPARE_TIKTOK_POST", "CLAIM_SHOPEE_POST", "GET_SHOPEE_POST_FILE", "SHOPEE_TYPE_CAPTION", "SHOPEE_POST_SUBMITTING", "CLAIM_TIKTOK_POST", "GET_TIKTOK_POST_FILE", "TIKTOK_TYPE_CAPTION", "TIKTOK_POST_SUBMITTING", "TRUSTED_CLICK", "IMPORT_TIKTOK_PRODUCTS", "AUTOPILOT_START", "AUTOPILOT_RESUME", "TEST_API_KEY"]);
+chrome.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
+  const command = message as unknown as { type: string; key?: string; videoId?: string; error?: string };
+  const trustedPage = sender.id === chrome.runtime.id && !!sender.url?.startsWith(chrome.runtime.getURL(""));
+  (async () => {
+    if (command.type === "LICENSE_ACTIVATE") {
+      if (!trustedPage) { sendResponse({ ok: false, error: "not allowed" }); return; }
+      sendResponse(await activateLicense(String(command.key ?? ""))); return;
+    }
+    if (command.type === "LICENSE_CHECK") { sendResponse(await checkLicense()); return; }
+    if (command.type === "RESOLVE_TIKTOK_POST") {
+      if (!trustedPage) { sendResponse({ ok: false, error: "not allowed" }); return; }
+      const request = message as unknown as { videoId: string; posted: boolean };
+      if (typeof request.posted !== "boolean") { sendResponse({ ok: false, error: "ระบุผลที่ตรวจใน TikTok ก่อน" }); return; }
+      const tabKey = `tiktokSubmitTab:${request.videoId}`;
+      const tabId = (await chrome.storage.local.get(tabKey))[tabKey] as number | undefined;
+      if (!request.posted && tabId) await chrome.tabs.remove(tabId).catch(() => {});
+      await store.updateVideoJob(request.videoId, { tiktokPost: { status: request.posted ? "posted" : "failed", at: Date.now(), error: request.posted ? null : "ผู้ใช้ตรวจแล้วว่ายังไม่โพสต์" } });
+      await chrome.storage.local.remove(tabKey); sendResponse({ ok: true }); return;
+    }
+    if (command.type === "LICENSE_JOB_PAUSED") {
+      // A content script may report a paused decision, but cannot provide new credentials.
+      await chrome.storage.local.set({ jobProgress: { videoId: command.videoId, current: 0, total: 0, state: "paused", error: command.error, at: Date.now() } });
+      await autopilot.pauseForLicense(command.error ?? "สิทธิ์ใช้งาน: กรุณาตรวจสิทธิ์อีกครั้ง");
+      sendResponse({ ok: true }); return;
+    }
+    if (command.type === "LICENSE_RESUME_WORK") {
+      if (!trustedPage) { sendResponse({ ok: false, error: "not allowed" }); return; }
+      await requireLicense();
+      const queue = await getJobQueue();
+      const { jobProgress, licenseQueuePaused } = await chrome.storage.local.get(["jobProgress", "licenseQueuePaused"]);
+      const progress = jobProgress as { videoId?: string; state?: string } | undefined;
+      if (progress?.state === "paused" && progress.videoId) {
+        const video = await store.getVideo(progress.videoId);
+        if (video?.status === "completed") await resumeLicensedPost(video.id);
+        else await resumeLicensedVideo(progress.videoId);
+      } else if (licenseQueuePaused && queue.current) {
+        await advanceJobQueue(queue.current);
+      }
+      await chrome.storage.local.remove("licenseQueuePaused");
+      sendResponse({ ok: true }); return;
+    }
+    if (LICENSED_MESSAGES.has(command.type)) await requireLicense();
+    handleExtensionMessage(message, sender, sendResponse);
+  })().catch(async error => {
+    if (isLicenseFailure(error) && ["CLAIM_TIKTOK_POST", "CLAIM_SHOPEE_POST"].includes(command.type) && sender.tab?.id) {
+      const stored = await chrome.storage.local.get(["pendingTikTokPost", `shopeePostTab:${sender.tab.id}`]);
+      const tikTok = stored.pendingTikTokPost as PendingTikTokPost | undefined;
+      const videoId = command.type === "CLAIM_TIKTOK_POST" ? (tikTok?.tabId === sender.tab.id ? tikTok.job.videoId : undefined) : stored[`shopeePostTab:${sender.tab.id}`] as string | undefined;
+      if (videoId) {
+        const message = error instanceof Error ? error.message : String(error);
+        await chrome.storage.local.set({ jobProgress: { videoId, current: 0, total: 0, state: "paused", error: message, at: Date.now() } });
+        await autopilot.pauseForLicense(message);
+      }
+    }
+    const licenseError = isLicenseFailure(error) ? error as { code?: string; expiresAt?: string; serverTime?: string } : undefined;
+    sendResponse({ ok: false, code: licenseError?.code ?? (licenseError ? "license_denied" : undefined), expiresAt: licenseError?.expiresAt, serverTime: licenseError?.serverTime, error: error instanceof Error ? error.message : String(error) });
+  });
+  return true;
 });
 
 /**

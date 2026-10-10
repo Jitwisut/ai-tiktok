@@ -1,3 +1,5 @@
+import { isLicenseFailure } from "./license-client.js";
+import { SHOPEE_STYLES, shopeeProductLink, type PublishPlatform } from "./commerce.js";
 /**
  * Autopilot: turns a list of products into posted TikTok videos without the
  * user in the loop — analyze → script + scenes → Flow video → TikTok post —
@@ -23,6 +25,7 @@ export type AutopilotPostMode = "auto" | "prepare" | "none";
 export type AutopilotSite = "flow" | "aistudio" | "gemini" | "meta";
 
 export interface AutopilotSettings {
+  platform?: PublishPlatform;
   targetDuration: number;
   /** A content style, or "rotate" to cycle through all of them. */
   style: string;
@@ -50,6 +53,7 @@ interface CurrentItem {
 }
 
 export interface AutopilotHistoryEntry {
+  platform?: PublishPlatform;
   productId: string;
   productName: string;
   videoId: string | null;
@@ -79,13 +83,17 @@ export interface AutopilotState {
 }
 
 export interface AutopilotDeps {
+  requireLicense(): Promise<void>;
+  resumeVideo(videoId: string): Promise<void>;
+  resumePost(videoId: string): Promise<void>;
   analyzeProduct(productId: string, source: store.TextSource): Promise<unknown>;
   generateContentScenes(
     productId: string, style: string, targetDuration: number, site: AutopilotSite, source: store.TextSource,
-    resumeContentId?: string, onContentReady?: (content: store.Content) => Promise<void>,
+    resumeContentId?: string, onContentReady?: (content: store.Content) => Promise<void>, platform?: PublishPlatform,
   ): Promise<{ content: store.Content }>;
   startVideo(contentId: string, targetDuration: number, site: AutopilotSite): Promise<string>;
   prepareTikTokPost(videoId: string, caption: string, autoPost: boolean, productId: string | null): Promise<{ ok: boolean; error?: string }>;
+  prepareShopeePost(videoId: string, caption: string, autoPost: boolean, productUrl: string | null): Promise<{ ok: boolean; error?: string }>;
   isManualJobRunning(): Promise<boolean>;
 }
 
@@ -151,7 +159,8 @@ export function createAutopilot(deps: AutopilotDeps) {
 
   function pickStyle(state: AutopilotState): string {
     if (state.settings.style !== "rotate") return state.settings.style;
-    const style = CONTENT_STYLES[state.styleIndex % CONTENT_STYLES.length];
+    const styles = state.settings.platform === "shopee" ? SHOPEE_STYLES : CONTENT_STYLES;
+    const style = styles[state.styleIndex % styles.length];
     state.styleIndex += 1;
     return style;
   }
@@ -159,6 +168,7 @@ export function createAutopilot(deps: AutopilotDeps) {
   function finish(state: AutopilotState, status: AutopilotHistoryEntry["status"], error: string | null) {
     const cur = state.current!;
     state.history.unshift({
+      platform: state.settings.platform ?? "tiktok",
       productId: cur.productId,
       productName: cur.productName,
       videoId: cur.videoId ?? null,
@@ -188,16 +198,33 @@ export function createAutopilot(deps: AutopilotDeps) {
    */
   async function forgetTabJob(videoId: string | undefined) {
     if (!videoId) return;
-    const stored = await chrome.storage.local.get(["activeFlowJob", "activeGeminiJob", "metaActiveJob", "pendingVideoJob"]);
-    const stale = (["activeFlowJob", "activeGeminiJob", "metaActiveJob"] as const).filter(
+    const stored = await chrome.storage.local.get(["activeFlowJob", "activeGeminiJob", "activeStudioJob", "metaActiveJob", "pendingVideoJob"]);
+    const stale = (["activeFlowJob", "activeGeminiJob", "activeStudioJob", "metaActiveJob"] as const).filter(
       (key) => (stored[key] as { job?: { videoId?: string } } | undefined)?.job?.videoId === videoId,
     ) as string[];
     if ((stored.pendingVideoJob as { videoId?: string } | undefined)?.videoId === videoId) stale.push("pendingVideoJob", "pendingVideoJobSite");
     if (stale.length) await chrome.storage.local.remove(stale);
+    const key = `shopeePost:${videoId}`;
+    const pending = (await chrome.storage.local.get(key))[key] as { tabId: number; submittedAt?: number } | undefined;
+    if (pending && !pending.submittedAt) {
+      await chrome.storage.local.remove([key, `shopeePostTab:${pending.tabId}`]);
+      await chrome.tabs.remove(pending.tabId).catch(() => {});
+      await store.updateVideoJob(videoId, { shopeePost: { status: "failed", at: Date.now(), error: "ยกเลิกงานโดยผู้ใช้" } });
+    }
   }
 
   /** A failed step is retried after a pause; the product is given up on after MAX_ATTEMPTS. */
   function failStep(state: AutopilotState, err: unknown) {
+    if (isLicenseFailure(err)) {
+      state.status = "paused";
+      state.message = errorText(err);
+      if (state.current) {
+        state.current.leaseUntil = 0; state.current.lastError = errorText(err);
+        // Preparation was denied before it could start; resume must retry this step.
+        if (state.current.step === "post") state.current.postRequestedAt = undefined;
+      }
+      return;
+    }
     const cur = state.current!;
     cur.attempts += 1;
     cur.lastError = errorText(err);
@@ -283,6 +310,11 @@ export function createAutopilot(deps: AutopilotDeps) {
     const cur = state.current!;
     if (cur.leaseUntil > now) return false;
 
+    // Observation of a submitted video/post is always permitted; initiating another step is paid.
+    if (cur.step === "analyze" || cur.step === "content" || (cur.step === "video" && !cur.videoId) || (cur.step === "post" && !cur.postRequestedAt)) {
+      try { await deps.requireLicense(); }
+      catch (error) { failStep(state, error); await saveMerged(state); return false; }
+    }
     switch (cur.step) {
       case "analyze": {
         cur.leaseUntil = now + LEASE_GEMINI_MS;
@@ -318,6 +350,7 @@ export function createAutopilot(deps: AutopilotDeps) {
                 await save(latest);
               }
             },
+            state.settings.platform ?? "tiktok",
           );
           cur.contentId = content.id;
           cur.caption = content.caption;
@@ -355,6 +388,10 @@ export function createAutopilot(deps: AutopilotDeps) {
           return true;
         }
         const progressError = progress?.videoId === cur.videoId ? progress.error : undefined;
+        if (progress?.videoId === cur.videoId && progress.state === "paused") {
+          state.status = "paused"; state.message = progressError ?? "สิทธิ์ใช้งาน: กรุณาตรวจสิทธิ์แล้วทำต่อ";
+          cur.leaseUntil = 0; await save(state); return false;
+        }
         // Out of video allowance every retry and every next product fails the
         // same way — pause on this product instead, so "ทำต่อ" picks it up
         // once the allowance is back (analysis and script are kept).
@@ -384,18 +421,21 @@ export function createAutopilot(deps: AutopilotDeps) {
 
       case "post": {
         if (!cur.postRequestedAt) {
+          // Result messages can arrive before prepare resolves. Anchor to request start, not return time.
+          cur.postRequestedAt = now;
           cur.leaseUntil = now + LEASE_START_MS;
           await save(state);
           try {
             const product = await store.getProduct(cur.productId);
-            const result = await deps.prepareTikTokPost(
+            const result = state.settings.platform === "shopee"
+              ? await deps.prepareShopeePost(cur.videoId!, cur.caption ?? "", state.settings.postMode === "auto", shopeeProductLink(product?.sourceUrl)?.url ?? null)
+              : await deps.prepareTikTokPost(
               cur.videoId!,
               cur.caption ?? "",
               state.settings.postMode === "auto",
               tiktokIdOf(product),
             );
             if (!result.ok) throw new Error(result.error ?? "เปิดหน้าโพสต์ไม่สำเร็จ");
-            cur.postRequestedAt = Date.now();
             cur.leaseUntil = 0;
           } catch (err) {
             failStep(state, err);
@@ -404,8 +444,15 @@ export function createAutopilot(deps: AutopilotDeps) {
           return false;
         }
 
-        const post = (await store.getVideo(cur.videoId!))?.tiktokPost;
-        if (post && post.at >= cur.postRequestedAt) {
+        const video = await store.getVideo(cur.videoId!);
+        const post = state.settings.platform === "shopee" ? video?.shopeePost : video?.tiktokPost;
+        if (post?.status === "uncertain") {
+          state.status = "paused";
+          state.message = "ยังยืนยันผลโพสต์ไม่ได้ — ตรวจบัญชีว่าคลิปขึ้นแล้วหรือไม่แล้วบันทึกผลในคลังก่อนทำต่อ เพื่อป้องกันโพสต์ซ้ำ";
+          await save(state);
+          return false;
+        }
+        if (post && post.at >= cur.postRequestedAt && ["posted", "ready", "failed"].includes(post.status)) {
           if (post.status === "posted") finish(state, "posted", null);
           else if (post.status === "ready") finish(state, "ready", null);
           else if (post.status === "failed") failStep(state, post.error ?? "โพสต์ไม่สำเร็จ");
@@ -414,7 +461,15 @@ export function createAutopilot(deps: AutopilotDeps) {
           return true;
         }
         if (now - cur.postRequestedAt > POST_TIMEOUT_MS) {
-          failStep(state, "หน้า TikTok ไม่ตอบกลับ");
+          if (state.settings.platform === "shopee") {
+            await store.updateVideoJob(cur.videoId!, { shopeePost: { status: "uncertain", at: Date.now(), error: "หน้า Shopee ไม่ตอบกลับ — ตรวจสถานะโพสต์ในคลังก่อนทำต่อ" } });
+            state.status = "paused";
+            state.message = "หน้า Shopee ไม่ตอบกลับ — ตรวจสถานะโพสต์ในคลังก่อนทำต่อ";
+          } else {
+            await store.updateVideoJob(cur.videoId!, { tiktokPost: { status: "uncertain", at: Date.now(), error: "หน้า TikTok ไม่ตอบกลับ — ตรวจสถานะโพสต์ในคลังก่อนทำต่อ" } });
+            state.status = "paused";
+            state.message = "หน้า TikTok ไม่ตอบกลับ — ตรวจสถานะโพสต์ในคลังก่อนทำต่อ";
+          }
           await save(state);
           return true;
         }
@@ -481,6 +536,7 @@ export function createAutopilot(deps: AutopilotDeps) {
         return { ok: true, state: await load() };
 
       case "AUTOPILOT_START": {
+        await deps.requireLicense();
         const existing = await load();
         if (existing && existing.status !== "idle") {
           return { ok: false, error: "ระบบอัตโนมัติทำงานอยู่แล้ว — กดหยุดก่อนเริ่มใหม่" };
@@ -494,12 +550,22 @@ export function createAutopilot(deps: AutopilotDeps) {
         const textSource = ["gemini-web", "chatgpt-web", "api"].includes(settings?.textSource)
           ? settings.textSource : (await store.getSettings()).textSource ?? "gemini-web";
         const site: AutopilotSite = ["aistudio", "gemini", "meta"].includes(settings?.site) ? settings.site : "flow";
+        const platform = settings?.platform === "shopee" ? "shopee" : "tiktok";
+        const allowedStyles: readonly string[] = platform === "shopee" ? SHOPEE_STYLES : CONTENT_STYLES;
+        if (settings?.style !== "rotate" && settings?.style && !allowedStyles.includes(settings.style)) return { ok: false, error: "สไตล์ไม่ตรงกับแพลตฟอร์มที่เลือก" };
+        if (platform === "shopee" && settings?.postMode !== "none") {
+          for (const id of productIds) {
+            const product = await store.getProduct(id);
+            if (!shopeeProductLink(product?.sourceUrl)) return { ok: false, error: `สินค้า ${product?.name ?? id} ไม่มีลิงก์ Shopee — นำเข้าสินค้า Shopee ก่อนเริ่มโพสต์` };
+          }
+        }
         const lengths = durationOptions(site);
         const now = Date.now();
         const state: AutopilotState = {
           status: "running",
           mode,
           settings: {
+            platform: settings?.platform === "shopee" ? "shopee" : "tiktok",
             targetDuration: lengths.includes(Number(settings?.targetDuration)) ? Number(settings.targetDuration) : lengths[0],
             style: settings?.style || "rotate",
             postMode: ["auto", "prepare", "none"].includes(settings?.postMode) ? settings.postMode : "prepare",
@@ -525,8 +591,16 @@ export function createAutopilot(deps: AutopilotDeps) {
 
       case "AUTOPILOT_PAUSE":
       case "AUTOPILOT_RESUME": {
+        if (message.type === "AUTOPILOT_RESUME") await deps.requireLicense();
         const state = await load();
         if (!state || state.status === "idle") return { ok: false, error: "ระบบอัตโนมัติไม่ได้ทำงาน" };
+        if (message.type === "AUTOPILOT_RESUME" && state.current?.videoId) {
+          const progress = (await chrome.storage.local.get("jobProgress")).jobProgress as { state?: string; videoId?: string } | undefined;
+          if (progress?.state === "paused" && progress.videoId === state.current.videoId) {
+            if (state.current.step === "video") await deps.resumeVideo(state.current.videoId);
+            else if (state.current.step === "post") await deps.resumePost(state.current.videoId);
+          }
+        }
         state.status = message.type === "AUTOPILOT_PAUSE" ? "paused" : "running";
         state.message = null;
         if (state.status === "running") {
@@ -542,13 +616,14 @@ export function createAutopilot(deps: AutopilotDeps) {
       case "AUTOPILOT_STOP": {
         const state = await load();
         if (!state) return { ok: true, state: null };
-        await forgetTabJob(state.current?.videoId);
+        const videoId = state.current?.videoId;
         state.status = "idle";
         state.current = null;
         state.nextRunAt = null;
         state.message = "หยุดแล้ว (วิดีโอที่ Flow กำลังสร้างอยู่จะยังสร้างต่อจนเสร็จ แต่จะไม่โพสต์)";
         state.startedAt = Date.now();
         await save(state);
+        await forgetTabJob(videoId);
         await chrome.alarms.clear(ALARM);
         return { ok: true, state };
       }
@@ -556,7 +631,11 @@ export function createAutopilot(deps: AutopilotDeps) {
       case "AUTOPILOT_SKIP_CURRENT": {
         const state = await load();
         if (!state?.current) return { ok: false, error: "ไม่มีสินค้าที่กำลังทำ" };
+        const previousStatus = state.status;
+        state.status = "paused";
+        await save(state);
         await forgetTabJob(state.current.videoId);
+        state.status = previousStatus;
         finish(state, "failed", "ข้ามโดยผู้ใช้");
         state.consecutiveFailures = 0;
         await save(state);
@@ -567,7 +646,16 @@ export function createAutopilot(deps: AutopilotDeps) {
     return undefined;
   }
 
+  async function pauseForLicense(message: string) {
+    const state = await load();
+    if (!state || state.status !== "running") return;
+    state.status = "paused"; state.message = message;
+    if (state.current) state.current.leaseUntil = 0;
+    await save(state);
+  }
+
   return {
+    pauseForLicense,
     handleMessage,
     tick,
     async ownsVideo(videoId: string): Promise<boolean> {
@@ -582,5 +670,5 @@ export function createAutopilot(deps: AutopilotDeps) {
 }
 
 export function stepLabel(step: Step): string {
-  return { analyze: "วิเคราะห์สินค้า", content: "เขียนสคริปต์และฉาก", video: "สร้างวิดีโอ", post: "โพสต์ TikTok" }[step];
+  return { analyze: "วิเคราะห์สินค้า", content: "เขียนสคริปต์และฉาก", video: "สร้างวิดีโอ", post: "โพสต์วิดีโอ" }[step];
 }

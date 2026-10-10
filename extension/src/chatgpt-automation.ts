@@ -196,6 +196,7 @@
       const beforeUsers = userMessageCount();
       const button = await waitFor(() => sendButton() ?? undefined, 60000);
       if (!button) return { ok: false, error: "ปุ่มส่งใน ChatGPT ไม่พร้อม — ตรวจว่ารูปอัปโหลดเสร็จแล้ว" };
+      await extensionRequireLicense();
       button.click();
       if (!(await waitFor(() => responseStarted(before, beforeUsers) ? true : undefined, 6000))) {
         // The composer clears as soon as ChatGPT accepts a prompt, sometimes
@@ -209,6 +210,7 @@
             return { ok: false, error: "ส่งคำถามแล้ว แต่ไม่พบคำตอบจาก ChatGPT ภายในเวลาที่กำหนด" };
           }
         } else {
+          await extensionRequireLicense();
           const clicked = await trustedClick(SEND_SELECTOR);
           if (!(await waitFor(() => responseStarted(before, beforeUsers) ? true : undefined, clicked ? 10000 : 3000))) {
             return { ok: false, error: "ChatGPT ไม่รับคำถาม — ตรวจหน้าเว็บและลองใหม่" };

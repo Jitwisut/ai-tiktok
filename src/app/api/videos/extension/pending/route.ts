@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db/prisma";
  * extension-origin page with no app session cookie to send.
  */
 export async function GET(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") return NextResponse.json({ error: "Legacy extension endpoint disabled" }, { status: 404 });
   const token = process.env.EXTENSION_UPLOAD_TOKEN;
   if (!token) {
     return NextResponse.json({ error: "EXTENSION_UPLOAD_TOKEN is not set" }, { status: 503 });

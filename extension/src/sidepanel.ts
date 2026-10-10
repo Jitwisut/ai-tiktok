@@ -1,3 +1,5 @@
+import { initLicensePanel } from "./license-panel.js";
+import { SHOPEE_STYLES, shopeeProductLink, type PublishPlatform } from "./lib/commerce.js";
 // The one big UI. Runs as a real extension page (not injected into someone
 // else's site), so it can use real ES module imports straight into the
 // IndexedDB clip library, and talks to background.ts for everything else.
@@ -7,6 +9,7 @@ import { CONTENT_STYLES } from "./lib/analysis-prompts.js";
 import { styleLabel } from "./lib/style-playbooks.js";
 import { clipCountFor, clipSecondsForSite, durationOptions } from "./lib/prompt-engine.js";
 import { stepLabel, type AutopilotState } from "./lib/autopilot.js";
+import { initPhonePanel } from "./phone-panel.js";
 
 /* ---------- shared helpers ---------- */
 
@@ -49,7 +52,18 @@ async function activeTabId(): Promise<number | null> {
 
 /* ---------- tabs ---------- */
 
-const TABS = ["products", "library", "autopilot", "settings"] as const;
+const phonePanel = initPhonePanel({
+  getVideos: async () => {
+    const result = await send<{ ok: boolean; videos: CompletedVideo[]; error?: string }>({ type: "GET_COMPLETED_VIDEOS" });
+    if (!result.ok) throw new Error(result.error ?? "โหลดคลิปไม่สำเร็จ");
+    return result.videos;
+  },
+  resolve: async videoId => {
+    const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_SHOPEE_POST", videoId, posted: true });
+    if (!result.ok) throw new Error(result.error ?? "บันทึกผลโพสต์ไม่สำเร็จ");
+  },
+});
+const TABS = ["products", "library", "autopilot", "phone", "settings"] as const;
 type TabName = (typeof TABS)[number];
 
 function showTab(name: TabName) {
@@ -59,6 +73,7 @@ function showTab(name: TabName) {
   }
   if (name === "library") loadLibrary();
   if (name === "autopilot") loadAutopilot();
+  void phonePanel.setVisible(name === "phone");
 }
 
 for (const tab of TABS) {
@@ -156,8 +171,8 @@ function bindDurationToSite(durationId: string, siteId: string) {
 }
 
 /** Thai names in the picker; the option value stays the English style key used by prompts and storage. */
-function styleOptions(): string {
-  return CONTENT_STYLES.map((s) => `<option value="${s}" title="${escapeHtml(styleLabel(s).description)}">${escapeHtml(styleLabel(s).name)}</option>`).join("");
+function styleOptions(platform: PublishPlatform = "tiktok"): string {
+  return (platform === "shopee" ? SHOPEE_STYLES : CONTENT_STYLES).map((s) => `<option value="${s}" title="${escapeHtml(styleLabel(s).description)}">${escapeHtml(styleLabel(s).name)}</option>`).join("");
 }
 
 /** Shows what the chosen style looks like under its picker, and keeps it in sync. */
@@ -432,6 +447,7 @@ function generateScenesSelected() {
     style,
     targetDuration,
     site,
+    platform: ($("publish-platform") as HTMLSelectElement).value,
   }).then((result) => {
     button.disabled = false;
     button.textContent = "2. สร้างฉาก";
@@ -644,8 +660,11 @@ interface CompletedVideo {
   mergedAt: number | null;
   mergeError: string | null;
   caption: string;
+  platform?: PublishPlatform;
+  productShopeeUrl?: string | null;
+  shopeePost?: { status: string; at: number; error: string | null } | null;
   productTikTokId: string | null;
-  tiktokPost: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
+  tiktokPost: { status: "preparing" | "ready" | "posted" | "failed" | "submitting" | "uncertain"; at: number; error: string | null } | null;
 }
 
 let libraryBusy = false;
@@ -672,7 +691,7 @@ function libraryRow(imageUrl: string | null, title: string, subtitle: string, ac
 
 function setProgress(current: number, total: number, state: string) {
   const wrap = $("progress-wrap");
-  if (!total || state === "idle") {
+  if ((!total && state !== "paused") || state === "idle") {
     wrap.style.display = "none";
     return;
   }
@@ -682,9 +701,10 @@ function setProgress(current: number, total: number, state: string) {
     done: "เสร็จแล้ว",
     failed: "ล้มเหลว",
     cancelled: "ยกเลิกแล้ว",
+    paused: "พักงาน — ตรวจสิทธิ์ใช้งานแล้วกดทำงานที่พักต่อ",
   };
   wrap.style.display = "block";
-  $("progress-label").textContent = `${labels[state] ?? state} — คลิป ${current}/${total}`;
+  $("progress-label").textContent = `${labels[state] ?? state}${total ? ` — คลิป ${current}/${total}` : ""}`;
   const bar = $("progress-bar");
   bar.style.width = `${Math.round((current / Math.max(1, total)) * 100)}%`;
   bar.style.background = state === "failed" ? "#dc2626" : state === "done" ? "#16a34a" : "#2563eb";
@@ -759,13 +779,14 @@ function clipPlayer(blob: Blob, width: string): HTMLVideoElement {
   return videoEl;
 }
 
-function downloadBlob(blob: Blob, filename: string) {
+function downloadBlob(blob: Blob, filename: string): Promise<boolean> {
   const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: false }).then(
-    () => log(`ดาวน์โหลด ${filename} แล้ว`),
-    (err: unknown) => log(`ดาวน์โหลดไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`),
+  const result = chrome.downloads.download({ url, filename, saveAs: false }).then(
+    () => { log(`เริ่มดาวน์โหลด ${filename} แล้ว`); return true; },
+    (err: unknown) => { log(`ดาวน์โหลดไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`); return false; },
   );
   setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  return result;
 }
 
 function mergeVideo(video: CompletedVideo, button: HTMLButtonElement) {
@@ -790,6 +811,8 @@ const TIKTOK_POST_LABELS: Record<string, string> = {
   ready: "เตรียมโพสต์เสร็จแล้ว — ไปกด Post ในแท็บ TikTok",
   posted: "โพสต์ขึ้น TikTok แล้ว ✓",
   failed: "เตรียมโพสต์ไม่สำเร็จ",
+  submitting: "ส่งโพสต์แล้ว กำลังรอยืนยันผล",
+  uncertain: "ตรวจผลโพสต์ใน TikTok ก่อนทำต่อ",
 };
 
 function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLElement {
@@ -800,7 +823,7 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
   block.innerHTML = `<div class="clip-parts-label" style="margin-top:0;margin-bottom:4px">โพสต์ TikTok</div>`;
 
   const caption = document.createElement("textarea");
-  caption.rows = 3;
+  caption.rows = 3; caption.maxLength = 150; caption.setAttribute("aria-label", "แคปชัน Shopee ไม่เกิน 150 ตัวอักษร");
   caption.value = video.caption;
   caption.placeholder = "แคปชันและ #แฮชแท็ก";
   Object.assign(caption.style, {
@@ -888,19 +911,34 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
     status.textContent = `${TIKTOK_POST_LABELS[video.tiktokPost.status] ?? video.tiktokPost.status}${video.tiktokPost.error ? `: ${video.tiktokPost.error}` : ""}`;
     block.appendChild(status);
   }
+  if (video.tiktokPost && ["submitting", "uncertain"].includes(video.tiktokPost.status)) {
+    for (const posted of [true, false]) {
+      const confirmResult = document.createElement("button"); confirmResult.className = "btn";
+      confirmResult.textContent = posted ? "ตรวจแล้ว: โพสต์ TikTok แล้ว" : "ตรวจแล้ว: ยังไม่โพสต์";
+      confirmResult.addEventListener("click", async () => {
+        if (!confirm(posted ? "ตรวจใน TikTok แล้วว่าคลิปนี้เผยแพร่แล้วใช่ไหม?" : "ตรวจใน TikTok ว่าคลิปยังไม่เผยแพร่แล้วใช่ไหม? ระบบจะปิดแท็บโพสต์เดิมก่อนอนุญาตให้เริ่มใหม่")) return;
+        const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_TIKTOK_POST", videoId: video.videoId, posted });
+        if (result.ok) await loadLibrary(); else log(result.error ?? "บันทึกผลไม่สำเร็จ");
+      });
+      block.appendChild(confirmResult);
+    }
+  }
   return block;
 }
 
 async function renderClips() {
   const container = $("clips-list");
   const [result, settingsResult] = await Promise.all([
-    send<{ ok: boolean; videos?: CompletedVideo[] }>({ type: "GET_COMPLETED_VIDEOS" }),
+    send<{ ok: boolean; videos?: CompletedVideo[]; error?: string }>({ type: "GET_COMPLETED_VIDEOS" }),
     send<{ ok: boolean; settings?: { tiktokAutoPost?: boolean } }>({ type: "GET_SETTINGS" }),
   ]);
   const videos = result?.videos ?? [];
   const autoPostDefault = settingsResult?.settings?.tiktokAutoPost ?? false;
 
   container.innerHTML = "";
+  if (!result?.ok) {
+    const error = document.createElement("div"); error.className = "empty"; error.textContent = result?.error ?? "โหลดคลิปที่เสร็จแล้วไม่สำเร็จ"; container.appendChild(error); return;
+  }
   if (videos.length === 0) {
     container.innerHTML = `<div class="empty">ยังไม่มีคลิปที่เสร็จแล้ว</div>`;
     return;
@@ -962,7 +1000,10 @@ async function renderClips() {
       wrap.appendChild(clipRow);
     }
 
-    if (merged || parts.length === 1) wrap.appendChild(tiktokPostBlock(video, autoPostDefault));
+    if (merged || parts.length === 1) {
+      if (video.platform === "shopee") wrap.appendChild(shopeePostBlock(video));
+      else wrap.appendChild(tiktokPostBlock(video, autoPostDefault));
+    }
     container.appendChild(wrap);
   }
 }
@@ -1113,15 +1154,19 @@ function apRenderProducts() {
     list.innerHTML = `<div class="empty" style="padding:10px">ยังไม่มีสินค้า — ไปแท็บสินค้าแล้วกด "ดึงสินค้าจาก Showcase"</div>`;
     return;
   }
-  for (const product of products) {
+  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const available = products.filter((p) => platform === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl));
+  if (!available.length) list.innerHTML = `<div class="empty" style="padding:10px">${platform === "shopee" ? 'เปิดหน้าสินค้า Shopee ใน Chrome แล้วกด "ดึงจากหน้า Shopee" ในแท็บสินค้า' : 'ยังไม่มีสินค้า TikTok'}</div>`;
+  for (const product of available) {
     const row = document.createElement("label");
     row.className = "ap-product";
-    const linkable = !!tiktokIdFromSourceUrl(product.sourceUrl);
+    const linkable = platform === "shopee" ? !!shopeeProductLink(product.sourceUrl) : !!tiktokIdFromSourceUrl(product.sourceUrl);
+    const linkLabel = platform === "shopee" ? "มีลิงก์สินค้า" : "ติดลิงก์ได้";
     row.innerHTML = `
       <input type="checkbox" ${apSelected.has(product.id) ? "checked" : ""} />
       <img src="${product.images[0] ?? ""}" />
       <span class="name" title="${escapeHtml(product.name)}">${escapeHtml(product.name)}</span>
-      <span class="ap-tag" style="background:${linkable ? "#14532d" : "#374151"};color:${linkable ? "#86efac" : "#9ca3af"}">${linkable ? "ติดลิงก์ได้" : "ไม่มีลิงก์"}</span>
+      <span class="ap-tag" title="${platform === "shopee" ? "มี URL สินค้าสำหรับแนบในแอป Shopee ต้องตรวจสิทธิ์ปักสินค้าบนเว็บแยกต่างหาก" : "สินค้าจาก TikTok Showcase"}" style="background:${linkable ? "#14532d" : "#374151"};color:${linkable ? "#86efac" : "#9ca3af"}">${linkable ? linkLabel : "ไม่มีลิงก์"}</span>
     `;
     row.querySelector("input")!.addEventListener("change", (event) => {
       if ((event.target as HTMLInputElement).checked) apSelected.add(product.id);
@@ -1187,7 +1232,7 @@ function apRender(state: AutopilotState | null) {
       else if (state.nextRunAt) lines.push(`<div>รอบถัดไป: ${apFormatTime(state.nextRunAt)} · หมุนเวียน ${state.productIds.length} ชิ้น · เวลา ${state.times.join(", ")}</div>`);
       const post = { auto: "โพสต์อัตโนมัติ", prepare: "เตรียมโพสต์รอกดเอง", none: "ไม่โพสต์" }[state.settings.postMode];
       const textSource = AP_TEXT_SOURCE_LABELS[state.settings.textSource] ?? "เว็บ Gemini";
-      lines.push(`<div style="color:#9ca3af">วิเคราะห์ด้วย ${textSource} · ${state.settings.targetDuration} วิ · ${post}</div>`);
+      lines.push(`<div style="color:#9ca3af">วิเคราะห์ด้วย ${textSource} · ${state.settings.targetDuration} วิ · ${state.settings.platform === "shopee" ? "Shopee" : "TikTok"} · ${post}</div>`);
     }
     status.innerHTML = lines.join("");
     status.style.display = "block";
@@ -1200,7 +1245,7 @@ function apRender(state: AutopilotState | null) {
     const meta = AP_HISTORY_LABELS[entry.status];
     const row = document.createElement("div");
     row.className = "ap-history-row";
-    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)}${entry.style ? ` · ${escapeHtml(styleLabel(entry.style).name)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
+    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)} · ${entry.platform === "shopee" ? "Shopee" : "TikTok"}${entry.style ? ` · ${escapeHtml(styleLabel(entry.style).name)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
     history.appendChild(row);
   }
 }
@@ -1236,7 +1281,7 @@ function apCommand(type: string, extra: Record<string, unknown> = {}) {
 $("ap-pick-first").addEventListener("click", () => {
   const count = Math.max(1, Number(($("ap-count") as HTMLInputElement).value) || 1);
   apSelected.clear();
-  products.slice(0, count).forEach((p) => apSelected.add(p.id));
+  products.filter((p) => ($("ap-platform") as HTMLSelectElement).value === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl)).slice(0, count).forEach((p) => apSelected.add(p.id));
   apRenderProducts();
 });
 $("ap-pick-none").addEventListener("click", () => {
@@ -1256,8 +1301,8 @@ $("ap-start").addEventListener("click", () => {
     mode === "batch"
       ? `สร้างวิดีโอ ${productIds.length} ชิ้นต่อกันเลย`
       : `ทุกวันเวลา ${($("ap-times") as HTMLInputElement).value} ทำ 1 ชิ้น วนสินค้า ${productIds.length} ชิ้นไปเรื่อยๆ`;
-  const warning =
-    postMode === "auto" ? "\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี TikTok จริงโดยไม่ถามอีก" : "";
+  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const warning = postMode === "auto" ? `\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี ${platform === "shopee" ? "Shopee" : "TikTok"} จริงโดยไม่ถามอีก` : "";
   const siteSelect = $("ap-site") as HTMLSelectElement;
   const siteName = siteSelect.selectedOptions[0]?.textContent ?? "Flow";
   const sourceSelect = $("ap-text-source") as HTMLSelectElement;
@@ -1270,6 +1315,7 @@ $("ap-start").addEventListener("click", () => {
     productIds,
     times: ($("ap-times") as HTMLInputElement).value,
     settings: {
+      platform,
       targetDuration: Number(($("ap-duration") as HTMLSelectElement).value),
       style: ($("ap-style") as HTMLSelectElement).value,
       postMode,
@@ -1426,3 +1472,99 @@ bindDurationToSite("duration", "site");
 bindDurationToSite("ap-duration", "ap-site");
 loadProducts();
 loadSettings();
+
+
+function updatePlatformOptions(prefix: "ap-" | "") {
+  const platform = ($(prefix ? "ap-platform" : "publish-platform") as HTMLSelectElement).value as PublishPlatform;
+  const select = $(`${prefix}style`) as HTMLSelectElement;
+  select.innerHTML = (prefix ? '<option value="rotate">สลับสไตล์ทุกคลิป</option>' : "") + styleOptions(platform);
+  select.dispatchEvent(new Event("change"));
+  if (prefix) {
+    apSelected.clear(); apRenderProducts();
+    if (platform === "shopee") ($("ap-post-mode") as HTMLSelectElement).value = "none";
+    $("ap-post-hint").textContent = platform === "shopee" ? "Shopee Affiliate: สร้างคลิปขายแล้วดาวน์โหลดไปโพสต์ในแอป Shopee ได้ ส่วนโพสต์ผ่าน Chrome ต้องมีสิทธิ์ปักสินค้าร้านอื่นในหน้าเว็บก่อน — Seller Centre อาจแสดงเฉพาะสินค้าร้านตัวเอง" : "โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง";
+  } else resetReview();
+}
+$("ap-platform").addEventListener("change", () => updatePlatformOptions("ap-"));
+$("publish-platform").addEventListener("change", () => updatePlatformOptions(""));
+$("get-shopee-product").addEventListener("click", async () => {
+  const button = $("get-shopee-product") as HTMLButtonElement;
+  const status = $("shopee-import-status");
+  button.disabled = true; button.textContent = "กำลังดึงสินค้า...";
+  status.textContent = "กำลังอ่านสินค้า Shopee จากแท็บที่เปิดอยู่...";
+  try {
+    const tabId = await activeTabId();
+    if (!tabId) throw new Error("ไม่พบแท็บ — เปิดหน้าสินค้า Shopee ใน Chrome ก่อน");
+    const result = await send<{ ok: boolean; error?: string; products?: AppProduct[]; warnings?: string[] }>({ type: "FETCH_SHOPEE_PRODUCTS", tabId });
+    if (!result.ok || !result.products?.length) throw new Error(result.error ?? "ไม่พบข้อมูลสินค้า Shopee ที่นำเข้าได้");
+    status.textContent = `นำเข้า/อัปเดตสินค้า Shopee ${result.products.length} รายการแล้ว${result.warnings?.length ? ` · ${result.warnings.join(" · ")}` : ""}`;
+    log(status.textContent); await loadProducts();
+    ($("publish-platform") as HTMLSelectElement).value = "shopee"; updatePlatformOptions("");
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    log(status.textContent);
+  } finally { button.disabled = false; button.textContent = "ดึงจากหน้า Shopee"; }
+});
+
+function shopeePostBlock(video: CompletedVideo): HTMLElement {
+  const block = document.createElement("div"); block.style.marginTop = "10px";
+  const title = document.createElement("div"); title.textContent = "โพสต์ในแอป Shopee พร้อมสินค้า Affiliate"; title.className = "clip-parts-label"; block.appendChild(title);
+  const hint = document.createElement("div"); hint.className = "hint"; hint.textContent = "ส่งคลิปเข้ามือถือ → Shopee Video → เพิ่มสินค้า → ไอคอนลิงก์ → ใส่ลิงก์สินค้าจากไฟล์ข้อมูล → นำเข้า → เพิ่ม → เปิดป้าย AI → โพสต์ หรือเลือกสินค้าที่ตรงกันจากแท็บ Affiliate หาก Seller Centre ไม่มีสินค้า ให้ใช้ช่องทางแอปนี้"; block.appendChild(hint);
+  const phone = document.createElement("button"); phone.className = "btn btn-success"; phone.textContent = "ส่งไปมือถือ (Android / iPhone)";
+  phone.addEventListener("click", () => { phonePanel.selectVideo(video.videoId, caption.value); showTab("phone"); }); block.appendChild(phone);
+  const handoff = document.createElement("button"); handoff.className = "btn btn-primary"; handoff.textContent = "ดาวน์โหลดคลิปพร้อมข้อมูลสำหรับแอป Shopee";
+  handoff.addEventListener("click", async () => {
+    handoff.disabled = true;
+    try {
+      const product = shopeeProductLink(select.value);
+      if (!product || product.url !== shopeeProductLink(video.productShopeeUrl)?.url) throw new Error("เลือกสินค้าที่ตรงกับคลิปนี้ก่อนดาวน์โหลด");
+      const stored = await getClipsForVideo(video.videoId);
+      const clip = stored.find(c => c.index === MERGED_CLIP_INDEX) ?? (stored.filter(c => c.index >= 0).length === 1 ? stored.find(c => c.index >= 0) : undefined);
+      if (!clip) throw new Error("ไม่พบไฟล์วิดีโอเต็ม — ต่อคลิปให้เสร็จก่อนดาวน์โหลด");
+      if (!await downloadBlob(clip.blob, `ai-affiliate/${video.videoId.slice(0,8)}-shopee.mp4`)) throw new Error("เริ่มดาวน์โหลดคลิปไม่สำเร็จ กรุณาลองใหม่");
+      const text = `${video.productName}\n\n${caption.value}\n\nสินค้าที่ต้องปัก: ${product.url}\nรหัสสินค้า: ${product.itemId}\nรหัสร้าน: ${product.shopId}\n\nในแอป Shopee: Live & Video → Video → โพสต์วิดีโอ → เพิ่มสินค้า → ไอคอนลิงก์ → วางลิงก์ด้านบน → นำเข้า → เพิ่ม\nหรือเลือกสินค้าที่ตรงกันจากแท็บ Affiliate เปิดป้าย AI และตรวจตะกร้าก่อนโพสต์\nการดาวน์โหลดนี้ยังไม่ได้โพสต์และไม่ได้เพิ่มสินค้าเข้าตะกร้า Shopee`;
+      if (!await downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `ai-affiliate/${video.videoId.slice(0,8)}-shopee-post.txt`)) throw new Error("เริ่มดาวน์โหลดคลิปแล้ว แต่ดาวน์โหลดข้อมูลสินค้าไม่สำเร็จ กรุณาลองใหม่");
+      hint.textContent = "เริ่มดาวน์โหลดคลิปและข้อมูลสินค้าแล้ว — เมื่อดาวน์โหลดเสร็จ ส่งไฟล์ MP4 เข้ามือถือเพื่อโพสต์และปักสินค้าในแอป Shopee";
+    } catch (error) { hint.textContent = error instanceof Error ? error.message : String(error); }
+    finally { handoff.disabled = false; }
+  }); block.appendChild(handoff);
+  const caption = document.createElement("textarea"); caption.value = video.caption; caption.rows = 3; caption.maxLength = 150; caption.setAttribute("aria-label", "แคปชัน Shopee ไม่เกิน 150 ตัวอักษร"); caption.style.width = "100%"; block.appendChild(caption);
+  const select = document.createElement("select"); select.style.width = "100%";
+  select.add(new Option("เลือกสินค้า Shopee สำหรับปักสินค้า", ""));
+  for (const product of products) { const link = shopeeProductLink(product.sourceUrl); if (link) select.add(new Option(product.name.slice(0, 60), link.url)); }
+  if (video.productShopeeUrl && !Array.from(select.options).some((option) => option.value === video.productShopeeUrl)) select.add(new Option(video.productName, video.productShopeeUrl));
+  select.value = video.productShopeeUrl ?? ""; block.appendChild(select);
+  const desktopTitle = document.createElement("div"); desktopTitle.className = "clip-parts-label"; desktopTitle.textContent = "โพสต์ผ่าน Chrome (เฉพาะสินค้าที่บัญชีเลือกได้ใน Seller Centre)"; block.appendChild(desktopTitle);
+  const auto = document.createElement("input"); auto.type = "checkbox";
+  const label = document.createElement("label"); label.append(auto, document.createTextNode(" โพสต์อัตโนมัติหลังเตรียมครบ")); block.appendChild(label);
+  const button = document.createElement("button"); button.className = "btn btn-primary"; button.textContent = "เตรียมโพสต์ Shopee"; button.disabled = video.shopeePost?.status === "posted"; block.appendChild(button);
+  button.addEventListener("click", async () => {
+    if (!select.value) { log("เลือกสินค้า Shopee ก่อนโพสต์"); return; }
+    if (auto.checked && !confirm("ระบบจะโพสต์วิดีโอพร้อมสินค้าลงบัญชี Shopee จริง ยืนยันไหม?")) return;
+    button.disabled = true;
+    try {
+      const result = await send<{ ok: boolean; error?: string }>({ type: "PREPARE_SHOPEE_POST", videoId: video.videoId, caption: caption.value, autoPost: auto.checked, productUrl: select.value });
+      log(result.ok ? "เปิด Shopee Seller Centre แล้ว กำลังเตรียมวิดีโอ แคปชันและสินค้า" : result.error ?? "เตรียมโพสต์ไม่สำเร็จ");
+    } finally { button.disabled = false; }
+  });
+  if (video.shopeePost) {
+    const status = document.createElement("div"); status.className = "hint";
+    const labels: Record<string, string> = { preparing: "กำลังเตรียมโพสต์", ready: "เตรียมครบแล้ว รอกดโพสต์", submitting: "ส่งโพสต์แล้ว กำลังรอยืนยัน", posted: "โพสต์สำเร็จ ✓", failed: "เตรียมโพสต์ไม่สำเร็จ", uncertain: "ตรวจผลโพสต์ใน Shopee ก่อนทำต่อ" };
+    status.textContent = `${labels[video.shopeePost.status] ?? video.shopeePost.status}${video.shopeePost.error ? `: ${video.shopeePost.error}` : ""}`; block.appendChild(status);
+  }
+  if (video.shopeePost?.status !== "posted") {
+    const outcomes = video.shopeePost && ["uncertain", "submitting", "preparing", "ready"].includes(video.shopeePost.status) ? [true, false] : [true];
+    for (const posted of outcomes) {
+      const resolve = document.createElement("button"); resolve.className = "btn";
+      resolve.textContent = posted ? "ตรวจแล้ว: คลิปเผยแพร่พร้อมตะกร้าใน Shopee แล้ว" : "ตรวจแล้ว: ยังไม่โพสต์ / ยกเลิกการเตรียม";
+      resolve.addEventListener("click", async () => {
+        if (!confirm(posted ? "คุณตรวจใน Shopee แล้วว่าคลิปนี้เผยแพร่และตะกร้าติดสินค้าตรงรายการแล้วใช่ไหม?" : "ตรวจใน Shopee ว่าคลิปยังไม่เผยแพร่แล้วใช่ไหม? ระบบจะปิดแท็บงานเดิมก่อนอนุญาตให้เตรียมใหม่")) return;
+        const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_SHOPEE_POST", videoId: video.videoId, posted });
+        if (result.ok) await loadLibrary(); else log(result.error ?? "บันทึกผลไม่สำเร็จ");
+      }); block.appendChild(resolve);
+    }
+  }
+  return block;
+}
+
+initLicensePanel();

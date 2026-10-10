@@ -358,6 +358,7 @@ function metaTrustedClick(selector: string, bringToFront: boolean): Promise<{ ok
  * seconds later.
  */
 async function metaSubmit(): Promise<boolean> {
+  await extensionRequireLicense();
   const composerText = () => {
     const composer = metaComposer();
     if (!composer) return "";
@@ -399,6 +400,7 @@ async function metaSubmit(): Promise<boolean> {
 
   for (const bringToFront of [false, true]) {
     if (sent()) return true;
+    await extensionRequireLicense();
     const click = await metaTrustedClick('button[aria-label="Send"], button[aria-label="ส่ง"]', bringToFront);
     if (!click.ok) {
       if (sent()) return true;
@@ -806,7 +808,8 @@ function metaStartJob(job: MetaVideoJob, phase: MetaJobPhase = "starting"): { ok
     // not supported — the <video> elements are the primary source anyway
   }
   metaRunJob(job, phase)
-    .catch((err) => {
+    .catch(async (err) => {
+      if (await extensionReportLicensePause(job.videoId, err)) { metaShowBanner(err instanceof Error ? err.message : String(err), "#d97706"); return; }
       const text = err instanceof Error ? err.message : String(err);
       metaReportProgress(job.videoId, 0, job.clips.length, "failed", text);
       metaShowBanner(

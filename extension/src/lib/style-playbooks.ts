@@ -1,3 +1,4 @@
+import { SHOPEE_PLAYBOOKS, SHOPEE_STYLE_LABELS } from "./commerce.js";
 /** Standalone copy of src/lib/prompt-engine/style-playbooks.ts for the Chrome extension build. */
 /**
  * Creative playbooks shared by content generation and the final video prompt.
@@ -81,7 +82,7 @@ export const STYLE_LABELS: Record<(typeof CONTENT_STYLES)[number], StyleLabel> =
 
 /** Thai label for a stored style value; unknown values are shown as-is. */
 export function styleLabel(style: string): StyleLabel {
-  return STYLE_LABELS[style as (typeof CONTENT_STYLES)[number]] ?? { name: style, description: "" };
+  return SHOPEE_STYLE_LABELS[style as keyof typeof SHOPEE_STYLE_LABELS] ?? STYLE_LABELS[style as (typeof CONTENT_STYLES)[number]] ?? { name: style, description: "" };
 }
 
 export interface StylePlaybook {
@@ -280,7 +281,7 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
 
 export function getStylePlaybook(style: string): StylePlaybook {
   return (
-    STYLE_PLAYBOOKS[style as ContentStyle] ?? {
+    SHOPEE_PLAYBOOKS[style] ?? STYLE_PLAYBOOKS[style as ContentStyle] ?? {
       goal: "สร้างวิดีโอ TikTok affiliate ที่เป็นธรรมชาติและเน้นการใช้งานจริง",
       structure: "hook → product interaction → concrete benefit → CTA",
       writing: "ภาษาไทยแบบภาษาพูด กระชับ และไม่กล่าวอ้างเกินจริง",
@@ -400,13 +401,14 @@ const STYLE_PERFORMANCE: Partial<Record<ContentStyle, string>> = {
 };
 
 export function stylePerformance(style: string): string {
+  if (SHOPEE_PLAYBOOKS[style]) return "The seller confidently invites viewers to inspect the product, demonstrates one concrete feature with clear hand contact, then returns to natural eye contact for the buying invitation. No shouting or frantic gestures.";
   return STYLE_PERFORMANCE[style as ContentStyle] ?? "Focus on one believable product interaction with a natural reaction.";
 }
 
 const LOCKED_CAMERA_STYLES = new Set(["Before After", "Comparison", "ASMR / Satisfying", "Demo", "Educational Tips"]);
 
 export function styleCameraMotion(style: string, planned?: string): string {
-  if (LOCKED_CAMERA_STYLES.has(style)) return "static locked-off camera; maintain the same framing throughout the action";
+  if (SHOPEE_PLAYBOOKS[style] || LOCKED_CAMERA_STYLES.has(style)) return "static locked-off camera; maintain the same framing throughout the action";
   return planned?.trim() || (style === "UGC" || style === "Lifestyle Vlog"
     ? "steady handheld framing with minimal natural movement"
     : "one gentle slow push-in, settling on the product action");

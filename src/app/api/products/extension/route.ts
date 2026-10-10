@@ -4,6 +4,7 @@ import { importTikTokProductsSchema } from "@/lib/validation/product";
 import { deleteProducts, importTikTokProducts, listProducts } from "@/services/product.service";
 
 function unauthorized(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") return NextResponse.json({ error: "Legacy extension endpoint disabled" }, { status: 404 });
   const token = process.env.EXTENSION_UPLOAD_TOKEN;
   if (!token) {
     return NextResponse.json({ error: "EXTENSION_UPLOAD_TOKEN is not set" }, { status: 503 });

@@ -1,0 +1,145 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id String @id
+  name String
+  email String @unique
+  emailVerified Boolean @default(false)
+  image String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  sessions Session[]
+  accounts Account[]
+  @@map("user")
+}
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+
+model LicenseCustomer {
+  id        String @id @default(cuid())
+  name      String
+  contact   String?
+  createdAt DateTime @default(now())
+  licenses  License[]
+  @@map("license_customers")
+}
+
+model License {
+  id          String @id @default(cuid())
+  customerId  String
+  customer    LicenseCustomer @relation(fields: [customerId], references: [id])
+  keyHash     String @unique
+  keyHint     String
+  durationDays Int
+  activatedAt DateTime?
+  expiresAt   DateTime?
+  suspended   Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  activation  LicenseActivation?
+  events      LicenseEvent[]
+  @@index([customerId])
+  @@map("licenses")
+}
+
+model LicenseActivation {
+  id             String @id @default(cuid())
+  licenseId      String @unique
+  license        License @relation(fields: [licenseId], references: [id])
+  installationId String
+  tokenHash      String @unique
+  createdAt      DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  @@map("license_activations")
+}
+
+model LicenseEvent {
+  id          String @id @default(cuid())
+  licenseId   String
+  license     License @relation(fields: [licenseId], references: [id])
+  requestId   String @unique
+  requestHash String
+  actorId     String
+  action      String
+  days        Int?
+  note        String?
+  previousExpiry DateTime?
+  newExpiry   DateTime?
+  createdAt   DateTime @default(now())
+  @@index([licenseId, createdAt])
+  @@map("license_events")
+}
+
+model LicenseRateBucket {
+  id        String @id
+  count     Int
+  expiresAt DateTime
+  @@index([expiresAt])
+  @@map("license_rate_buckets")
+}
+
+model RateLimit {
+  id String @id @default(cuid())
+  key String @unique
+  count Int
+  lastRequest BigInt
+  @@map("auth_rate_limits")
+}

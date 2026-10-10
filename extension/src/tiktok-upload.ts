@@ -19,10 +19,10 @@ const TT_POST_RESULT_TIMEOUT_MS = 2 * 60_000;
 
 const ttSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function ttWaitFor<T>(fn: () => T | null | undefined | false, timeoutMs: number, intervalMs = 500): Promise<T | null> {
+async function ttWaitFor<T>(fn: () => T | null | undefined | false | Promise<T | null | undefined | false>, timeoutMs: number, intervalMs = 500): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = fn();
+    const value = await fn();
     if (value) return value;
     await ttSleep(intervalMs);
   }
@@ -192,7 +192,10 @@ async function ttFillCaption(caption: string): Promise<string | null> {
       caption,
       isMac: /Mac/i.test(navigator.platform),
     });
-    if (!typed?.ok) return `พิมพ์แคปชันไม่สำเร็จ: ${typed?.error ?? "ไม่ทราบสาเหตุ"}`;
+    if (!typed?.ok) {
+      if (typed?.error?.startsWith("สิทธิ์ใช้งาน:")) throw new Error(typed.error);
+      return `พิมพ์แคปชันไม่สำเร็จ: ${typed?.error ?? "ไม่ทราบสาเหตุ"}`;
+    }
     if (await ttWaitFor(() => ttPreviewHasCaption(caption), 6_000)) return null;
     if (attempt === 1) {
       await aiPanelLog("TikTok: แคปชันไม่ติดในรอบแรก — พิมพ์ใหม่อีกครั้ง");
@@ -283,56 +286,82 @@ async function ttSetVisibilityPublic(): Promise<string | null> {
   return ok ? null : "ตั้งค่าเป็น Everyone ไม่สำเร็จ";
 }
 
-function ttDialogWith(pattern: RegExp): HTMLElement | null {
-  const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'));
-  return dialogs.reverse().find((d) => pattern.test(d.innerText)) ?? null;
+/** Collapses the anchor section's text so two snapshots of it compare equal across layout whitespace. */
+function ttAnchorText(): string | null {
+  const anchor = document.querySelector<HTMLElement>('[data-e2e="anchor_container"]');
+  return anchor ? anchor.innerText.replace(/\s+/g, " ").trim() : null;
 }
 
-function ttButtonIn(root: Element, label: string): HTMLButtonElement | null {
-  return Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.innerText.trim() === label) ?? null;
-}
+/**
+ * The anchor section's text while no product is linked. TikTok localizes its
+ * labels ("Add link" / "เพิ่มลิงก์"), so "linked" means "the section differs
+ * from how it looked before we added anything", never "contains other words".
+ */
+let ttAnchorBaseline: string | null = null;
 
 function ttProductLinkAttached(): boolean {
-  const anchor = document.querySelector<HTMLElement>('[data-e2e="anchor_container"]');
-  // With a link attached the section shows the product chip next to "Add".
-  return !!anchor && anchor.innerText.replace(/Add link|Add/g, "").trim().length > 0;
+  const text = ttAnchorText();
+  return text !== null && ttAnchorBaseline !== null && text !== ttAnchorBaseline;
+}
+
+const TT_CANCEL_LABEL = /^(Cancel|ยกเลิก)$/i;
+
+/** The dialog's confirm button: TikTok marks it type-primary, and it sits last. */
+function ttConfirmButton(root: Element): HTMLButtonElement | null {
+  const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).filter((b) => !TT_CANCEL_LABEL.test(b.innerText.trim()));
+  return buttons.filter((b) => /type-primary/.test(b.className)).pop() ?? buttons[buttons.length - 1] ?? null;
 }
 
 /** Cancels every open TikTok dialog, newest first — used to back out of a failed product pick. */
 async function ttCancelDialogs() {
   for (const dialog of Array.from(document.querySelectorAll('[role="dialog"]')).reverse()) {
-    ttButtonIn(dialog, "Cancel")?.click();
+    const cancel = Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")).find((b) => TT_CANCEL_LABEL.test(b.innerText.trim()));
+    if (cancel) cancel.click();
+    else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await ttSleep(400);
   }
+}
+
+/** Visible text of every open dialog, for error messages when TikTok's layout isn't what we expect. */
+function ttDialogsSummary(): string {
+  const text = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))
+    .map((d) => d.innerText.replace(/\s+/g, " ").trim().slice(0, 120))
+    .join(" | ");
+  return text || "ไม่มีหน้าต่างเปิดอยู่";
 }
 
 /**
  * Add link → Products → search the showcase by product ID → pick the row →
  * keep TikTok's suggested link name → Add. Only products in the account's
- * showcase can be linked.
+ * showcase can be linked. Buttons and dialogs are found by structure rather
+ * than label, since TikTok Studio follows the account's language (Thai too).
  */
 async function ttAddProductLink(productId: string): Promise<string | null> {
-  if (ttProductLinkAttached()) return null;
-  const anchor = await ttWaitFor(() => document.querySelector('[data-e2e="anchor_container"]'), 10_000);
+  const anchor = await ttWaitFor(() => document.querySelector<HTMLElement>('[data-e2e="anchor_container"]'), 10_000);
   if (!anchor) return "บัญชี TikTok นี้ไม่มีเมนูเพิ่มลิงก์สินค้า (ต้องเป็นบัญชีที่เปิด TikTok Shop Affiliate)";
+  ttAnchorBaseline = ttAnchorText();
 
   ttStatus("TikTok: กำลังติดลิงก์สินค้า...");
   anchor.scrollIntoView({ block: "center" });
-  ttButtonIn(anchor, "Add")?.click();
+  const addButton = anchor.querySelector<HTMLButtonElement>("button");
+  if (!addButton) return `ไม่พบปุ่มเพิ่มลิงก์ในโพสต์ (ข้อความในส่วนนั้น: ${ttAnchorBaseline || "-"})`;
+  addButton.click();
 
-  const typeDialog = await ttWaitFor(() => ttDialogWith(/Link type/), 10_000);
+  const typeDialog = await ttWaitFor(() => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).pop(), 10_000);
   if (!typeDialog) return "ไม่เปิดหน้าต่างเลือกประเภทลิงก์";
-  if (!/Products/.test(typeDialog.innerText)) {
+  if (!/Products|สินค้า/.test(typeDialog.innerText)) {
+    const summary = ttDialogsSummary();
     await ttCancelDialogs();
-    return "ประเภทลิงก์ไม่มี Products ให้เลือก";
+    return `ประเภทลิงก์ไม่มี Products ให้เลือก (${summary})`;
   }
-  ttButtonIn(typeDialog, "Next")?.click();
+  ttConfirmButton(typeDialog)?.click();
 
   const selector = await ttWaitFor(() => document.querySelector<HTMLElement>(".product-selector-modal"), 15_000);
   const search = selector?.querySelector<HTMLInputElement>('input[type="text"]');
   if (!selector || !search) {
+    const summary = ttDialogsSummary();
     await ttCancelDialogs();
-    return "ไม่เปิดหน้าต่างเลือกสินค้า";
+    return `ไม่เปิดหน้าต่างเลือกสินค้า (${summary})`;
   }
 
   // React owns the input, so set it through the native setter for onChange to fire.
@@ -350,19 +379,28 @@ async function ttAddProductLink(productId: string): Promise<string | null> {
   }
   row.querySelector<HTMLInputElement>('input[type="radio"]')?.click();
   await ttSleep(400);
-  ttButtonIn(selector, "Next")?.click();
+  ttConfirmButton(selector)?.click();
 
-  const nameDialog = await ttWaitFor(() => ttDialogWith(/Product name will appear/), 10_000);
+  // The link-name dialog is the one left once the picker closes; it holds the name input.
+  const nameDialog = await ttWaitFor(
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find(
+        (d) => !d.classList.contains("product-selector-modal") && !d.querySelector(".product-selector-modal") && d.querySelector('input[type="text"], input:not([type]), textarea'),
+      ),
+    10_000,
+  );
   if (!nameDialog) {
+    const summary = ttDialogsSummary();
     await ttCancelDialogs();
-    return "ไม่เปิดหน้าตั้งชื่อลิงก์สินค้า";
+    return `ไม่เปิดหน้าตั้งชื่อลิงก์สินค้า (${summary})`;
   }
-  ttButtonIn(nameDialog, "Add")?.click();
+  ttConfirmButton(nameDialog)?.click();
 
   const attached = await ttWaitFor(() => !document.querySelector('[role="dialog"]') && ttProductLinkAttached(), 10_000);
-  return attached ? null : "กดเพิ่มลิงก์สินค้าแล้วแต่ไม่เห็นสินค้าติดในโพสต์";
+  return attached ? null : `กดเพิ่มลิงก์สินค้าแล้วแต่ไม่เห็นสินค้าติดในโพสต์ (ข้อความในส่วนนั้น: ${ttAnchorText() || "-"})`;
 }
 
+let ttAuthorizedPostClick = false;
 async function ttPressPost(job: TtPostJob): Promise<string | null> {
   const post = ttPostButton();
   if (!ttButtonEnabled(post)) return "ปุ่ม Post ยังกดไม่ได้";
@@ -372,16 +410,22 @@ async function ttPressPost(job: TtPostJob): Promise<string | null> {
   if (!ttVisibilityIsPublic()) return "โพสต์ยังไม่ได้ตั้งเป็น Everyone — ไม่กดโพสต์ให้";
 
   ttStatus("TikTok: กำลังกดโพสต์...");
+  await extensionRequireLicense();
+  const marker = await ttSend<{ ok: boolean; error?: string }>({ type: "TIKTOK_POST_SUBMITTING", videoId: job.videoId });
+  if (!marker?.ok) throw new Error(marker?.error ?? "บันทึกสถานะก่อนโพสต์ไม่สำเร็จ");
+  ttAuthorizedPostClick = true;
   post!.click();
+  ttAuthorizedPostClick = false;
 
   const startPath = location.pathname;
-  const outcome = await ttWaitFor(() => {
+  const outcome = await ttWaitFor(async () => {
     if (location.pathname !== startPath) return "posted";
     const dialog = document.querySelector('[role="dialog"]');
     // "Continue to post?" style confirmations while checks are still running.
     if (dialog && /post|โพสต์/i.test((dialog as HTMLElement).innerText)) {
       const confirm = ttPrimaryButton(dialog);
       if (confirm && /post|โพสต์/i.test(confirm.innerText)) {
+        await extensionRequireLicense();
         confirm.click();
         return null;
       }
@@ -397,7 +441,9 @@ async function ttPressPost(job: TtPostJob): Promise<string | null> {
 }
 
 async function ttRunPost(job: TtPostJob) {
+  await extensionRequireLicense();
   const fail = async (error: string) => {
+    if (error.startsWith("สิทธิ์ใช้งาน:")) throw new Error(error);
     ttStatus(`TikTok: ${error}`, "#dc2626");
     await ttReport(job.videoId, "failed", error);
   };
@@ -425,7 +471,7 @@ async function ttRunPost(job: TtPostJob) {
 
   // What TikTok will actually publish, for the job log.
   const preview = document.querySelector<HTMLElement>('[data-e2e="mobile_preview_container"]')?.innerText ?? "";
-  const anchorText = document.querySelector<HTMLElement>('[data-e2e="anchor_container"]')?.innerText.replace(/^Add link\s*Add\s*/, "") ?? "";
+  const anchorText = ttProductLinkAttached() ? (ttAnchorText() ?? "") : "";
   const aiOn = document.querySelector<HTMLInputElement>('[data-e2e="aigc_container"] input[role="switch"]')?.checked;
   await aiPanelLog(`ตรวจฟอร์ม — ตัวอย่างโพสต์: ${preview.replace(/\s+/g, " ").slice(0, 200)} | ลิงก์สินค้า: ${anchorText || "-"} | ป้าย AI: ${aiOn ? "เปิด" : "ปิด"} | ใครดูได้: ${ttVisibilityIsPublic() ? "Everyone" : (document.querySelector<HTMLElement>('[data-e2e="video_visibility_container"]')?.innerText.replace(/\s+/g, " ") ?? "-")}`);
 
@@ -439,6 +485,20 @@ async function ttRunPost(job: TtPostJob) {
       "#16a34a",
     );
     await ttReport(job.videoId, "ready");
+    let manualSubmitting = false;
+    document.addEventListener("click", event => {
+      const button = (event.target as Element | null)?.closest("button");
+      if (!button || button !== ttPostButton() || ttAuthorizedPostClick) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (manualSubmitting) return;
+      manualSubmitting = true;
+      void ttPressPost(job).then(async error => {
+        if (error) await fail(error);
+        else { ttStatus("TikTok: โพสต์แล้ว ✓", "#16a34a"); await ttReport(job.videoId, "posted"); }
+      }).catch(async error => {
+        if (!(await extensionReportLicensePause(job.videoId, error))) await ttReport(job.videoId, "failed", error instanceof Error ? error.message : String(error));
+      }).finally(() => { manualSubmitting = false; });
+    }, { capture: true });
     return;
   }
 
@@ -461,7 +521,7 @@ async function ttClaimJob() {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     ttStatus(`TikTok: เกิดข้อผิดพลาด: ${error}`, "#dc2626");
-    await ttReport(result.job.videoId, "failed", error);
+    if (!(await extensionReportLicensePause(result.job.videoId, err))) await ttReport(result.job.videoId, "failed", error);
   } finally {
     ttJobRunning = false;
   }

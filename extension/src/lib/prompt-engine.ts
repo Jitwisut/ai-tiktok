@@ -1,3 +1,4 @@
+import { platformForStyle, salesContext, type PublishPlatform } from "./commerce.js";
 /** Ported from src/lib/prompt-engine/{types,prompt-builder,clip-planner}.ts — pure functions, no server dependency. */
 
 import { getStylePlaybook, assertSpeechFits, stylePerformance, styleCameraMotion, styleUsesOnScreenText, type PresenterMode, type SpeechAmount, type StylePlaybook } from "./style-playbooks.js";
@@ -476,6 +477,7 @@ export interface PlanClipsInput {
   presenter?: PresenterGender;
   /** English description of the product as it looks in its photo (missing on older scene plans). */
   productLook?: string;
+  platform?: PublishPlatform;
 }
 
 /**
@@ -508,6 +510,8 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
   if (scenes.length === 0) return [];
 
   const style = input.style || settings.style;
+  const platform = platformForStyle(style, input.platform);
+  const destination = platform === "shopee" ? "Shopee Video" : "TikTok";
   const text = styleUsesOnScreenText(style) ? input.text : undefined;
   // Camera, light, voice and sound come from the style, so a POV or ASMR advert is not shot like a talking-head UGC one.
   const playbook = getStylePlaybook(style);
@@ -530,15 +534,16 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
 
     sections.push(
       clipCount > 1
-        ? `[GOAL] Create exactly one ${clipSeconds}-second video segment: part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * clipSeconds}-second ${style}-style TikTok advert that will be joined into a single video.`
-        : `[GOAL] Create ONE complete ${clipSeconds}-second ${style}-style TikTok advert as a single video that runs the full ${clipSeconds} seconds from start to finish — not a shorter clip, not split into parts. An attention-grabbing hook in the first 2 seconds, then the product in use, then a clear ending on the product.`,
+        ? `[GOAL] Create exactly one ${clipSeconds}-second video segment: part ${index + 1} of ${clipCount} of ONE continuous ${clipCount * clipSeconds}-second ${style}-style ${destination} advert that will be joined into a single video.`
+        : `[GOAL] Create ONE complete ${clipSeconds}-second ${style}-style ${destination} advert as a single video that runs the full ${clipSeconds} seconds from start to finish — not a shorter clip, not split into parts. An attention-grabbing hook in the first 2 seconds, then the product in use, then a clear ending on the product.`,
     );
     sections.push(
       `[FORMAT] ${describeAspectRatio(settings.aspectRatio)} video. ${look}. Sharp focus, natural motion, realistic hands and faces.`,
     );
     sections.push(productRule(productName, input.productLook));
     sections.push(`[STYLE EXECUTION] ${playbook.videoDirection}.`);
-    sections.push(REAL_AD_LOOK);
+    sections.push(REAL_AD_LOOK.replace("TikTok UI", `${destination} UI`));
+    if (platform === "shopee") sections.push(`[SALES CONTEXT] ${salesContext(style)}. Show a confident seller and a real, simple product demonstration. No fabricated discounts, factory-origin claims, fake livestream overlays, viewer counters, watermarks or TikTok branding.`);
 
     if (cast) {
       sections.push(
