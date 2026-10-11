@@ -26,7 +26,7 @@ globalThis.chrome = {
   alarms: { onAlarm: { addListener() {} }, clear: async () => {}, create: async () => {} },
   tabs: { query: async () => [], create: async () => { tabEffects++; }, update: async () => { tabEffects++; } },
 };
-globalThis.fetch = async (url, options) => { requests++; assert.equal(url, "http://localhost:3000/api/licenses/validate"); assert.equal(JSON.parse(options.body).token, "revoked-token"); return active ? Response.json({ ok: true, status: "active", serverTime: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString() }) : Response.json({ ok: false, code: "expired" }, { status: 403 }); };
+globalThis.fetch = async (url, options) => { requests++; assert.equal(url, "https://ai-tiktok-liart.vercel.app/api/licenses/validate"); assert.equal(JSON.parse(options.body).token, "revoked-token"); return active ? Response.json({ ok: true, status: "active", serverTime: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString() }) : Response.json({ ok: false, code: "expired" }, { status: 403 }); };
 await import("../extension/src/background.ts");
 function dispatch(type, extra = {}, sender = { id: "extension-test", url: "chrome-extension://extension-test/sidepanel.html" }) {
   return new Promise((resolve, reject) => {

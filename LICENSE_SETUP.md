@@ -62,7 +62,7 @@ SELECT id, email FROM "user" WHERE email = 'อีเมลแอดมินข
 LICENSE_SERVER_URL='https://โดเมนจริง' npm --prefix extension run build:release
 ```
 
-คำสั่งจะสร้าง `extension/release/` พร้อม URL ที่ฝังในโค้ด และตัด dev bridge ออก ต้องเป็น HTTPS origin ไม่มี path/query/password คำสั่งจะหยุดเมื่อยังไม่ได้ตั้ง URL นำโฟลเดอร์ release นี้ไปทดสอบ/บีบอัดแจก ไม่แจกโฟลเดอร์พัฒนาที่ใช้ localhost หรือ `.env` ของเซิร์ฟเวอร์ หากเปลี่ยนโดเมนภายหลังต้องสร้างรุ่นใหม่ให้ลูกค้า
+คำสั่งจะสร้าง `extension/release/` พร้อม URL ที่ฝังในโค้ด และตัด dev bridge ออก ต้องเป็น HTTPS origin ไม่มี path/query/password คำสั่งจะหยุดเมื่อยังไม่ได้ตั้ง URL นำโฟลเดอร์ release นี้ไปทดสอบ/บีบอัดแจก ไม่แจกโฟลเดอร์พัฒนาหรือ `.env` ของเซิร์ฟเวอร์ ตัว unpacked สำหรับเจ้าของใน `extension/` ใช้ `https://ai-tiktok-liart.vercel.app` เป็นค่าเริ่มต้นด้วย หากทดสอบเซิร์ฟเวอร์ในเครื่องให้แก้ `extension/src/lib/license-config.ts` แล้ว build ใหม่ หากเปลี่ยนโดเมนภายหลังต้องสร้างรุ่นใหม่ให้ลูกค้า
 
 หนึ่งคีย์ผูกกับ ID การติดตั้งของ Chrome Profile token อยู่ใน IndexedDB ของ extension origin และไม่อยู่ใน `chrome.storage.local/sync` หรือส่งให้ content script วันหมดอายุที่แสดงในหน้าจอเป็นข้อมูลสำหรับผู้ใช้เท่านั้น การอนุญาตงานแต่ละครั้งขึ้นกับเซิร์ฟเวอร์ การถอนติดตั้งหรือล้างข้อมูลส่วนขยายอาจต้องให้แอดมินออกคีย์ทดแทน
 

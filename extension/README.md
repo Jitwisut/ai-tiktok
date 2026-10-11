@@ -25,7 +25,9 @@ npm run build
    Sign in to the chosen web app in Chrome first. Gemini API requires a key
    from [Google AI Studio](https://aistudio.google.com/apikey).
 6. Activate the seller's **License Key** in the panel. This is separate from
-   the Gemini API key. Local development checks `http://localhost:3000`.
+   the Gemini API key. The unpacked build checks
+   `https://ai-tiktok-liart.vercel.app`; local server development requires
+   changing `src/lib/license-config.ts` and rebuilding first.
 
 ## Customer release (0.6.0)
 
