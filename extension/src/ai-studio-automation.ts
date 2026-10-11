@@ -7,6 +7,7 @@ interface StudioClip {
 }
 
 interface StudioVideoJob {
+  startIndex?: number;
   videoId: string;
   clips: StudioClip[];
   duration: number;
@@ -336,6 +337,7 @@ async function generateClip(
     return btn && btn.getAttribute("aria-disabled") !== "true" ? btn : undefined;
   }, 45000, 500);
 
+  await extensionRequireLicense();
   if (runButton) {
     runButton.click();
   } else {
@@ -386,7 +388,7 @@ async function generateClip(
   return videos[videos.length - 1];
 }
 
-async function runJob(job: StudioVideoJob) {
+async function runJob(job: StudioVideoJob, startIndex = 0) {
   // A generation already in flight means something else (a duplicate
   // delivery, or the user) started one — don't fight it for the Run button.
   if (findStopButton()) {
@@ -408,11 +410,12 @@ async function runJob(job: StudioVideoJob) {
   let previousFilename = "";
 
   let mergeOutcome: { ok: boolean; seconds?: number; error?: string; warning?: string } | undefined;
-  for (const clip of job.clips) {
+  for (const clip of job.clips.slice(startIndex)) {
     if (studioCancelled) {
       showBanner("ยกเลิกงานแล้ว", "#d97706");
       return;
     }
+    await extensionRequireLicense();
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     reportProgress(job.videoId, clip.index + 1, total, "generating");
 
@@ -435,6 +438,7 @@ async function runJob(job: StudioVideoJob) {
       return;
     }
     mergeOutcome = result.merged ?? mergeOutcome;
+    await chrome.storage.local.set({ activeStudioJob: { job, nextClipIndex: clip.index + 1 } });
 
     // Seed the next clip with this one's final frame so the cuts match.
     if (clip.index < total - 1) {
@@ -446,6 +450,7 @@ async function runJob(job: StudioVideoJob) {
     }
   }
 
+  await chrome.storage.local.remove("activeStudioJob");
   reportProgress(job.videoId, total, total, "done");
   showBanner(
     total > 1
@@ -460,14 +465,14 @@ async function runJob(job: StudioVideoJob) {
 let jobRunning = false;
 let studioCancelled = false;
 
-function startJob(job: StudioVideoJob) {
+function startJob(job: StudioVideoJob, startIndex = 0) {
   if (jobRunning) return false;
 
   // Guard against the same job being delivered twice to this tab (a page
   // reload re-runs this script and re-asks the worker for pending work).
   const claimKey = `ai-affiliate-claimed-${job.videoId}`;
   try {
-    if (sessionStorage.getItem(claimKey)) return false;
+    if (sessionStorage.getItem(claimKey) && !startIndex) return false;
     sessionStorage.setItem(claimKey, "1");
   } catch {
     // sessionStorage can be unavailable; the in-memory guard still applies.
@@ -476,8 +481,10 @@ function startJob(job: StudioVideoJob) {
   aiPanelClearLog();
   jobRunning = true;
   studioCancelled = false;
-  runJob(job)
-    .catch((err) => {
+  chrome.storage.local.set({ activeStudioJob: { job, nextClipIndex: startIndex } })
+    .then(() => runJob(job, startIndex))
+    .catch(async (err) => {
+      if (await extensionReportLicensePause(job.videoId, err)) sessionStorage.removeItem(claimKey);
       showBanner(`เกิดข้อผิดพลาด: ${err instanceof Error ? err.message : String(err)}`, "#dc2626");
     })
     .finally(() => {
@@ -495,7 +502,7 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: StudioVideo
     return;
   }
   if (message.type !== "RUN_VIDEO_JOB" || !message.job) return;
-  const started = startJob(message.job);
+  const started = startJob(message.job, message.job.startIndex ?? 0);
   sendResponse({ ok: started, error: started ? undefined : "มีงานกำลังทำอยู่แล้วในแท็บนี้" });
 });
 
@@ -503,5 +510,9 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: StudioVideo
 aiPanelMount({ site: "aistudio", siteLabel: "AI Studio" });
 
 chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "aistudio" }, (result: { job: StudioVideoJob | null }) => {
-  if (result?.job) startJob(result.job);
+  if (result?.job) startJob(result.job, result.job.startIndex ?? 0);
+  else chrome.storage.local.get("activeStudioJob").then(stored => {
+    const active = stored.activeStudioJob as { job: StudioVideoJob; nextClipIndex: number } | undefined;
+    if (active) startJob(active.job, active.nextClipIndex);
+  });
 });

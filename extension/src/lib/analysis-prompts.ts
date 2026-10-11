@@ -1,3 +1,4 @@
+import { platformForStyle, platformRule, salesContext, type PublishPlatform } from "./commerce.js";
 /** Ported from src/services/{analysis,content,scene}.service.ts + src/lib/validation/*.ts — same prompts, hand-written JSON Schema instead of zod (no zod dependency in the extension). */
 
 import type { JsonSchema } from "./gemini.js";
@@ -13,7 +14,7 @@ export const PRODUCT_ANALYSIS_SCHEMA: JsonSchema = {
     targetCustomer: { type: "string", description: "กลุ่มลูกค้าเป้าหมาย 1-2 ประโยค: เป็นใคร ไลฟ์สไตล์แบบไหน และใช้สินค้าในสถานการณ์ใด" },
     painPoints: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6, description: "ปัญหาจริงของกลุ่มเป้าหมายที่สินค้านี้ช่วยได้ ข้อละ 1 ประโยค 3-5 ข้อ" },
     sellingPoints: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6, description: "จุดขายที่จับต้องได้ของสินค้าชิ้นนี้ (วัสดุ ขนาด ฟีเจอร์ วิธีใช้) ข้อละ 1 ประโยค 3-5 ข้อ" },
-    angles: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6, description: "มุมเล่าเรื่องสำหรับคลิป TikTok ที่ต่างกันชัดเจน ข้อละ 1 ประโยค 3-5 ข้อ" },
+    angles: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 6, description: "มุมเล่าเรื่องสำหรับวิดีโอสั้น ที่ต่างกันชัดเจน ข้อละ 1 ประโยค 3-5 ข้อ" },
   },
   required: ["targetCustomer", "painPoints", "sellingPoints", "angles"],
 };
@@ -23,8 +24,8 @@ export const CONTENT_GENERATION_SCHEMA: JsonSchema = {
   properties: {
     hook: { type: "string", description: "ประโยคเปิด 1 ประโยคที่ดึงความสนใจได้ใน 1-2 วินาทีแรก" },
     script: { type: "string", description: "คำพูดทั้งหมดในคลิปเรียงตามเวลา ขึ้นต้นด้วย hook และจบด้วย CTA" },
-    caption: { type: "string", description: "แคปชันโพสต์ TikTok: hook สั้น + จุดขาย 1 ประโยค + แฮชแท็ก 4-6 อัน" },
-    cta: { type: "string", description: "ประโยคชวนกดตะกร้าเหลืองตอนท้าย" },
+    caption: { type: "string", description: "แคปชันโพสต์: hook สั้น + จุดขาย 1 ประโยค + แฮชแท็กตามข้อกำหนดแพลตฟอร์ม" },
+    cta: { type: "string", description: "ประโยคชวนดูสินค้าตามแพลตฟอร์มตอนท้าย" },
     onScreenText: { type: "string", description: "ข้อความพาดหัวบนจอ ภาษาไทยล้วนและสั้นมาก หรือ \"\" ถ้าสไตล์นี้ไม่ใช้" },
     onScreenCta: { type: "string", description: "ข้อความ CTA บนจอ ภาษาไทยล้วนและสั้นมาก หรือ \"\" ถ้าสไตล์นี้ไม่ใช้" },
   },
@@ -158,10 +159,10 @@ export function scenePlanExample(blocks: number, clipSeconds: number, style = "U
   const steps = actions[style] ?? ["The person opens the product lid", "The person fills the product with water", "The person closes the lid", "The person places the product ready to carry"];
   const scenes = Array.from({ length: blocks }, (_, clip) => {
     const action = hands ? steps[clip % steps.length].replace(/The person/g, "The hands") : steps[clip % steps.length];
-    const words = playbook.speech === "silent" || (playbook.speech === "light" && clip < blocks - 1) ? "" : clip === blocks - 1 ? "ดูที่ตะกร้าได้เลย" : "พกน้ำสะดวกขึ้นนะ";
+    const words = playbook.speech === "silent" || (playbook.speech === "light" && clip < blocks - 1) ? "" : clip === blocks - 1 ? (platformForStyle(style) === "shopee" ? "ดูสินค้าที่แนบได้เลย" : "ดูที่ตะกร้าได้เลย") : "พกน้ำสะดวกขึ้นนะ";
     return {
       clip, duration: clipSeconds, description: "สาธิตหนึ่งขั้นแล้วค้างภาพให้เห็นรายละเอียด",
-      visual: `Close-up at desk height, ${action}. The product starts within reach, the contact point stays visible, and the final state is held briefly`,
+      visual: `Close-up at desk height${platformForStyle(style) === "shopee" ? ` in ${salesContext(style)}` : ""}, ${action}. The product starts within reach, the contact point stays visible, and the final state is held briefly`,
       cameraMotion: styleCameraMotion(style),
       dialogue: hands || style === "Storytelling" || style === "Lifestyle Vlog" ? "" : words,
       voiceover: hands || style === "Storytelling" || style === "Lifestyle Vlog" ? words : "",
@@ -170,25 +171,25 @@ export function scenePlanExample(blocks: number, clipSeconds: number, style = "U
   return {
     productLook: "A tall matte silver stainless steel tumbler, a black flip-up straw lid and a black side handle, a small engraved logo near the bottom",
     castOptions: [
-      { person: hands ? "hands only, a Thai woman's hands, short clean nails, beige sleeves" : "Thai woman in her late 20s, black ponytail, plain beige shirt", setting: "tidy Thai home desk, soft daylight from the left", gender: "female" },
-      { person: hands ? "hands only, a Thai man's hands, short clean nails, navy sleeves" : "Thai man in his early 30s, short black hair, plain navy shirt", setting: "tidy Thai home desk, soft daylight from the left", gender: "male" },
-      { person: hands ? "hands only, a Thai woman's hands, short clean nails, white sleeves" : "Thai woman in her mid-20s, shoulder-length black hair, plain white shirt", setting: "clean condo table, even daylight", gender: "female" },
-      { person: hands ? "hands only, a Thai man's hands, short clean nails, grey sleeves" : "Thai man in his late 20s, short black hair, plain grey shirt", setting: "clean condo table, even daylight", gender: "male" },
+      { person: hands ? "hands only, a Thai woman's hands, short clean nails, beige sleeves" : "Thai woman in her late 20s, black ponytail, plain beige shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "tidy Thai home desk, soft daylight from the left", gender: "female" },
+      { person: hands ? "hands only, a Thai man's hands, short clean nails, navy sleeves" : "Thai man in his early 30s, short black hair, plain navy shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "tidy Thai home desk, soft daylight from the left", gender: "male" },
+      { person: hands ? "hands only, a Thai woman's hands, short clean nails, white sleeves" : "Thai woman in her mid-20s, shoulder-length black hair, plain white shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "clean condo table, even daylight", gender: "female" },
+      { person: hands ? "hands only, a Thai man's hands, short clean nails, grey sleeves" : "Thai man in his late 20s, short black hair, plain grey shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "clean condo table, even daylight", gender: "male" },
     ],
     scenes,
   };
 }
 
-export function buildAnalysisPrompt(product: Product, hasImages: boolean) {
+export function buildAnalysisPrompt(product: Product, hasImages: boolean, platform: PublishPlatform = product.source === "shopee" ? "shopee" : "tiktok") {
   return {
     system: [
       "คุณเป็นนักการตลาดที่เชี่ยวชาญด้าน affiliate marketing วิเคราะห์สินค้าแล้วตอบเป็น JSON ตาม schema เท่านั้น",
       "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปเป็นหลักว่าสินค้าคืออะไร ใช้ทำอะไร เพราะชื่อและรายละเอียดที่ดึงมาจากหน้าเว็บมักไม่ครบหรือคลาดเคลื่อน",
       "ห้ามแต่งสรรพคุณที่ไม่สอดคล้องกับประเภทสินค้าที่เห็นจริง",
-      "เชี่ยวชาญ TikTok Shop affiliate marketing ในไทยโดยเฉพาะ เข้าใจว่าคนไทยดูคลิปสั้นแล้วตัดสินใจกดซื้อผ่านตะกร้าเหลืองภายในไม่กี่วินาที",
+      platformRule(platform),
       "ตอบทุกฟิลด์เป็นภาษาไทยล้วน แม้ชื่อหรือรายละเอียดสินค้าจะเป็นภาษาอังกฤษ",
       "ห้ามเขียน painPoints หรือ sellingPoints ที่เป็นคำกว้างทั่วไปซึ่งใช้ได้กับสินค้าทุกชนิด เช่น \"คุณภาพดี\" \"ราคาคุ้มค่า\" \"ใช้งานง่าย\" — ทุกข้อต้องอ้างอิงรายละเอียดที่จับต้องได้ของสินค้าชิ้นนี้จริงๆ เช่น วัสดุ ขนาด สี ฟีเจอร์ วิธีใช้",
-      "angles ให้คิดจากมุมที่คนไทยบน TikTok มักหยุดดูจริง เช่น ปัญหาที่เจอบ่อยในชีวิตประจำวัน, รีวิวแบบจริงใจไม่โอเว่อร์, เปรียบเทียบก่อน-หลัง, unboxing ที่มีจังหวะเซอร์ไพรส์",
+      "angles ให้คิดจากมุมที่คนไทยดูคลิปสั้นแล้วหยุดดูจริง เช่น ปัญหาที่เจอบ่อยในชีวิตประจำวัน, รีวิวแบบจริงใจไม่โอเว่อร์, เปรียบเทียบก่อน-หลัง, unboxing ที่มีจังหวะเซอร์ไพรส์",
       "ห้ามระบุ painPoints, sellingPoints หรือ angles ที่เป็นการอ้างสรรพคุณทางการแพทย์ การรักษาโรค หรือผลลัพธ์ที่รับประกัน 100% แม้ชื่อหรือคำอธิบายสินค้าจะใช้คำเหล่านั้นก็ตาม — ให้ปรับเป็นมุมด้านความรู้สึกหรือประสบการณ์การใช้งานแทน",
     ].join("\n"),
     prompt: [
@@ -209,6 +210,7 @@ export function buildContentPrompt(
   clipSeconds: number,
   hasImages: boolean,
   angle?: string,
+  platform: PublishPlatform = platformForStyle(style),
 ) {
   const blocks = clipCountFor(targetDuration, clipSeconds);
   const seconds = blocks * clipSeconds;
@@ -218,15 +220,15 @@ export function buildContentPrompt(
 
   return {
     system: [
-      "คุณเป็นนักเขียนสคริปต์ TikTok affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น ใช้ภาษาไทยที่เป็นธรรมชาติ กระชับ เหมาะกับวิดีโอสั้น",
+      `คุณเป็นนักเขียนสคริปต์ ${platform === "shopee" ? "Shopee Video" : "TikTok"} affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น ใช้ภาษาไทยที่เป็นธรรมชาติ กระชับ เหมาะกับวิดีโอสั้น`,
       "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปว่าสินค้าคืออะไร และพูดถึงประโยชน์ที่ตรงกับสินค้าประเภทนั้นจริงๆ",
       "hook ต้องดึงความสนใจภายใน 1-2 วินาทีด้วยภาพหรือคำพูดตามสไตล์ ไม่ต้องเปิดด้วยปัญหาทุกสไตล์ ห้ามเริ่มด้วยการแนะนำตัว",
       speech === "silent" ? 'script เป็นสตริงว่าง "" เพราะสไตล์นี้ไม่มีคำพูด hook อธิบายภาพเปิด ส่วน cta ใช้กับ caption ไม่ต้องพูดในวิดีโอ' : "script คือคำพูดทั้งหมดที่จะได้ยินในวิดีโอ เรียงตามลำดับเวลา ใช้ประโยคที่ครบความตามสไตล์ ไม่ต้องบรรยายทุกการกระทำ",
       "script ต้องพูดจบได้จริงภายในความยาววิดีโอที่กำหนดโดยไม่ต้องเร่งพูด ห้ามเขียนยาวเกินงบตัวอักษรที่กำหนด",
       SPEAKABLE_SCRIPT_RULE,
       GENDER_NEUTRAL_RULE,
-      "caption ต้องมีโครงสร้าง: บรรทัดแรกเป็น hook สั้นที่ทำให้คนหยุดเลื่อน ตามด้วยจุดขายสั้นๆ 1 ประโยค แล้วปิดท้ายด้วยแฮชแท็ก 4-6 อัน ผสมระหว่างแฮชแท็กกว้าง (หมวดสินค้า) กับแฮชแท็กเจาะจง (ชื่อ/ประเภทสินค้า) ห้ามใช้แฮชแท็กที่ไม่เกี่ยวข้องเพื่อหวังยอดวิว",
-      "cta ให้ใช้ภาษาที่คนไทยบน TikTok Shop คุ้นเคย เช่น ชวนกดตะกร้าเหลืองด้านล่าง หรือชวนแชทสอบถาม ห้ามใช้คำที่ฟังดูยัดเยียดหรือเร่งรัดเกินไป",
+      platform === "shopee" ? "caption สำหรับ Shopee รวมทั้งหมดต้องไม่เกิน 150 ตัวอักษร รวมสระ วรรณยุกต์ ช่องว่าง และแฮชแท็ก: จุดขายสั้นหนึ่งประโยค พร้อม #ShopeeVideo และแฮชแท็กสินค้า 1–2 อัน" : "caption ต้องมีโครงสร้าง: บรรทัดแรกเป็น hook สั้นที่ทำให้คนหยุดเลื่อน ตามด้วยจุดขายสั้นๆ 1 ประโยค แล้วปิดท้ายด้วยแฮชแท็ก 4-6 อัน ผสมระหว่างแฮชแท็กกว้าง (หมวดสินค้า) กับแฮชแท็กเจาะจง (ชื่อ/ประเภทสินค้า) ห้ามใช้แฮชแท็กที่ไม่เกี่ยวข้องเพื่อหวังยอดวิว",
+      platformRule(platform),
       "ห้ามเขียน hook, script, caption, cta หรือข้อความบนจอที่มีการอ้างสรรพคุณทางการแพทย์ (เช่น รักษาโรค ต้านมะเร็ง ลดความเสี่ยงโรค), การรับประกันผลลัพธ์แบบเกินจริง (เช่น \"ได้ผล 100%\" \"หายขาด\"), หรือถ้อยคำที่อาจถูกมองว่าหลอกลวงผู้บริโภค — เน้นประสบการณ์การใช้งานจริงและความรู้สึกแทนเสมอ",
       "ห้ามแต่งประสบการณ์ส่วนตัว เช่น ใช้มา 7 วัน/3 เดือน ซื้อซ้ำ หรือเห็นผลในจำนวนวันที่กำหนด เว้นแต่ข้อมูลสินค้าระบุและยืนยันไว้ชัดเจน",
     ].join("\n"),
@@ -243,6 +245,7 @@ export function buildContentPrompt(
           ].join("\n")
         : "",
       stylePlaybookPrompt(style),
+      platform === "shopee" ? `ฉากการขายที่เลือก: ${salesContext(style)} — ผู้ขายแสดงสินค้าและสาธิตจริง ไม่ยืนพูดเฉยๆ` : "",
       angle
         ? `มุมการขายที่เลือก: "${angle}" — สร้าง hook, script และ CTA ทั้งหมดรอบมุมนี้ ห้ามเปลี่ยนไปใช้มุมอื่นกลางคลิป`
         : "",
@@ -254,7 +257,7 @@ export function buildContentPrompt(
       speech === "silent" ? "" : NATURAL_SPEECH_RULE,
       `แบ่ง script เป็นไม่เกิน ${blocks} บรรทัดตาม clip แต่ละบรรทัดเป็นประโยคครบความและไม่เกิน ${speechBudget(clipSeconds, speech)[1]} ตัวอักษร ห้ามตัดประโยคข้าม clip`,
       `งบคำพูด: script ประมาณ ${budget[0]}-${budget[1]} ตัวอักษรไทยรวมสระ วรรณยุกต์และช่องว่าง ห้ามเกิน ${budget[1]} ตัวอักษร เว้นเวลาสำหรับหายใจ การสาธิต และภาพผลลัพธ์ ถ้ายาวเกินให้เขียนใหม่โดยลดจุดขาย ไม่ตัดกลางประโยค`,
-      sellingScriptRule(speech),
+      platform === "shopee" ? sellingScriptRule(speech).replace(/ตะกร้าเหลือง/g, "สินค้าที่แนบ") : sellingScriptRule(speech),
       "ต้องการ hook (ประโยคเปิดที่ดึงดูด), script (บทพูดเต็ม), caption (แคปชันโพสต์), cta (call to action)",
       ...(styleUsesOnScreenText(style)
         ? [
@@ -266,12 +269,13 @@ export function buildContentPrompt(
     ]
       .filter(Boolean)
       .join("\n"),
-    example: contentGenerationExample(styleUsesOnScreenText(style), speech === "silent", speech === "light"),
+    example: { ...contentGenerationExample(styleUsesOnScreenText(style), speech === "silent", speech === "light"), ...(platform === "shopee" ? { script: speech === "silent" ? "" : "ดูรายละเอียดชัดเลย กดดูสินค้าที่แนบได้เลย", caption: "ดูรายละเอียดสินค้าและเลือกแบบที่ต้องการ\n#รีวิวสินค้า #ของใช้ #ShopeeVideo", cta: "กดดูสินค้าที่แนบได้เลย" } : {}) },
   };
 }
 
 export interface ScenePlanContent {
   style: string;
+  platform?: PublishPlatform;
   hook: string;
   script: string;
   cta: string;
@@ -290,12 +294,15 @@ export function buildScenePrompt(
 ) {
   const blocks = clipCountFor(targetDuration, clipSeconds);
   const lastBlock = blocks - 1;
+  const platform = platformForStyle(content.style, content.platform);
   const playbook = getStylePlaybook(content.style);
   const budget = speechBudget(clipSeconds, playbook.speech);
 
   return {
     system: [
-      "คุณเป็น storyboard artist สำหรับวิดีโอ TikTok affiliate ตอบเป็น JSON ตาม schema เท่านั้น",
+      `คุณเป็น storyboard artist สำหรับวิดีโอ ${platform === "shopee" ? "Shopee Video" : "TikTok"} affiliate ตอบเป็น JSON ตาม schema เท่านั้น`,
+      platformRule(platform),
+      platform === "shopee" ? `ทุก castOptions.setting และ visual ต้องใช้ฉากขายนี้: ${salesContext(content.style)} คนเดิมและฉากเดิมทุก clip; การขายผ่านท่าทางและสาธิตจริง ไม่สร้างลูกค้า ยอดคนดูหรือข้อความ UI ปลอม` : "",
       blocks > 1
         ? `โมเดลสร้างวิดีโอเรนเดอร์ได้ครั้งละ ${clipSeconds} วินาที วิดีโอจึงถูกสร้างเป็นช่วง (clip) ช่วงละ ${clipSeconds} วินาทีแยกกัน แล้วนำมาต่อเป็นวิดีโอเดียว ให้วางแผนฉากตามช่วงเหล่านี้โดยตรง`
         : `โมเดลสร้างวิดีโอเรนเดอร์วิดีโอนี้ทั้ง ${clipSeconds} วินาทีในครั้งเดียว (clip เดียว) ทุกฉากจึงเป็น clip 0`,
@@ -324,7 +331,7 @@ export function buildScenePrompt(
       SPEAKABLE_SCRIPT_RULE,
       GENDER_NEUTRAL_RULE,
       "ให้คำพูดอยู่กับภาพที่กำลังอธิบาย เว้นจังหวะหายใจ ห้ามยัดประโยคยาวลงฉากสั้น ถ้าเป็น dialogue ให้เห็นหน้าคนพูดตอนเริ่มพูด",
-      "castOptions: เสนอ 4 ลุคที่ต่างกันชัดเจน เป็นผู้หญิง 2 ลุคและผู้ชาย 2 ลุค (ระบบจะเลือกเพศตามที่ผู้ใช้ตั้ง) ระบุ gender ทุกลุค เป็นภาษาอังกฤษ แต่ละลุคเป็นคนไทยทั่วไปแบบแม่ค้า/พ่อค้าหรือครีเอเตอร์ที่ขายของจริงบน TikTok อายุและการแต่งตัวเข้ากับกลุ่มลูกค้าของสินค้า แต่งตัวแบบใส่อยู่บ้านหรือไปทำงานจริง ไม่ใช่นายแบบนางแบบ มี person (เช่น \"Thai woman in her mid-20s, shoulder-length black hair, natural makeup, plain beige oversized T-shirt\" หรือ \"hands only — a Thai woman's hands, short clean nails\" ถ้าสินค้าเหมาะกับการถ่ายแค่มือ) และ setting (สถานที่ เวลา ทิศทางแสง เช่น \"bright minimal bedroom desk by a window, late-morning daylight from the left\") ทุกลุคต้องใช้ได้กับทุกฉากที่วางไว้ (ถ้ามีฉากที่มี dialogue หรือเห็นหน้าคน ห้ามเสนอลุคแบบเห็นแค่มือ) และสมเหตุสมผลกับสินค้า ไม่ต้องบรรยายรูปร่างหน้าตาละเอียดเกินจำเป็น",
+      "castOptions: เสนอ 4 ลุคที่ต่างกันชัดเจน เป็นผู้หญิง 2 ลุคและผู้ชาย 2 ลุค (ระบบจะเลือกเพศตามที่ผู้ใช้ตั้ง) ระบุ gender ทุกลุค เป็นภาษาอังกฤษ แต่ละลุคเป็นคนไทยทั่วไปแบบแม่ค้า/พ่อค้าหรือครีเอเตอร์ที่ขายของจริงบนแพลตฟอร์มที่เลือก อายุและการแต่งตัวเข้ากับกลุ่มลูกค้าของสินค้า แต่งตัวแบบใส่อยู่บ้านหรือไปทำงานจริง ไม่ใช่นายแบบนางแบบ มี person (เช่น \"Thai woman in her mid-20s, shoulder-length black hair, natural makeup, plain beige oversized T-shirt\" หรือ \"hands only — a Thai woman's hands, short clean nails\" ถ้าสินค้าเหมาะกับการถ่ายแค่มือ) และ setting (สถานที่ เวลา ทิศทางแสง เช่น \"bright minimal bedroom desk by a window, late-morning daylight from the left\") ทุกลุคต้องใช้ได้กับทุกฉากที่วางไว้ (ถ้ามีฉากที่มี dialogue หรือเห็นหน้าคน ห้ามเสนอลุคแบบเห็นแค่มือ) และสมเหตุสมผลกับสินค้า ไม่ต้องบรรยายรูปร่างหน้าตาละเอียดเกินจำเป็น",
       "productLook: บรรยายหน้าตาสินค้าเป็นภาษาอังกฤษ 1-2 ประโยคให้ตรงกับรูปสินค้าที่แนบมาที่สุด (รูปทรง สัดส่วน สีหลักและสีรอง วัสดุ/ผิว ฝาหรือหัว ตำแหน่งโลโก้และฉลาก ขนาดเทียบกับมือ) ห้ามเดาสิ่งที่ไม่เห็นในรูป ห้ามใส่ตัวอักษรไทยและห้ามคัดลอกข้อความบนฉลาก (บอกแค่ว่ามีโลโก้/ฉลากอยู่ตรงไหน) ถ้าไม่มีรูปให้บรรยายเท่าที่ข้อมูลสินค้ายืนยัน",
       "ใน visual ให้เรียกสินค้าว่า \"the product\" เท่านั้น ห้ามบรรยายสี รูปทรง หรือวัสดุของสินค้าซ้ำใน visual เพราะหน้าตาสินค้าถูกกำหนดไว้ใน productLook แล้ว และให้ฉากเป็นการใช้งานที่สมเหตุสมผลกับสินค้าประเภทนั้นจริงๆ",
       "ให้สินค้าอยู่ในเฟรมชัดๆ หันด้านหน้า/โลโก้เข้ากล้อง ห้ามให้มือบังโลโก้ ห้ามบิด งอ หรือแกะสินค้าจนรูปทรงเปลี่ยน เว้นแต่เป็นวิธีใช้ปกติของสินค้า",

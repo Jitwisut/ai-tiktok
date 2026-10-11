@@ -1,0 +1,12 @@
+@import "tailwindcss";
+@theme inline {
+  --color-background: #0f172a;
+  --color-primary: #38bdf8;
+  --color-primary-foreground: #082f49;
+  --color-muted-foreground: #94a3b8;
+}
+body { background: #0f172a; color: #f1f5f9; font-family: system-ui, sans-serif; }
+input, button, table, section, form { border-color: #334155; }
+label { display: flex; flex-direction: column; gap: .4rem; font-size: .875rem; }
+input { min-width: 0; }
+button:enabled:hover { filter: brightness(1.15); }

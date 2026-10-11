@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Affiliate Studio — Add to Studio",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "description": "Standalone product-to-video studio: import products, analyze and script them with Gemini or ChatGPT, then generate clips from one side panel.",
   "permissions": [
     "activeTab",
@@ -39,6 +39,7 @@
         "<all_urls>"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/content-scraper.js"
       ],
       "run_at": "document_idle"
@@ -48,6 +49,7 @@
         "https://aistudio.google.com/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/panel.js",
         "dist/ai-studio-automation.js"
       ],
@@ -68,6 +70,7 @@
         "https://flow.google.com/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/panel.js",
         "dist/flow-automation.js"
       ],
@@ -78,6 +81,7 @@
         "https://gemini.google.com/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/panel.js",
         "dist/gemini-automation.js"
       ],
@@ -88,6 +92,7 @@
         "https://chatgpt.com/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/chatgpt-automation.js"
       ],
       "run_at": "document_idle"
@@ -97,6 +102,7 @@
         "https://*.meta.ai/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/panel.js",
         "dist/meta-automation.js"
       ],
@@ -107,6 +113,7 @@
         "https://www.tiktok.com/tiktokstudio/*"
       ],
       "js": [
+        "dist/license-guard.js",
         "dist/panel.js",
         "dist/tiktok-upload.js"
       ],
@@ -114,11 +121,11 @@
     },
     {
       "matches": [
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "https://seller.shopee.co.th/*"
       ],
       "js": [
-        "dist/dev-bridge.js"
+        "dist/license-guard.js",
+        "dist/shopee-upload.js"
       ],
       "run_at": "document_idle"
     }

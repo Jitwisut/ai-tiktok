@@ -1,3 +1,5 @@
+import { initLicensePanel } from "./license-panel.js";
+import { SHOPEE_STYLES, shopeeProductLink, type PublishPlatform } from "./lib/commerce.js";
 // The one big UI. Runs as a real extension page (not injected into someone
 // else's site), so it can use real ES module imports straight into the
 // IndexedDB clip library, and talks to background.ts for everything else.
@@ -7,6 +9,7 @@ import { CONTENT_STYLES } from "./lib/analysis-prompts.js";
 import { styleLabel } from "./lib/style-playbooks.js";
 import { clipCountFor, clipSecondsForSite, durationOptions } from "./lib/prompt-engine.js";
 import { stepLabel, type AutopilotState } from "./lib/autopilot.js";
+import { initPhonePanel } from "./phone-panel.js";
 
 /* ---------- shared helpers ---------- */
 
@@ -34,12 +37,40 @@ function send<T = any>(message: unknown): Promise<T> {
   }
 }
 
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
 function log(text: string) {
   const list = $("log");
   const line = document.createElement("div");
   line.textContent = `${new Date().toLocaleTimeString("th-TH")} — ${text}`;
   list.prepend(line);
   while (list.children.length > 20) list.lastElementChild?.remove();
+
+  // The log lives on the Products tab; mirror the newest line as a toast so
+  // feedback from the other tabs (autopilot, library, settings) is seen too.
+  const toast = $("toast");
+  toast.textContent = text;
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 4500);
+}
+
+/** Builds an element from tag + class + text — never parses scraped text as HTML. */
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** Product / video thumbnail that degrades to an empty tile instead of a broken-image icon. */
+function thumb(src: string | null | undefined, className = "thumb"): HTMLImageElement {
+  const img = el("img", className);
+  img.alt = "";
+  img.loading = "lazy";
+  if (src) img.src = src;
+  img.addEventListener("error", () => img.removeAttribute("src"), { once: true });
+  return img;
 }
 
 async function activeTabId(): Promise<number | null> {
@@ -49,16 +80,30 @@ async function activeTabId(): Promise<number | null> {
 
 /* ---------- tabs ---------- */
 
-const TABS = ["products", "library", "autopilot", "settings"] as const;
+const phonePanel = initPhonePanel({
+  getVideos: async () => {
+    const result = await send<{ ok: boolean; videos: CompletedVideo[]; error?: string }>({ type: "GET_COMPLETED_VIDEOS" });
+    if (!result.ok) throw new Error(result.error ?? "โหลดคลิปไม่สำเร็จ");
+    return result.videos;
+  },
+  resolve: async videoId => {
+    const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_SHOPEE_POST", videoId, posted: true });
+    if (!result.ok) throw new Error(result.error ?? "บันทึกผลโพสต์ไม่สำเร็จ");
+  },
+});
+const TABS = ["products", "library", "autopilot", "phone", "settings"] as const;
 type TabName = (typeof TABS)[number];
 
 function showTab(name: TabName) {
   for (const tab of TABS) {
     $(`view-${tab}`).hidden = tab !== name;
     $(`tab-${tab}`).classList.toggle("active", tab === name);
+    $(`tab-${tab}`).setAttribute("aria-selected", String(tab === name));
   }
+  window.scrollTo({ top: 0 });
   if (name === "library") loadLibrary();
   if (name === "autopilot") loadAutopilot();
+  void phonePanel.setVisible(name === "phone");
 }
 
 for (const tab of TABS) {
@@ -156,8 +201,8 @@ function bindDurationToSite(durationId: string, siteId: string) {
 }
 
 /** Thai names in the picker; the option value stays the English style key used by prompts and storage. */
-function styleOptions(): string {
-  return CONTENT_STYLES.map((s) => `<option value="${s}" title="${escapeHtml(styleLabel(s).description)}">${escapeHtml(styleLabel(s).name)}</option>`).join("");
+function styleOptions(platform: PublishPlatform = "tiktok"): string {
+  return (platform === "shopee" ? SHOPEE_STYLES : CONTENT_STYLES).map((s) => `<option value="${s}" title="${escapeHtml(styleLabel(s).description)}">${escapeHtml(styleLabel(s).name)}</option>`).join("");
 }
 
 /** Shows what the chosen style looks like under its picker, and keeps it in sync. */
@@ -178,9 +223,9 @@ function populateStyles() {
 }
 
 function setCatalogStatus(text: string) {
-  const el = $("catalog-status");
-  el.textContent = text;
-  el.style.display = text ? "block" : "none";
+  const status = $("catalog-status");
+  status.textContent = text;
+  status.hidden = !text;
 }
 
 function updateSelectionCount() {
@@ -189,34 +234,73 @@ function updateSelectionCount() {
   deleteBtn.textContent = `Delete (${selected.size})`;
   deleteBtn.disabled = selected.size === 0;
   resetBtn.textContent = `Reset (${selected.size})`;
+  $("product-count").textContent = `${products.length} ชิ้น`;
+  $("selection-label").textContent = selected.size ? `เลือกแล้ว ${selected.size} ชิ้น` : "ยังไม่ได้เลือก";
+
+  // Which product the studio steps will run on — the flow needs exactly one.
+  const target = $("studio-target");
+  const [onlyId] = selected;
+  const product = selected.size === 1 ? products.find((p) => p.id === onlyId) : undefined;
+  target.replaceChildren();
+  target.classList.toggle("is-ready", !!product);
+  if (product) {
+    target.append(thumb(product.images[0], ""), el("span", "", product.name));
+  } else {
+    target.append(el("span", "", selected.size > 1 ? `เลือกไว้ ${selected.size} ชิ้น — สร้างวิดีโอได้ทีละ 1 ชิ้น` : "เลือกสินค้า 1 ชิ้นจากคลังด้านบน"));
+  }
+}
+
+function productPlatform(product: AppProduct): "shopee" | "tiktok" | null {
+  if (shopeeProductLink(product.sourceUrl)) return "shopee";
+  if (tiktokIdFromSourceUrl(product.sourceUrl) || product.source === "tiktok") return "tiktok";
+  return null;
 }
 
 function renderProductsTable() {
-  const tbody = $("products-tbody");
-  tbody.innerHTML = "";
+  const list = $("products-tbody");
+  list.replaceChildren();
 
   if (products.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="padding:16px;text-align:center;color:#9ca3af">ยังไม่มีข้อมูล — กด "ดึงจากหน้า TikTok" เพื่อเพิ่ม</td></tr>`;
+    const empty = el("div", "empty");
+    empty.append(
+      el("strong", "", "ยังไม่มีสินค้าในคลัง"),
+      el("span", "", 'เปิดหน้า TikTok Shop หรือ Shopee แล้วกด "ดึงจากหน้า TikTok" / "ดึงจากหน้า Shopee" ด้านบน'),
+    );
+    list.append(empty);
     return;
   }
 
   for (const product of products) {
-    const tr = document.createElement("tr");
-    const priceLabel = product.price ? `฿${product.price}` : "-";
-    tr.innerHTML = `
-      <td><input type="checkbox" ${selected.has(product.id) ? "checked" : ""}></td>
-      <td><img src="${product.images[0] ?? ""}" /></td>
-      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(product.name)}">${escapeHtml(product.name)}</td>
-      <td style="white-space:nowrap;color:#d1d5db">${priceLabel}</td>
-      <td style="color:#9ca3af;font-size:10px;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${product.id}">${product.id}</td>
-    `;
-    tr.querySelector("input")?.addEventListener("change", (event) => {
+    const row = el("label", "product-row");
+    row.setAttribute("role", "listitem");
+    row.title = product.name;
+    // The checkbox stays the row's first input — selection reads it by querySelector("input").
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = selected.has(product.id);
+    checkbox.setAttribute("aria-label", `เลือก ${product.name}`);
+    row.classList.toggle("is-selected", checkbox.checked);
+
+    const meta = el("div", "product-meta");
+    meta.append(el("div", "product-name", product.name));
+    const sub = el("div", "product-sub");
+    sub.append(el("span", "product-price", product.price ? `฿${product.price}` : "ไม่มีราคา"));
+    const platform = productPlatform(product);
+    if (platform) sub.append(el("span", `tag tag-${platform}`, platform === "shopee" ? "Shopee" : "TikTok"));
+    const id = el("span", "product-id", product.id);
+    id.title = product.id;
+    sub.append(id);
+    meta.append(sub);
+
+    row.append(checkbox, thumb(product.images[0]), meta);
+    row.querySelector("input")?.addEventListener("change", (event) => {
       if ((event.target as HTMLInputElement).checked) selected.add(product.id);
       else selected.delete(product.id);
+      row.classList.toggle("is-selected", (event.target as HTMLInputElement).checked);
       updateSelectionCount();
       resetReview();
     });
-    tbody.appendChild(tr);
+    list.appendChild(row);
   }
 }
 
@@ -332,49 +416,105 @@ function resetReview() {
   (($("create-video") as HTMLButtonElement)).disabled = true;
 }
 
+function reviewHead(icon: string, title: string, note?: string): HTMLElement {
+  const head = el("div", "review-head");
+  const ic = el("i", "ic");
+  ic.dataset.icon = icon;
+  ic.setAttribute("aria-hidden", "true");
+  head.append(ic, el("span", "", title));
+  if (note) head.append(el("small", "", note));
+  return head;
+}
+
+function chipGroup(label: string, items: string[], tone: string): HTMLElement {
+  const group = el("div", "insight");
+  group.append(el("div", "insight-label", label));
+  const chips = el("div", "chips");
+  for (const item of items) if (item.trim()) chips.append(el("span", `chip ${tone}`, item));
+  group.append(chips);
+  return group;
+}
+
+function keyValue(label: string, value: string): HTMLElement {
+  const box = el("div", "kv");
+  box.append(el("b", "", label), el("span", "", value));
+  return box;
+}
+
 function renderReview() {
   const box = $("review");
+  $("step-analyze").dataset.state = activeAnalysis ? "done" : "";
+  $("step-scenes").dataset.state = activeContent ? "done" : "";
   if (!activeAnalysis && !activeContent) {
-    box.style.display = "none";
-    box.innerHTML = "";
+    box.hidden = true;
+    box.replaceChildren();
     return;
   }
 
-  const parts: string[] = [];
+  const blocks: HTMLElement[] = [];
   if (activeAnalysis) {
-    parts.push(`<div style="font-weight:700;color:#93c5fd;margin-bottom:2px">1. วิเคราะห์สินค้า</div>`);
-    parts.push(`<div><b>กลุ่มเป้าหมาย:</b> ${escapeHtml(activeAnalysis.targetCustomer)}</div>`);
-    parts.push(`<div><b>Pain points:</b> ${escapeHtml(activeAnalysis.painPoints.join(", "))}</div>`);
-    parts.push(`<div><b>จุดขาย:</b> ${escapeHtml(activeAnalysis.sellingPoints.join(", "))}</div>`);
-    parts.push(`<div><b>มุมคอนเทนต์:</b> ${escapeHtml(activeAnalysis.angles.join(", "))}</div>`);
+    const block = el("div", "review-block");
+    block.append(reviewHead("target", "ผลวิเคราะห์สินค้า", "ขั้นที่ 1"));
+    const target = el("div", "insight");
+    target.append(el("div", "insight-label", "กลุ่มเป้าหมาย"), el("div", "insight-text", activeAnalysis.targetCustomer));
+    block.append(
+      target,
+      chipGroup("Pain points", activeAnalysis.painPoints, "chip-pain"),
+      chipGroup("จุดขาย", activeAnalysis.sellingPoints, "chip-sell"),
+      chipGroup("มุมคอนเทนต์", activeAnalysis.angles, "chip-angle"),
+    );
+    blocks.push(block);
   }
   if (activeContent) {
-    parts.push(`<div style="font-weight:700;color:#93c5fd;margin:8px 0 2px">2. คอนเทนต์</div>`);
-    parts.push(`<div><b>Hook:</b> ${escapeHtml(activeContent.hook)}</div>`);
-    parts.push(`<div><b>Script:</b> ${escapeHtml(activeContent.script)}</div>`);
-    parts.push(`<div><b>Caption:</b> ${escapeHtml(activeContent.caption)}</div>`);
-    parts.push(`<div><b>CTA:</b> ${escapeHtml(activeContent.cta)}</div>`);
-    if (activeContent.angle) parts.push(`<div><b>มุมการขาย:</b> ${escapeHtml(activeContent.angle)}</div>`);
-    if (activeContent.onScreenText) parts.push(`<div><b>ข้อความบนจอ:</b> "${escapeHtml(activeContent.onScreenText)}"</div>`);
-    if (activeContent.onScreenCta) parts.push(`<div><b>ข้อความ CTA บนจอ:</b> "${escapeHtml(activeContent.onScreenCta)}"</div>`);
+    const block = el("div", "review-block");
+    block.append(reviewHead("quote", "คอนเทนต์", "ขั้นที่ 2"));
+    const hook = el("div", "hook");
+    hook.append(el("span", "hook-label", "HOOK"), document.createTextNode(activeContent.hook));
+    block.append(hook, keyValue("Script", activeContent.script), keyValue("Caption", activeContent.caption), keyValue("CTA", activeContent.cta));
+    if (activeContent.angle) block.append(keyValue("มุมการขาย", activeContent.angle));
+    if (activeContent.onScreenText || activeContent.onScreenCta) {
+      const texts = el("div", "overlay-texts");
+      if (activeContent.onScreenText) {
+        const tag = el("span", "overlay-text", `"${activeContent.onScreenText}"`);
+        tag.prepend(el("small", "", "ข้อความบนจอ"));
+        texts.append(tag);
+      }
+      if (activeContent.onScreenCta) {
+        const tag = el("span", "overlay-text", `"${activeContent.onScreenCta}"`);
+        tag.prepend(el("small", "", "CTA บนจอ"));
+        texts.append(tag);
+      }
+      block.append(texts);
+    }
+    blocks.push(block);
   }
   if (activeScenes.length) {
-    parts.push(`<div style="font-weight:700;color:#93c5fd;margin:8px 0 2px">ฉาก (${activeScenes.length})</div>`);
+    const block = el("div", "review-block");
+    block.append(reviewHead("film", "Storyboard", `${activeScenes.length} ฉาก · เลื่อนดูด้านข้าง`));
+    const board = el("div", "storyboard");
     activeScenes.forEach((scene, i) => {
-      const clip = Number.isInteger(scene.clip) ? `คลิป ${scene.clip! + 1} · ` : "";
-      parts.push(`<div>${i + 1}. (${clip}${scene.duration}s) ${escapeHtml(scene.description)}</div>`);
-      if (scene.visual) parts.push(`<div style="color:#9ca3af;margin-left:14px">ภาพ: ${escapeHtml(scene.visual)}</div>`);
-      const speech = scene.dialogue?.trim()
-        ? `🗣️ ${scene.dialogue.trim()}`
-        : scene.voiceover?.trim()
-          ? `🎙️ ${scene.voiceover.trim()}`
-          : "";
-      if (speech) parts.push(`<div style="color:#9ca3af;margin-left:14px">${escapeHtml(speech)}</div>`);
+      const card = el("article", "scene");
+      const top = el("div", "scene-top");
+      top.append(el("span", "scene-no", `SCENE ${String(i + 1).padStart(2, "0")}`));
+      const meta = el("span", "tag tag-muted", `${Number.isInteger(scene.clip) ? `คลิป ${scene.clip! + 1} · ` : ""}${scene.duration}s`);
+      top.append(meta);
+      card.append(top, el("div", "scene-desc", scene.description));
+      if (scene.visual) card.append(el("div", "scene-visual", `ภาพ: ${scene.visual}`));
+      const dialogue = scene.dialogue?.trim();
+      const voiceover = scene.voiceover?.trim();
+      if (dialogue || voiceover) {
+        const speech = el("div", `scene-speech${dialogue ? "" : " vo"}`);
+        speech.append(el("b", "", dialogue ? "บทพูด" : "เสียงบรรยาย"), document.createTextNode(dialogue ?? voiceover ?? ""));
+        card.append(speech);
+      }
+      board.append(card);
     });
+    block.append(board);
+    blocks.push(block);
   }
 
-  box.style.display = "block";
-  box.innerHTML = parts.join("");
+  box.replaceChildren(...blocks);
+  box.hidden = false;
 }
 
 function requireSingleSelected(): string | null {
@@ -402,7 +542,7 @@ function analyzeSelected() {
     productId,
   }).then((result) => {
     button.disabled = false;
-    button.textContent = "1. วิเคราะห์สินค้า";
+    button.textContent = "วิเคราะห์สินค้า";
     if (!result?.ok || !result.analysis) {
       log(result?.error ?? "วิเคราะห์สินค้าไม่สำเร็จ");
       return;
@@ -432,9 +572,10 @@ function generateScenesSelected() {
     style,
     targetDuration,
     site,
+    platform: ($("publish-platform") as HTMLSelectElement).value,
   }).then((result) => {
     button.disabled = false;
-    button.textContent = "2. สร้างฉาก";
+    button.textContent = "สร้างฉาก";
     if (!result?.ok || !result.content) {
       log(result?.error ?? "สร้างฉากไม่สำเร็จ");
       return;
@@ -443,7 +584,7 @@ function generateScenesSelected() {
     activeScenes = result.scenes ?? [];
     renderReview();
     ($("create-video") as HTMLButtonElement).disabled = false;
-    log(`สร้างฉากเสร็จแล้ว (${activeScenes.length} ฉาก) — ตรวจสอบด้านล่าง แล้วกด "สร้างวิดีโอ" ได้เลย`);
+    log(`สร้างฉากเสร็จแล้ว (${activeScenes.length} ฉาก) — ตรวจสอบ Storyboard ด้านล่าง แล้วกด "สร้างวิดีโอ" ได้เลย`);
   });
 }
 
@@ -494,10 +635,10 @@ function startBatch(contentId: string, button: HTMLButtonElement, idleLabel: str
 
 function createVideoFromContent() {
   if (!activeContent) {
-    log('ยังไม่มีคอนเทนต์ — กด "2. สร้างฉาก" ก่อน');
+    log('ยังไม่มีคอนเทนต์ — กด "สร้างฉาก" (ขั้นที่ 2) ก่อน');
     return;
   }
-  startBatch(activeContent.id, $("create-video") as HTMLButtonElement, "3. สร้างวิดีโอ");
+  startBatch(activeContent.id, $("create-video") as HTMLButtonElement, "สร้างวิดีโอ");
 }
 
 /* ---------- export/import ---------- */
@@ -586,14 +727,32 @@ $("sync-showcase").addEventListener("click", () => {
   const button = $("sync-showcase") as HTMLButtonElement;
   button.disabled = true;
   button.textContent = "กำลังดึง...";
-  send<{ ok: boolean; added?: number; total?: number; error?: string }>({ type: "SYNC_TIKTOK_SHOWCASE" }).then((result) => {
+  send<{
+    ok: boolean;
+    added?: number;
+    total?: number;
+    removed?: { name: string; reason: "missing" | "unavailable" }[];
+    kept?: number;
+    error?: string;
+  }>({ type: "SYNC_TIKTOK_SHOWCASE" }).then((result) => {
     button.disabled = false;
     button.textContent = "ดึงสินค้าจาก Showcase";
     if (!result?.ok) {
       log(result?.error ?? "ดึงสินค้าไม่สำเร็จ");
       return;
     }
-    log(`ดึงสินค้าจาก Showcase แล้ว ${result.total ?? 0} รายการ (ใหม่ ${result.added ?? 0})`);
+    const removed = result.removed ?? [];
+    const soldOut = removed.filter((r) => r.reason === "unavailable").length;
+    const missing = removed.length - soldOut;
+    const cleanup = removed.length
+      ? ` · ลบออก ${removed.length} รายการ (${[soldOut ? `สินค้าหมด ${soldOut}` : "", missing ? `ไม่อยู่ใน Showcase แล้ว ${missing}` : ""].filter(Boolean).join(", ")})`
+      : " · สินค้าในโปรแกรมตรงกับ Showcase แล้ว";
+    const kept = result.kept ? ` · เก็บไว้ก่อน ${result.kept} รายการเพราะยังมีวิดีโอกำลังสร้าง (จะลบในการดึงครั้งถัดไป)` : "";
+    // The log shows newest first, so the summary goes last to sit on top (and in the toast).
+    for (const item of removed.slice(0, 5)) {
+      log(`ลบ "${item.name.slice(0, 50)}" — ${item.reason === "unavailable" ? "สินค้าหมด" : "ไม่อยู่ใน Showcase แล้ว"}`);
+    }
+    log(`ดึงสินค้าจาก Showcase แล้ว ${result.total ?? 0} รายการ (ใหม่ ${result.added ?? 0})${cleanup}${kept}`);
     loadProducts();
   });
 });
@@ -644,36 +803,37 @@ interface CompletedVideo {
   mergedAt: number | null;
   mergeError: string | null;
   caption: string;
+  platform?: PublishPlatform;
+  productShopeeUrl?: string | null;
+  shopeePost?: { status: string; at: number; error: string | null } | null;
   productTikTokId: string | null;
-  tiktokPost: { status: "preparing" | "ready" | "posted" | "failed"; at: number; error: string | null } | null;
+  tiktokPost: { status: "preparing" | "ready" | "posted" | "failed" | "submitting" | "uncertain"; at: number; error: string | null } | null;
 }
 
 let libraryBusy = false;
 let libraryActiveVideoId: string | null = null;
 
 function libraryRow(imageUrl: string | null, title: string, subtitle: string, actionLabel: string, onAction: (button: HTMLButtonElement) => void): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "card";
-  row.innerHTML = `
-    <img src="${imageUrl ?? ""}" />
-    <div class="info">
-      <div class="title">${escapeHtml(title)}</div>
-      <div class="subtitle">${escapeHtml(subtitle)}</div>
-    </div>
-  `;
-  const button = document.createElement("button");
-  button.className = "btn btn-primary";
-  button.textContent = actionLabel;
-  button.style.flexShrink = "0";
+  const row = el("div", "media-row");
+  const info = el("div", "product-meta");
+  const name = el("div", "media-title", title);
+  name.title = title;
+  info.append(name, el("div", "media-sub", subtitle));
+  const button = el("button", "btn btn-primary btn-sm", actionLabel);
+  button.dataset.icon = "play";
   button.addEventListener("click", () => onAction(button));
-  row.appendChild(button);
+  row.append(thumb(imageUrl), info, button);
   return row;
+}
+
+function emptyNote(text: string): HTMLElement {
+  return el("div", "empty", text);
 }
 
 function setProgress(current: number, total: number, state: string) {
   const wrap = $("progress-wrap");
-  if (!total || state === "idle") {
-    wrap.style.display = "none";
+  if ((!total && state !== "paused") || state === "idle") {
+    wrap.hidden = true;
     return;
   }
   const labels: Record<string, string> = {
@@ -682,12 +842,32 @@ function setProgress(current: number, total: number, state: string) {
     done: "เสร็จแล้ว",
     failed: "ล้มเหลว",
     cancelled: "ยกเลิกแล้ว",
+    paused: "พักงาน — ตรวจสิทธิ์ใช้งานแล้วกดทำงานที่พักต่อ",
   };
-  wrap.style.display = "block";
-  $("progress-label").textContent = `${labels[state] ?? state} — คลิป ${current}/${total}`;
+  wrap.hidden = false;
+  wrap.dataset.state = state;
+  $("progress-label").textContent = `${labels[state] ?? state}${total ? ` — คลิป ${current}/${total}` : ""}`;
   const bar = $("progress-bar");
   bar.style.width = `${Math.round((current / Math.max(1, total)) * 100)}%`;
-  bar.style.background = state === "failed" ? "#dc2626" : state === "done" ? "#16a34a" : "#2563eb";
+  // Clip counts are the only real progress; before the first clip lands,
+  // show that work is moving without inventing a percentage.
+  $("progress-track").classList.toggle("is-indeterminate", (state === "generating" || state === "uploading") && current === 0);
+}
+
+/** Content scripts send a colour meant for their in-page banner; map it to a tone that reads on the panel. */
+function statusTone(color: string | undefined): string {
+  const c = (color ?? "").toLowerCase();
+  if (c === "#dc2626" || c === "#ef4444" || c === "#f87171") return "danger";
+  if (c === "#d97706" || c === "#f59e0b" || c === "#fbbf24") return "warning";
+  if (c === "#16a34a" || c === "#22c55e" || c === "#4ade80") return "success";
+  return "neutral";
+}
+
+function showStatusText(status: { text: string; color: string } | undefined) {
+  const box = $("status-text");
+  box.textContent = status?.text ?? "";
+  box.dataset.tone = statusTone(status?.color);
+  box.hidden = !status?.text;
 }
 
 function setBusy(running: boolean, videoId?: string) {
@@ -698,10 +878,10 @@ function setBusy(running: boolean, videoId?: string) {
 async function renderQueueInfo() {
   const stored = await chrome.storage.local.get("jobQueue");
   const queue = stored.jobQueue as { current: string | null; pending: unknown[] } | undefined;
-  const el = $("queue-info");
+  const info = $("queue-info");
   const waiting = queue?.pending.length ?? 0;
-  el.textContent = waiting ? `รอคิวอีก ${waiting} วิดีโอ — จะเริ่มต่ออัตโนมัติเมื่อวิดีโอนี้เสร็จ` : "";
-  el.style.display = waiting ? "block" : "none";
+  info.textContent = waiting ? `รอคิวอีก ${waiting} วิดีโอ — จะเริ่มต่ออัตโนมัติเมื่อวิดีโอนี้เสร็จ` : "";
+  info.hidden = !waiting;
 }
 
 function cancelJob() {
@@ -748,24 +928,24 @@ function createFromContent(content: LibraryContent, button: HTMLButtonElement) {
   startBatch(content.contentId, button, "สร้าง");
 }
 
-function clipPlayer(blob: Blob, width: string): HTMLVideoElement {
-  const videoEl = document.createElement("video");
+/** A 9:16 player — every clip here is a vertical short. Size comes from the container. */
+function clipPlayer(blob: Blob): HTMLVideoElement {
+  const videoEl = el("video", "player");
   videoEl.src = URL.createObjectURL(blob);
   videoEl.controls = true;
   videoEl.preload = "metadata";
-  videoEl.style.width = width;
-  videoEl.style.borderRadius = "6px";
-  videoEl.style.background = "#000";
+  videoEl.playsInline = true;
   return videoEl;
 }
 
-function downloadBlob(blob: Blob, filename: string) {
+function downloadBlob(blob: Blob, filename: string): Promise<boolean> {
   const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename, saveAs: false }).then(
-    () => log(`ดาวน์โหลด ${filename} แล้ว`),
-    (err: unknown) => log(`ดาวน์โหลดไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`),
+  const result = chrome.downloads.download({ url, filename, saveAs: false }).then(
+    () => { log(`เริ่มดาวน์โหลด ${filename} แล้ว`); return true; },
+    (err: unknown) => { log(`ดาวน์โหลดไม่สำเร็จ: ${err instanceof Error ? err.message : String(err)}`); return false; },
   );
   setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  return result;
 }
 
 function mergeVideo(video: CompletedVideo, button: HTMLButtonElement) {
@@ -790,34 +970,23 @@ const TIKTOK_POST_LABELS: Record<string, string> = {
   ready: "เตรียมโพสต์เสร็จแล้ว — ไปกด Post ในแท็บ TikTok",
   posted: "โพสต์ขึ้น TikTok แล้ว ✓",
   failed: "เตรียมโพสต์ไม่สำเร็จ",
+  submitting: "ส่งโพสต์แล้ว กำลังรอยืนยันผล",
+  uncertain: "ตรวจผลโพสต์ใน TikTok ก่อนทำต่อ",
 };
 
 function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLElement {
-  const block = document.createElement("div");
-  block.style.marginTop = "10px";
-  block.style.borderTop = "1px solid #1f2937";
-  block.style.paddingTop = "8px";
-  block.innerHTML = `<div class="clip-parts-label" style="margin-top:0;margin-bottom:4px">โพสต์ TikTok</div>`;
+  const block = el("div", "post-block");
+  block.append(el("div", "section-label", "โพสต์ TikTok"));
 
   const caption = document.createElement("textarea");
-  caption.rows = 3;
+  caption.rows = 3; caption.maxLength = 150; caption.setAttribute("aria-label", "แคปชัน TikTok ไม่เกิน 150 ตัวอักษร");
   caption.value = video.caption;
   caption.placeholder = "แคปชันและ #แฮชแท็ก";
-  Object.assign(caption.style, {
-    width: "100%",
-    background: "#1f2937",
-    color: "#f9fafb",
-    border: "1px solid #374151",
-    borderRadius: "6px",
-    padding: "6px",
-    fontSize: "12px",
-    resize: "vertical",
-  } satisfies Partial<CSSStyleDeclaration>);
   block.appendChild(caption);
 
   // Product link: any product imported from TikTok can be linked, defaulting to the video's own product.
   const productSelect = document.createElement("select");
-  productSelect.style.marginTop = "6px";
+  productSelect.setAttribute("aria-label", "ลิงก์สินค้าที่จะติดในโพสต์");
   const noLink = new Option("ไม่ติดลิงก์สินค้า", "");
   productSelect.add(noLink);
   const linkable = products.flatMap((p) => {
@@ -836,17 +1005,9 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
   }
   block.appendChild(productSelect);
 
-  const row = document.createElement("div");
-  row.className = "row";
-  row.style.alignItems = "center";
-  row.style.marginTop = "6px";
+  const row = el("div", "row");
 
-  const autoLabel = document.createElement("label");
-  autoLabel.style.fontSize = "11px";
-  autoLabel.style.color = "#d1d5db";
-  autoLabel.style.display = "flex";
-  autoLabel.style.gap = "4px";
-  autoLabel.style.alignItems = "center";
+  const autoLabel = el("label", "check");
   const auto = document.createElement("input");
   auto.type = "checkbox";
   auto.checked = autoPostDefault;
@@ -855,9 +1016,8 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
   });
   autoLabel.append(auto, "กดโพสต์ให้อัตโนมัติ");
 
-  const button = document.createElement("button");
-  button.className = "btn btn-primary";
-  button.textContent = "เตรียมโพสต์ TikTok";
+  const button = el("button", "btn btn-primary", "เตรียมโพสต์ TikTok");
+  button.dataset.icon = "send";
   button.addEventListener("click", () => {
     if (auto.checked && !productSelect.value && !confirm("ยังไม่ได้เลือกลิงก์สินค้า — โพสต์โดยไม่ติดลิงก์ใช่ไหม?")) return;
     if (auto.checked && !confirm("ระบบจะกด Post ให้เองทันทีที่กรอกเสร็จ — วิดีโอจะขึ้นบัญชี TikTok จริง ยืนยันไหม?")) return;
@@ -880,13 +1040,25 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
   block.appendChild(row);
 
   if (video.tiktokPost) {
-    const status = document.createElement("div");
-    status.className = "subtitle";
-    status.style.whiteSpace = "normal";
-    status.style.color =
-      video.tiktokPost.status === "failed" ? "#f87171" : video.tiktokPost.status === "posted" ? "#4ade80" : "#fbbf24";
+    const status = el("div", "post-status");
+    status.dataset.tone =
+      video.tiktokPost.status === "failed" ? "danger" : video.tiktokPost.status === "posted" ? "success" : "warning";
     status.textContent = `${TIKTOK_POST_LABELS[video.tiktokPost.status] ?? video.tiktokPost.status}${video.tiktokPost.error ? `: ${video.tiktokPost.error}` : ""}`;
     block.appendChild(status);
+  }
+  if (video.tiktokPost && ["submitting", "uncertain"].includes(video.tiktokPost.status)) {
+    const resolveRow = el("div", "row");
+    block.appendChild(resolveRow);
+    for (const posted of [true, false]) {
+      const confirmResult = document.createElement("button"); confirmResult.className = "btn btn-sm";
+      confirmResult.textContent = posted ? "ตรวจแล้ว: โพสต์ TikTok แล้ว" : "ตรวจแล้ว: ยังไม่โพสต์";
+      confirmResult.addEventListener("click", async () => {
+        if (!confirm(posted ? "ตรวจใน TikTok แล้วว่าคลิปนี้เผยแพร่แล้วใช่ไหม?" : "ตรวจใน TikTok ว่าคลิปยังไม่เผยแพร่แล้วใช่ไหม? ระบบจะปิดแท็บโพสต์เดิมก่อนอนุญาตให้เริ่มใหม่")) return;
+        const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_TIKTOK_POST", videoId: video.videoId, posted });
+        if (result.ok) await loadLibrary(); else log(result.error ?? "บันทึกผลไม่สำเร็จ");
+      });
+      resolveRow.appendChild(confirmResult);
+    }
   }
   return block;
 }
@@ -894,75 +1066,72 @@ function tiktokPostBlock(video: CompletedVideo, autoPostDefault: boolean): HTMLE
 async function renderClips() {
   const container = $("clips-list");
   const [result, settingsResult] = await Promise.all([
-    send<{ ok: boolean; videos?: CompletedVideo[] }>({ type: "GET_COMPLETED_VIDEOS" }),
+    send<{ ok: boolean; videos?: CompletedVideo[]; error?: string }>({ type: "GET_COMPLETED_VIDEOS" }),
     send<{ ok: boolean; settings?: { tiktokAutoPost?: boolean } }>({ type: "GET_SETTINGS" }),
   ]);
   const videos = result?.videos ?? [];
   const autoPostDefault = settingsResult?.settings?.tiktokAutoPost ?? false;
 
-  container.innerHTML = "";
+  container.replaceChildren();
+  if (!result?.ok) {
+    container.appendChild(emptyNote(result?.error ?? "โหลดคลิปที่เสร็จแล้วไม่สำเร็จ"));
+    return;
+  }
   if (videos.length === 0) {
-    container.innerHTML = `<div class="empty">ยังไม่มีคลิปที่เสร็จแล้ว</div>`;
+    container.appendChild(emptyNote("ยังไม่มีคลิปที่เสร็จแล้ว — วิดีโอที่เรนเดอร์เสร็จจะมาอยู่ที่นี่ พร้อมดาวน์โหลดและโพสต์"));
     return;
   }
 
   for (const video of videos) {
-    const wrap = document.createElement("div");
-    wrap.className = "card";
-    wrap.style.flexDirection = "column";
-    wrap.style.alignItems = "stretch";
+    const wrap = el("article", "video-card");
     const shape = video.clipCount > 1 ? `${video.seconds} วิ · ${video.clipCount} คลิป` : `${video.seconds} วิ · คลิปเดียว`;
-    wrap.innerHTML = `<div class="title">${escapeHtml(video.productName)}</div><div class="subtitle">${escapeHtml(video.hook)} · ${shape}</div>`;
+    const head = el("div", "video-head");
+    const title = el("div", "media-title", video.productName);
+    title.title = video.productName;
+    const sub = el("div", "product-sub");
+    sub.append(el("span", `tag ${video.platform === "shopee" ? "tag-shopee" : "tag-tiktok"}`, video.platform === "shopee" ? "Shopee" : "TikTok"), el("span", "", shape));
+    head.append(title, el("div", "media-sub", video.hook), sub);
+    wrap.appendChild(head);
 
     const stored = await getClipsForVideo(video.videoId);
     const merged = stored.find((c) => c.index === MERGED_CLIP_INDEX);
     const parts = stored.filter((c) => c.index >= 0);
 
     if (merged) {
-      const block = document.createElement("div");
-      block.className = "merged-video";
-      block.appendChild(clipPlayer(merged.blob, "160px"));
-      const side = document.createElement("div");
-      side.innerHTML = `<div class="badge">วิดีโอเต็ม ${video.seconds} วิ</div><div class="subtitle" style="white-space:normal">ต่อ ${parts.length} คลิปเป็นไฟล์เดียวแล้ว พร้อมโพสต์</div>`;
-      const download = document.createElement("button");
-      download.className = "btn btn-success";
-      download.style.marginTop = "8px";
-      download.textContent = "ดาวน์โหลดวิดีโอเต็ม";
+      const block = el("div", "video-hero");
+      block.appendChild(clipPlayer(merged.blob));
+      const side = el("div", "video-side");
+      side.append(
+        el("span", "tag tag-ok", `วิดีโอเต็ม ${video.seconds} วิ`),
+        el("div", "media-sub", `ต่อ ${parts.length} คลิปเป็นไฟล์เดียวแล้ว พร้อมโพสต์`),
+      );
+      const download = el("button", "btn btn-success", "ดาวน์โหลดวิดีโอเต็ม");
+      download.dataset.icon = "download";
       download.addEventListener("click", () => downloadBlob(merged.blob, `ai-affiliate/${video.videoId}-full-${video.seconds}s.mp4`));
       side.appendChild(download);
       block.appendChild(side);
       wrap.appendChild(block);
     } else if (parts.length > 1) {
-      const row = document.createElement("div");
-      row.style.marginTop = "8px";
-      if (video.mergeError) {
-        row.innerHTML = `<div class="subtitle" style="white-space:normal;color:#fbbf24;margin-bottom:6px">${escapeHtml(video.mergeError)}</div>`;
-      }
-      const mergeButton = document.createElement("button");
-      mergeButton.className = "btn btn-primary";
-      mergeButton.textContent = "ต่อเป็นวิดีโอเดียว";
+      const row = el("div", "stack");
+      if (video.mergeError) row.appendChild(el("div", "post-status", video.mergeError)).dataset.tone = "warning";
+      const mergeButton = el("button", "btn btn-primary", "ต่อเป็นวิดีโอเดียว");
+      mergeButton.dataset.icon = "layers";
       mergeButton.addEventListener("click", () => mergeVideo(video, mergeButton));
       row.appendChild(mergeButton);
       wrap.appendChild(row);
     }
 
     if (parts.length > 1 || !merged) {
-      if (merged) {
-        const label = document.createElement("div");
-        label.className = "clip-parts-label";
-        label.textContent = "คลิปย่อย";
-        wrap.appendChild(label);
-      }
-      const clipRow = document.createElement("div");
-      clipRow.style.display = "flex";
-      clipRow.style.gap = "6px";
-      clipRow.style.marginTop = "6px";
-      clipRow.style.flexWrap = "wrap";
-      for (const clip of parts) clipRow.appendChild(clipPlayer(clip.blob, merged ? "80px" : "110px"));
+      if (merged) wrap.appendChild(el("div", "section-label", "คลิปย่อย"));
+      const clipRow = el("div", merged ? "clip-strip" : "clip-strip is-main");
+      for (const clip of parts) clipRow.appendChild(clipPlayer(clip.blob));
       wrap.appendChild(clipRow);
     }
 
-    if (merged || parts.length === 1) wrap.appendChild(tiktokPostBlock(video, autoPostDefault));
+    if (merged || parts.length === 1) {
+      if (video.platform === "shopee") wrap.appendChild(shopeePostBlock(video));
+      else wrap.appendChild(tiktokPostBlock(video, autoPostDefault));
+    }
     container.appendChild(wrap);
   }
 }
@@ -974,10 +1143,10 @@ async function loadLibrary() {
   ]);
 
   const jobsList = $("jobs-list");
-  jobsList.innerHTML = "";
+  jobsList.replaceChildren();
   const jobs = jobsResult?.jobs ?? [];
   if (jobs.length === 0) {
-    jobsList.innerHTML = `<div class="empty">ยังไม่มีงานที่รออยู่ — ไปที่แท็บ "สินค้า" แล้วสร้างวิดีโอ</div>`;
+    jobsList.appendChild(emptyNote('ยังไม่มีงานที่รออยู่ — ไปที่แท็บ "สินค้า" แล้วสร้างวิดีโอ'));
   } else {
     for (const job of jobs) {
       jobsList.appendChild(libraryRow(job.imageUrl, job.productName, job.hook, "สร้าง", (btn) => runJob(job, btn)));
@@ -985,10 +1154,10 @@ async function loadLibrary() {
   }
 
   const contentsList = $("contents-list");
-  contentsList.innerHTML = "";
+  contentsList.replaceChildren();
   const contents = contentsResult?.contents ?? [];
   if (contents.length === 0) {
-    contentsList.innerHTML = `<div class="empty">ยังไม่มีคอนเทนต์ที่มีฉาก — ทำขั้นตอน "สร้างฉาก" ในแท็บสินค้าก่อน</div>`;
+    contentsList.appendChild(emptyNote('ยังไม่มีคอนเทนต์ที่มีฉาก — ทำขั้นตอน "สร้างฉาก" ในแท็บสินค้าก่อน'));
   } else {
     for (const content of contents) {
       contentsList.appendChild(
@@ -1056,12 +1225,7 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 
   const status = changes.jobStatusText?.newValue as { text: string; color: string } | undefined;
-  if (status) {
-    const el = $("status-text");
-    el.textContent = status.text;
-    el.style.color = status.color;
-    el.style.display = status.text ? "block" : "none";
-  }
+  if (status) showStatusText(status);
 
   if (changes.jobLog) renderJobLog();
   if (changes.jobQueue) renderQueueInfo();
@@ -1074,12 +1238,7 @@ chrome.storage.local.get(["jobProgress", "jobStatusText"], (stored) => {
     setProgress(progress.current, progress.total, progress.state);
   }
   const status = stored.jobStatusText as { text: string; color: string } | undefined;
-  if (status?.text) {
-    const el = $("status-text");
-    el.textContent = status.text;
-    el.style.color = status.color;
-    el.style.display = "block";
-  }
+  if (status?.text) showStatusText(status);
 });
 
 renderQueueInfo();
@@ -1108,21 +1267,26 @@ function apUpdateSelectedCount() {
 
 function apRenderProducts() {
   const list = $("ap-products");
-  list.innerHTML = "";
+  list.replaceChildren();
   if (products.length === 0) {
-    list.innerHTML = `<div class="empty" style="padding:10px">ยังไม่มีสินค้า — ไปแท็บสินค้าแล้วกด "ดึงสินค้าจาก Showcase"</div>`;
+    list.appendChild(emptyNote('ยังไม่มีสินค้า — ไปแท็บสินค้าแล้วกด "ดึงสินค้าจาก Showcase"'));
     return;
   }
-  for (const product of products) {
-    const row = document.createElement("label");
-    row.className = "ap-product";
-    const linkable = !!tiktokIdFromSourceUrl(product.sourceUrl);
-    row.innerHTML = `
-      <input type="checkbox" ${apSelected.has(product.id) ? "checked" : ""} />
-      <img src="${product.images[0] ?? ""}" />
-      <span class="name" title="${escapeHtml(product.name)}">${escapeHtml(product.name)}</span>
-      <span class="ap-tag" style="background:${linkable ? "#14532d" : "#374151"};color:${linkable ? "#86efac" : "#9ca3af"}">${linkable ? "ติดลิงก์ได้" : "ไม่มีลิงก์"}</span>
-    `;
+  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const available = products.filter((p) => platform === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl));
+  if (!available.length) list.appendChild(emptyNote(platform === "shopee" ? 'เปิดหน้าสินค้า Shopee ใน Chrome แล้วกด "ดึงจากหน้า Shopee" ในแท็บสินค้า' : "ยังไม่มีสินค้า TikTok"));
+  for (const product of available) {
+    const row = el("label", "ap-product");
+    const linkable = platform === "shopee" ? !!shopeeProductLink(product.sourceUrl) : !!tiktokIdFromSourceUrl(product.sourceUrl);
+    const linkLabel = platform === "shopee" ? "มีลิงก์สินค้า" : "ติดลิงก์ได้";
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = apSelected.has(product.id);
+    const name = el("span", "name", product.name);
+    name.title = product.name;
+    const tag = el("span", `tag ${linkable ? "tag-ok" : "tag-muted"}`, linkable ? linkLabel : "ไม่มีลิงก์");
+    tag.title = platform === "shopee" ? "มี URL สินค้าสำหรับแนบในแอป Shopee ต้องตรวจสิทธิ์ปักสินค้าบนเว็บแยกต่างหาก" : "สินค้าจาก TikTok Showcase";
+    row.append(checkbox, thumb(product.images[0], ""), name, tag);
     row.querySelector("input")!.addEventListener("change", (event) => {
       if ((event.target as HTMLInputElement).checked) apSelected.add(product.id);
       else apSelected.delete(product.id);
@@ -1150,11 +1314,11 @@ function apMode(): "batch" | "schedule" {
   return document.querySelector<HTMLInputElement>('input[name="ap-mode"]:checked')?.value === "schedule" ? "schedule" : "batch";
 }
 
-const AP_HISTORY_LABELS: Record<string, { text: string; color: string }> = {
-  posted: { text: "โพสต์แล้ว", color: "#4ade80" },
-  ready: { text: "เตรียมโพสต์แล้ว รอกด Post", color: "#fbbf24" },
-  made: { text: "สร้างวิดีโอแล้ว", color: "#93c5fd" },
-  failed: { text: "ไม่สำเร็จ", color: "#f87171" },
+const AP_HISTORY_LABELS: Record<string, { text: string; tone: string }> = {
+  posted: { text: "โพสต์แล้ว", tone: "tag-ok" },
+  ready: { text: "เตรียมโพสต์แล้ว รอกด Post", tone: "tag-warn" },
+  made: { text: "สร้างวิดีโอแล้ว", tone: "tag-violet" },
+  failed: { text: "ไม่สำเร็จ", tone: "tag-danger" },
 };
 
 function apRender(state: AutopilotState | null) {
@@ -1167,40 +1331,55 @@ function apRender(state: AutopilotState | null) {
 
   const status = $("ap-status");
   if (!state || (state.status === "idle" && !state.message)) {
-    status.style.display = "none";
+    status.hidden = true;
   } else {
-    const lines: string[] = [];
-    const label =
-      state.status === "running" ? "🟢 กำลังทำงาน" : state.status === "paused" ? "⏸ หยุดชั่วคราว" : "⚪ ไม่ได้ทำงาน";
-    lines.push(`<div class="ap-state">${label}${state.status !== "idle" ? ` · ${state.mode === "batch" ? "ทำเลยจนครบ" : "ตามเวลา"}` : ""}</div>`);
-    if (state.message) lines.push(`<div style="color:#fbbf24">${escapeHtml(state.message)}</div>`);
+    const parts: HTMLElement[] = [];
+    const head = el("div", "ap-state");
+    head.append(
+      el("span", "dot"),
+      el("span", "", state.status === "running" ? "กำลังทำงาน" : state.status === "paused" ? "หยุดชั่วคราว" : "ไม่ได้ทำงาน"),
+    );
+    if (state.status !== "idle") head.append(el("small", "", `· ${state.mode === "batch" ? "ทำเลยจนครบ" : "ตามเวลา"}`));
+    parts.push(head);
+    if (state.message) parts.push(el("div", "ap-msg", state.message));
     if (state.current) {
       const cur = state.current;
-      lines.push(
-        `<div>กำลังทำ: <b>${escapeHtml(cur.productName.slice(0, 50))}</b></div>` +
-          `<div>ขั้นตอน: ${stepLabel(cur.step)}${cur.attempts ? ` (ลองใหม่ครั้งที่ ${cur.attempts + 1})` : ""}${cur.style ? ` · สไตล์ ${escapeHtml(styleLabel(cur.style).name)}` : ""}</div>`,
+      const box = el("div", "ap-current");
+      const doing = el("div", "", "กำลังทำ: ");
+      doing.append(el("b", "", cur.productName.slice(0, 50)));
+      box.append(
+        doing,
+        el("div", "", `ขั้นตอน: ${stepLabel(cur.step)}${cur.attempts ? ` (ลองใหม่ครั้งที่ ${cur.attempts + 1})` : ""}${cur.style ? ` · สไตล์ ${styleLabel(cur.style).name}` : ""}`),
       );
-      if (cur.lastError) lines.push(`<div style="color:#f87171">ผิดพลาดล่าสุด: ${escapeHtml(cur.lastError)}</div>`);
+      if (cur.lastError) box.append(el("div", "ap-err", `ผิดพลาดล่าสุด: ${cur.lastError}`));
+      parts.push(box);
     }
     if (state.status !== "idle") {
-      if (state.mode === "batch") lines.push(`<div>เหลืออีก ${state.productIds.length} ชิ้น</div>`);
-      else if (state.nextRunAt) lines.push(`<div>รอบถัดไป: ${apFormatTime(state.nextRunAt)} · หมุนเวียน ${state.productIds.length} ชิ้น · เวลา ${state.times.join(", ")}</div>`);
+      if (state.mode === "batch") parts.push(el("div", "", `เหลืออีก ${state.productIds.length} ชิ้น`));
+      else if (state.nextRunAt) parts.push(el("div", "", `รอบถัดไป: ${apFormatTime(state.nextRunAt)} · หมุนเวียน ${state.productIds.length} ชิ้น · เวลา ${state.times.join(", ")}`));
       const post = { auto: "โพสต์อัตโนมัติ", prepare: "เตรียมโพสต์รอกดเอง", none: "ไม่โพสต์" }[state.settings.postMode];
       const textSource = AP_TEXT_SOURCE_LABELS[state.settings.textSource] ?? "เว็บ Gemini";
-      lines.push(`<div style="color:#9ca3af">วิเคราะห์ด้วย ${textSource} · ${state.settings.targetDuration} วิ · ${post}</div>`);
+      parts.push(el("div", "ap-meta", `วิเคราะห์ด้วย ${textSource} · ${state.settings.targetDuration} วิ · ${state.settings.platform === "shopee" ? "Shopee" : "TikTok"} · ${post}`));
     }
-    status.innerHTML = lines.join("");
-    status.style.display = "block";
+    status.dataset.state = state.status;
+    status.replaceChildren(...parts);
+    status.hidden = false;
   }
 
   const history = $("ap-history");
   const entries = state?.history ?? [];
-  history.innerHTML = entries.length ? "" : `<div class="empty">ยังไม่มีประวัติ</div>`;
+  history.replaceChildren();
+  if (!entries.length) history.appendChild(emptyNote("ยังไม่มีประวัติ — ผลของแต่ละชิ้นจะแสดงที่นี่"));
   for (const entry of entries.slice(0, 30)) {
-    const meta = AP_HISTORY_LABELS[entry.status];
-    const row = document.createElement("div");
-    row.className = "ap-history-row";
-    row.innerHTML = `<span style="color:${meta.color};font-weight:600">${meta.text}</span> · ${escapeHtml(entry.productName.slice(0, 40))}<br><span style="color:#6b7280">${apFormatTime(entry.at)}${entry.style ? ` · ${escapeHtml(styleLabel(entry.style).name)}` : ""}</span>${entry.error ? `<br><span style="color:#f87171">${escapeHtml(entry.error)}</span>` : ""}`;
+    const meta = AP_HISTORY_LABELS[entry.status] ?? { text: entry.status, tone: "tag-muted" };
+    const row = el("div", "ap-history-row");
+    const top = el("div", "ap-history-top");
+    top.append(el("span", `tag ${meta.tone}`, meta.text), el("span", "name", entry.productName.slice(0, 40)));
+    row.append(
+      top,
+      el("div", "ap-history-meta", `${apFormatTime(entry.at)} · ${entry.platform === "shopee" ? "Shopee" : "TikTok"}${entry.style ? ` · ${styleLabel(entry.style).name}` : ""}`),
+    );
+    if (entry.error) row.append(el("div", "ap-history-err", entry.error));
     history.appendChild(row);
   }
 }
@@ -1236,7 +1415,7 @@ function apCommand(type: string, extra: Record<string, unknown> = {}) {
 $("ap-pick-first").addEventListener("click", () => {
   const count = Math.max(1, Number(($("ap-count") as HTMLInputElement).value) || 1);
   apSelected.clear();
-  products.slice(0, count).forEach((p) => apSelected.add(p.id));
+  products.filter((p) => ($("ap-platform") as HTMLSelectElement).value === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl)).slice(0, count).forEach((p) => apSelected.add(p.id));
   apRenderProducts();
 });
 $("ap-pick-none").addEventListener("click", () => {
@@ -1256,8 +1435,8 @@ $("ap-start").addEventListener("click", () => {
     mode === "batch"
       ? `สร้างวิดีโอ ${productIds.length} ชิ้นต่อกันเลย`
       : `ทุกวันเวลา ${($("ap-times") as HTMLInputElement).value} ทำ 1 ชิ้น วนสินค้า ${productIds.length} ชิ้นไปเรื่อยๆ`;
-  const warning =
-    postMode === "auto" ? "\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี TikTok จริงโดยไม่ถามอีก" : "";
+  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const warning = postMode === "auto" ? `\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี ${platform === "shopee" ? "Shopee" : "TikTok"} จริงโดยไม่ถามอีก` : "";
   const siteSelect = $("ap-site") as HTMLSelectElement;
   const siteName = siteSelect.selectedOptions[0]?.textContent ?? "Flow";
   const sourceSelect = $("ap-text-source") as HTMLSelectElement;
@@ -1270,6 +1449,7 @@ $("ap-start").addEventListener("click", () => {
     productIds,
     times: ($("ap-times") as HTMLInputElement).value,
     settings: {
+      platform,
       targetDuration: Number(($("ap-duration") as HTMLSelectElement).value),
       style: ($("ap-style") as HTMLSelectElement).value,
       postMode,
@@ -1339,13 +1519,12 @@ function renderKeyStatus() {
     const list = $("key-status-list");
     const keys = result?.keys ?? [];
     if (keys.length === 0) {
-      list.innerHTML = `<div class="empty">ยังไม่มี key — วางอย่างน้อย 1 key ด้านบนแล้วกดบันทึก</div>`;
+      list.replaceChildren(emptyNote("ยังไม่มี key — วางอย่างน้อย 1 key ด้านบนแล้วกดบันทึก"));
       return;
     }
-    list.innerHTML = "";
+    list.replaceChildren();
     for (const k of keys) {
-      const row = document.createElement("div");
-      row.className = "card";
+      const row = el("div", "key-row");
       const onCooldown = !!k.cooldownUntil;
       // A broken key (denied project, invalid key) says why instead of a countdown.
       const status = k.lastError
@@ -1353,18 +1532,17 @@ function renderKeyStatus() {
         : onCooldown
           ? formatCooldown(k.cooldownUntil!)
           : "พร้อมใช้งาน";
-      const color = k.lastError || onCooldown ? "#f87171" : "#4ade80";
-      row.innerHTML = `
-        <div class="info">
-          <div class="title" style="font-family:monospace">${escapeHtml(k.masked)}</div>
-          <div class="subtitle" style="color:${color};white-space:normal">${escapeHtml(status)}</div>
-        </div>
-      `;
+      const info = el("div", "product-meta");
+      const state = el("div", "key-state", status);
+      state.dataset.tone = k.lastError || onCooldown ? "bad" : "ok";
+      info.append(el("div", "key-masked", k.masked), state);
+      row.appendChild(info);
+      const actions = el("div", "actions");
+      row.appendChild(actions);
 
       const testBtn = document.createElement("button");
-      testBtn.className = "btn";
+      testBtn.className = "btn btn-sm";
       testBtn.textContent = "ทดสอบ";
-      testBtn.style.flexShrink = "0";
       testBtn.addEventListener("click", () => {
         testBtn.disabled = true;
         testBtn.textContent = "กำลังทดสอบ...";
@@ -1373,17 +1551,16 @@ function renderKeyStatus() {
           renderKeyStatus();
         });
       });
-      row.appendChild(testBtn);
+      actions.appendChild(testBtn);
 
       if (onCooldown || k.lastError) {
         const resetBtn = document.createElement("button");
-        resetBtn.className = "btn";
+        resetBtn.className = "btn btn-sm btn-ghost";
         resetBtn.textContent = "รีเซ็ต";
-        resetBtn.style.flexShrink = "0";
         resetBtn.addEventListener("click", () => {
           send({ type: "RESET_KEY_COOLDOWN", key: k.key }).then(renderKeyStatus);
         });
-        row.appendChild(resetBtn);
+        actions.appendChild(resetBtn);
       }
       list.appendChild(row);
     }
@@ -1407,8 +1584,8 @@ $("save-settings").addEventListener("click", () => {
     () => {
       const status = $("settings-status");
       status.textContent = `บันทึกแล้ว ✓ (${uniqueKeys.length} key)`;
-      status.style.display = "block";
-      setTimeout(() => (status.style.display = "none"), 2000);
+      status.hidden = false;
+      setTimeout(() => (status.hidden = true), 2000);
       renderKeyStatus();
     },
   );
@@ -1421,8 +1598,111 @@ $("presenter").addEventListener("change", () => {
 
 /* ---------- boot ---------- */
 
+// Small disclosure menus (e.g. "ข้อมูล") fold away once an item in them is used.
+for (const menu of Array.from(document.querySelectorAll<HTMLDetailsElement>("details.menu"))) {
+  menu.addEventListener("click", (event) => {
+    if ((event.target as Element).closest(".menu-panel button")) menu.open = false;
+  });
+}
+
 populateStyles();
 bindDurationToSite("duration", "site");
 bindDurationToSite("ap-duration", "ap-site");
 loadProducts();
 loadSettings();
+
+
+function updatePlatformOptions(prefix: "ap-" | "") {
+  const platform = ($(prefix ? "ap-platform" : "publish-platform") as HTMLSelectElement).value as PublishPlatform;
+  const select = $(`${prefix}style`) as HTMLSelectElement;
+  select.innerHTML = (prefix ? '<option value="rotate">สลับสไตล์ทุกคลิป</option>' : "") + styleOptions(platform);
+  select.dispatchEvent(new Event("change"));
+  if (prefix) {
+    apSelected.clear(); apRenderProducts();
+    if (platform === "shopee") ($("ap-post-mode") as HTMLSelectElement).value = "none";
+    $("ap-post-hint").textContent = platform === "shopee" ? "Shopee Affiliate: สร้างคลิปขายแล้วดาวน์โหลดไปโพสต์ในแอป Shopee ได้ ส่วนโพสต์ผ่าน Chrome ต้องมีสิทธิ์ปักสินค้าร้านอื่นในหน้าเว็บก่อน — Seller Centre อาจแสดงเฉพาะสินค้าร้านตัวเอง" : "โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง";
+  } else resetReview();
+}
+$("ap-platform").addEventListener("change", () => updatePlatformOptions("ap-"));
+$("publish-platform").addEventListener("change", () => updatePlatformOptions(""));
+$("get-shopee-product").addEventListener("click", async () => {
+  const button = $("get-shopee-product") as HTMLButtonElement;
+  const status = $("shopee-import-status");
+  button.disabled = true; button.textContent = "กำลังดึงสินค้า...";
+  status.textContent = "กำลังอ่านสินค้า Shopee จากแท็บที่เปิดอยู่...";
+  try {
+    const tabId = await activeTabId();
+    if (!tabId) throw new Error("ไม่พบแท็บ — เปิดหน้าสินค้า Shopee ใน Chrome ก่อน");
+    const result = await send<{ ok: boolean; error?: string; products?: AppProduct[]; warnings?: string[] }>({ type: "FETCH_SHOPEE_PRODUCTS", tabId });
+    if (!result.ok || !result.products?.length) throw new Error(result.error ?? "ไม่พบข้อมูลสินค้า Shopee ที่นำเข้าได้");
+    status.textContent = `นำเข้า/อัปเดตสินค้า Shopee ${result.products.length} รายการแล้ว${result.warnings?.length ? ` · ${result.warnings.join(" · ")}` : ""}`;
+    log(status.textContent); await loadProducts();
+    ($("publish-platform") as HTMLSelectElement).value = "shopee"; updatePlatformOptions("");
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    log(status.textContent);
+  } finally { button.disabled = false; button.textContent = "ดึงจากหน้า Shopee"; }
+});
+
+function shopeePostBlock(video: CompletedVideo): HTMLElement {
+  const block = el("div", "post-block");
+  const title = document.createElement("div"); title.textContent = "โพสต์ในแอป Shopee พร้อมสินค้า Affiliate"; title.className = "section-label"; block.appendChild(title);
+  const hint = document.createElement("div"); hint.className = "hint"; hint.textContent = "ส่งคลิปเข้ามือถือ → Shopee Video → เพิ่มสินค้า → ไอคอนลิงก์ → ใส่ลิงก์สินค้าจากไฟล์ข้อมูล → นำเข้า → เพิ่ม → เปิดป้าย AI → โพสต์ หรือเลือกสินค้าที่ตรงกันจากแท็บ Affiliate หาก Seller Centre ไม่มีสินค้า ให้ใช้ช่องทางแอปนี้"; block.appendChild(hint);
+  const phone = document.createElement("button"); phone.className = "btn btn-success"; phone.dataset.icon = "phone"; phone.textContent = "ส่งไปมือถือ (Android / iPhone)";
+  phone.addEventListener("click", () => { phonePanel.selectVideo(video.videoId, caption.value); showTab("phone"); }); block.appendChild(phone);
+  const handoff = document.createElement("button"); handoff.className = "btn"; handoff.dataset.icon = "download"; handoff.textContent = "ดาวน์โหลดคลิปพร้อมข้อมูลสำหรับแอป Shopee";
+  handoff.addEventListener("click", async () => {
+    handoff.disabled = true;
+    try {
+      const product = shopeeProductLink(select.value);
+      if (!product || product.url !== shopeeProductLink(video.productShopeeUrl)?.url) throw new Error("เลือกสินค้าที่ตรงกับคลิปนี้ก่อนดาวน์โหลด");
+      const stored = await getClipsForVideo(video.videoId);
+      const clip = stored.find(c => c.index === MERGED_CLIP_INDEX) ?? (stored.filter(c => c.index >= 0).length === 1 ? stored.find(c => c.index >= 0) : undefined);
+      if (!clip) throw new Error("ไม่พบไฟล์วิดีโอเต็ม — ต่อคลิปให้เสร็จก่อนดาวน์โหลด");
+      if (!await downloadBlob(clip.blob, `ai-affiliate/${video.videoId.slice(0,8)}-shopee.mp4`)) throw new Error("เริ่มดาวน์โหลดคลิปไม่สำเร็จ กรุณาลองใหม่");
+      const text = `${video.productName}\n\n${caption.value}\n\nสินค้าที่ต้องปัก: ${product.url}\nรหัสสินค้า: ${product.itemId}\nรหัสร้าน: ${product.shopId}\n\nในแอป Shopee: Live & Video → Video → โพสต์วิดีโอ → เพิ่มสินค้า → ไอคอนลิงก์ → วางลิงก์ด้านบน → นำเข้า → เพิ่ม\nหรือเลือกสินค้าที่ตรงกันจากแท็บ Affiliate เปิดป้าย AI และตรวจตะกร้าก่อนโพสต์\nการดาวน์โหลดนี้ยังไม่ได้โพสต์และไม่ได้เพิ่มสินค้าเข้าตะกร้า Shopee`;
+      if (!await downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `ai-affiliate/${video.videoId.slice(0,8)}-shopee-post.txt`)) throw new Error("เริ่มดาวน์โหลดคลิปแล้ว แต่ดาวน์โหลดข้อมูลสินค้าไม่สำเร็จ กรุณาลองใหม่");
+      hint.textContent = "เริ่มดาวน์โหลดคลิปและข้อมูลสินค้าแล้ว — เมื่อดาวน์โหลดเสร็จ ส่งไฟล์ MP4 เข้ามือถือเพื่อโพสต์และปักสินค้าในแอป Shopee";
+    } catch (error) { hint.textContent = error instanceof Error ? error.message : String(error); }
+    finally { handoff.disabled = false; }
+  }); block.appendChild(handoff);
+  const caption = document.createElement("textarea"); caption.value = video.caption; caption.rows = 3; caption.maxLength = 150; caption.setAttribute("aria-label", "แคปชัน Shopee ไม่เกิน 150 ตัวอักษร"); block.appendChild(caption);
+  const select = document.createElement("select"); select.setAttribute("aria-label", "สินค้า Shopee สำหรับปักสินค้า");
+  select.add(new Option("เลือกสินค้า Shopee สำหรับปักสินค้า", ""));
+  for (const product of products) { const link = shopeeProductLink(product.sourceUrl); if (link) select.add(new Option(product.name.slice(0, 60), link.url)); }
+  if (video.productShopeeUrl && !Array.from(select.options).some((option) => option.value === video.productShopeeUrl)) select.add(new Option(video.productName, video.productShopeeUrl));
+  select.value = video.productShopeeUrl ?? ""; block.appendChild(select);
+  const desktopTitle = document.createElement("div"); desktopTitle.className = "section-label"; desktopTitle.textContent = "โพสต์ผ่าน Chrome (เฉพาะสินค้าที่บัญชีเลือกได้ใน Seller Centre)"; block.appendChild(desktopTitle);
+  const auto = document.createElement("input"); auto.type = "checkbox";
+  const label = document.createElement("label"); label.className = "check"; label.append(auto, document.createTextNode(" โพสต์อัตโนมัติหลังเตรียมครบ")); block.appendChild(label);
+  const button = document.createElement("button"); button.className = "btn btn-primary"; button.dataset.icon = "send"; button.textContent = "เตรียมโพสต์ Shopee"; button.disabled = video.shopeePost?.status === "posted"; block.appendChild(button);
+  button.addEventListener("click", async () => {
+    if (!select.value) { log("เลือกสินค้า Shopee ก่อนโพสต์"); return; }
+    if (auto.checked && !confirm("ระบบจะโพสต์วิดีโอพร้อมสินค้าลงบัญชี Shopee จริง ยืนยันไหม?")) return;
+    button.disabled = true;
+    try {
+      const result = await send<{ ok: boolean; error?: string }>({ type: "PREPARE_SHOPEE_POST", videoId: video.videoId, caption: caption.value, autoPost: auto.checked, productUrl: select.value });
+      log(result.ok ? "เปิด Shopee Seller Centre แล้ว กำลังเตรียมวิดีโอ แคปชันและสินค้า" : result.error ?? "เตรียมโพสต์ไม่สำเร็จ");
+    } finally { button.disabled = false; }
+  });
+  if (video.shopeePost) {
+    const status = document.createElement("div"); status.className = "post-status"; status.dataset.tone = video.shopeePost.status === "failed" ? "danger" : video.shopeePost.status === "posted" ? "success" : "warning";
+    const labels: Record<string, string> = { preparing: "กำลังเตรียมโพสต์", ready: "เตรียมครบแล้ว รอกดโพสต์", submitting: "ส่งโพสต์แล้ว กำลังรอยืนยัน", posted: "โพสต์สำเร็จ ✓", failed: "เตรียมโพสต์ไม่สำเร็จ", uncertain: "ตรวจผลโพสต์ใน Shopee ก่อนทำต่อ" };
+    status.textContent = `${labels[video.shopeePost.status] ?? video.shopeePost.status}${video.shopeePost.error ? `: ${video.shopeePost.error}` : ""}`; block.appendChild(status);
+  }
+  if (video.shopeePost?.status !== "posted") {
+    const outcomes = video.shopeePost && ["uncertain", "submitting", "preparing", "ready"].includes(video.shopeePost.status) ? [true, false] : [true];
+    for (const posted of outcomes) {
+      const resolve = document.createElement("button"); resolve.className = "btn btn-sm";
+      resolve.textContent = posted ? "ตรวจแล้ว: คลิปเผยแพร่พร้อมตะกร้าใน Shopee แล้ว" : "ตรวจแล้ว: ยังไม่โพสต์ / ยกเลิกการเตรียม";
+      resolve.addEventListener("click", async () => {
+        if (!confirm(posted ? "คุณตรวจใน Shopee แล้วว่าคลิปนี้เผยแพร่และตะกร้าติดสินค้าตรงรายการแล้วใช่ไหม?" : "ตรวจใน Shopee ว่าคลิปยังไม่เผยแพร่แล้วใช่ไหม? ระบบจะปิดแท็บงานเดิมก่อนอนุญาตให้เตรียมใหม่")) return;
+        const result = await send<{ ok: boolean; error?: string }>({ type: "RESOLVE_SHOPEE_POST", videoId: video.videoId, posted });
+        if (result.ok) await loadLibrary(); else log(result.error ?? "บันทึกผลไม่สำเร็จ");
+      }); block.appendChild(resolve);
+    }
+  }
+  return block;
+}
+
+initLicensePanel();

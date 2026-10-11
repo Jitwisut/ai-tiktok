@@ -279,3 +279,67 @@ model Verification {
   @@index([identifier])
   @@map("verification")
 }
+
+
+model LicenseCustomer {
+  id        String @id @default(cuid())
+  name      String
+  contact   String?
+  createdAt DateTime @default(now())
+  licenses  License[]
+  @@map("license_customers")
+}
+
+model License {
+  id          String @id @default(cuid())
+  customerId  String
+  customer    LicenseCustomer @relation(fields: [customerId], references: [id])
+  keyHash     String @unique
+  keyHint     String
+  durationDays Int
+  activatedAt DateTime?
+  expiresAt   DateTime?
+  suspended   Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  activation  LicenseActivation?
+  events      LicenseEvent[]
+  @@index([customerId])
+  @@map("licenses")
+}
+
+model LicenseActivation {
+  id             String @id @default(cuid())
+  licenseId      String @unique
+  license        License @relation(fields: [licenseId], references: [id])
+  installationId String
+  tokenHash      String @unique
+  createdAt      DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  @@map("license_activations")
+}
+
+model LicenseEvent {
+  id          String @id @default(cuid())
+  licenseId   String
+  license     License @relation(fields: [licenseId], references: [id])
+  requestId   String @unique
+  requestHash String
+  actorId     String
+  action      String
+  days        Int?
+  note        String?
+  previousExpiry DateTime?
+  newExpiry   DateTime?
+  createdAt   DateTime @default(now())
+  @@index([licenseId, createdAt])
+  @@map("license_events")
+}
+
+model LicenseRateBucket {
+  id        String @id
+  count     Int
+  expiresAt DateTime
+  @@index([expiresAt])
+  @@map("license_rate_buckets")
+}

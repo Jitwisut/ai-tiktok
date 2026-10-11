@@ -5,6 +5,7 @@ import { videoSettingsSchema } from "@/lib/prompt-engine/types";
 import { SUPPORTED_TARGET_DURATIONS } from "@/lib/prompt-engine/clip-planner";
 
 function unauthorized(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") return NextResponse.json({ error: "Legacy extension endpoint disabled" }, { status: 404 });
   const token = process.env.EXTENSION_UPLOAD_TOKEN;
   if (!token) {
     return NextResponse.json({ error: "EXTENSION_UPLOAD_TOKEN is not set" }, { status: 503 });

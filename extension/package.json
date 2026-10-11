@@ -3,10 +3,12 @@
   "private": true,
   "scripts": {
     "build": "rm -rf dist && tsc",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "build:release": "node scripts/build-release.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.30",
+    "linkedom": "^0.18.13",
     "typescript": "^5"
   }
 }

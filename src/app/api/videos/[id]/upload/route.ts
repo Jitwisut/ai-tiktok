@@ -20,6 +20,7 @@ const CLIP_DIR = path.join(OUTPUT_DIR, "clips");
  * the caller is the extension's background worker, which has no app cookie.
  */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (process.env.NODE_ENV === "production") return NextResponse.json({ error: "Legacy extension endpoint disabled" }, { status: 404 });
   const token = process.env.EXTENSION_UPLOAD_TOKEN;
   if (!token) {
     return NextResponse.json({ error: "EXTENSION_UPLOAD_TOKEN is not set" }, { status: 503 });

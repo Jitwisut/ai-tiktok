@@ -358,6 +358,7 @@ function metaTrustedClick(selector: string, bringToFront: boolean): Promise<{ ok
  * seconds later.
  */
 async function metaSubmit(): Promise<boolean> {
+  await extensionRequireLicense();
   const composerText = () => {
     const composer = metaComposer();
     if (!composer) return "";
@@ -399,6 +400,7 @@ async function metaSubmit(): Promise<boolean> {
 
   for (const bringToFront of [false, true]) {
     if (sent()) return true;
+    await extensionRequireLicense();
     const click = await metaTrustedClick('button[aria-label="Send"], button[aria-label="ส่ง"]', bringToFront);
     if (!click.ok) {
       if (sent()) return true;
@@ -524,7 +526,36 @@ function metaClassifyRefusal(text: string): string | undefined {
   return undefined;
 }
 
-type MetaOutcome = { urls: string[] } | { error: string };
+/**
+ * Meta's own failure notice ("Something went wrong. Please try again.") —
+ * a short red line under the prompt, with no reply and no retry button.
+ * Read from the element itself rather than the reply text: Meta collapses a
+ * long prompt bubble after sending, so a length-based slice of the
+ * conversation can start past the end and never see this line, which left a
+ * job waiting out the whole META_MAX_WAIT_MS. Short leaf-ish elements only,
+ * so the prompt we typed can never be read back as the notice.
+ */
+function metaErrorNotices(): HTMLElement[] {
+  const root = document.querySelector<HTMLElement>("main") ?? document.body;
+  const isNotice = (el: HTMLElement) => {
+    if (el.childElementCount > 2) return false;
+    const text = (el.innerText ?? "").trim();
+    return text.length <= 120 && /^(something went wrong|เกิดข้อผิดพลาดบางอย่าง|มีบางอย่างผิดพลาด)/i.test(text);
+  };
+  // Innermost matches only, so one notice is one element however it is nested.
+  const matches = Array.from(root.querySelectorAll<HTMLElement>("div, span, p")).filter(isNotice);
+  return matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+}
+
+/**
+ * How many times one job answers Meta's failure notice with "ทำต่อ" in the
+ * same chat before giving up — the chat keeps the prompt and product photo, so
+ * carrying on there beats starting a fresh chat.
+ */
+const META_CONTINUE_RETRIES = 5;
+const META_CONTINUE_TEXT = "ทำต่อ";
+
+type MetaOutcome = { urls: string[] } | { error: string } | { glitch: string };
 
 /**
  * Waits for the reply's videos. Meta streams them in one at a time, so the
@@ -533,11 +564,12 @@ type MetaOutcome = { urls: string[] } | { error: string };
  * A short answer is still worth keeping: the scenes that did render have
  * already cost the account's video allowance.
  */
-async function metaWaitForVideos(videoId: string, expected: number, sinceMark: number): Promise<MetaOutcome> {
+async function metaWaitForVideos(videoId: string, expected: number, sinceMark: number, answered: Set<Element> = new Set()): Promise<MetaOutcome> {
   let idlePolls = 0;
   let lastSignature = "";
   let announced = 0;
   let lastReport = 0;
+  let errorPolls = 0;
   // Everything on screen right now is the prompt we just sent; the reply is
   // whatever gets added after it.
   const promptLength = metaConversationText().length;
@@ -558,6 +590,16 @@ async function metaWaitForVideos(videoId: string, expected: number, sinceMark: n
         lastReport = Date.now();
         metaReportProgress(videoId, urls.length, expected, "generating");
       }
+
+      // Meta gave up on the request outright, so nothing more is coming —
+      // hand back to the caller (which answers "ทำต่อ") instead of waiting out
+      // the full timeout. Only a notice element that was not on screen when
+      // "ทำต่อ" was last sent counts (Meta may add a second notice or
+      // re-render the first), and only on two polls in a row, so a notice
+      // that flashes while Meta recovers on its own is not taken as final.
+      const fresh = urls.length === 0 && !metaIsGenerating() ? metaErrorNotices().filter((n) => !answered.has(n)) : [];
+      errorPolls = fresh.length ? errorPolls + 1 : 0;
+      if (errorPolls >= 2) return { glitch: (fresh[fresh.length - 1].innerText ?? "").trim() };
 
       const signature = `${urls.length}|${metaVideoCount()}|${metaConversationText().length}`;
       if (metaIsGenerating() || signature !== lastSignature) {
@@ -660,9 +702,39 @@ async function metaUploadClip(videoId: string, src: string, clipIndex: number, c
 
 /* ---------- the job ---------- */
 
+/**
+ * Meta's "Something went wrong" usually clears when asked to carry on in the
+ * same chat, which keeps the prompt and the attached product photo — so answer
+ * it with "ทำต่อ" right there, up to META_CONTINUE_RETRIES times, before giving
+ * the job up.
+ */
+async function metaWaitWithContinue(job: MetaVideoJob, sinceMark: number): Promise<{ urls: string[] } | { error: string }> {
+  const total = job.clips.length;
+  const answered = new Set<Element>();
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await metaWaitForVideos(job.videoId, total, sinceMark, answered);
+    if (!("glitch" in outcome)) return outcome;
+    if (attempt > META_CONTINUE_RETRIES) {
+      return {
+        error: `Meta AI ขัดข้อง: "${outcome.glitch}" — พิมพ์ "${META_CONTINUE_TEXT}" ในแชทนี้แล้ว ${META_CONTINUE_RETRIES} ครั้งยังไม่หาย`,
+      };
+    }
+    for (const notice of metaErrorNotices()) answered.add(notice);
+    metaShowBanner(`AI Affiliate Studio: Meta AI ขัดข้อง — พิมพ์ "${META_CONTINUE_TEXT}" ให้ (ครั้งที่ ${attempt}/${META_CONTINUE_RETRIES})`, "#d97706");
+    await metaFocusTab();
+    const written = await metaWritePrompt(META_CONTINUE_TEXT);
+    if (written) await metaSleep(500);
+    if (!written || !(await metaSubmit())) {
+      return { error: `Meta AI ขัดข้อง: "${outcome.glitch}" — ส่งคำว่า "${META_CONTINUE_TEXT}" ไม่สำเร็จ ลองพิมพ์เองในแชทนี้ หรือสั่งใหม่` };
+    }
+    metaReportProgress(job.videoId, 0, total, "generating");
+    metaShowBanner("AI Affiliate Studio: ส่ง \"ทำต่อ\" แล้ว — Meta AI กำลังสร้างวิดีโอต่อ ห้ามปิดหรือรีเฟรชแท็บนี้", "#111827");
+  }
+}
+
 async function metaCollectAndUpload(job: MetaVideoJob, sinceMark: number) {
   const total = job.clips.length;
-  const outcome = await metaWaitForVideos(job.videoId, total, sinceMark);
+  const outcome = await metaWaitWithContinue(job, sinceMark);
   if ("error" in outcome) {
     metaReportProgress(job.videoId, 0, total, "failed", outcome.error);
     metaShowBanner(outcome.error, "#dc2626");
@@ -806,7 +878,8 @@ function metaStartJob(job: MetaVideoJob, phase: MetaJobPhase = "starting"): { ok
     // not supported — the <video> elements are the primary source anyway
   }
   metaRunJob(job, phase)
-    .catch((err) => {
+    .catch(async (err) => {
+      if (await extensionReportLicensePause(job.videoId, err)) { metaShowBanner(err instanceof Error ? err.message : String(err), "#d97706"); return; }
       const text = err instanceof Error ? err.message : String(err);
       metaReportProgress(job.videoId, 0, job.clips.length, "failed", text);
       metaShowBanner(

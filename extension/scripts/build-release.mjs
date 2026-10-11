@@ -1,0 +1,20 @@
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const value = process.env.LICENSE_SERVER_URL;
+let server;
+try { server = new URL(value ?? ""); } catch { throw new Error("Set LICENSE_SERVER_URL to the deployed HTTPS licensing server before building a release."); }
+if (server.protocol !== "https:" || server.username || server.password || server.search || server.hash || server.pathname !== "/") throw new Error("LICENSE_SERVER_URL must be an HTTPS origin, without path, credentials or query.");
+const build = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], { cwd: root, stdio: "inherit" });
+if (build.status !== 0) process.exit(build.status ?? 1);
+const output = path.join(root, "release");
+await rm(output, { recursive: true, force: true }); await mkdir(output);
+for (const file of ["sidepanel.html", "offscreen.html", "dist"]) await cp(path.join(root, file), path.join(output, file), { recursive: true });
+const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
+manifest.content_scripts = manifest.content_scripts.filter(script => !script.js?.includes("dist/dev-bridge.js"));
+await writeFile(path.join(output, "manifest.json"), JSON.stringify(manifest, null, 2));
+await writeFile(path.join(output, "dist/lib/license-config.js"), `export const LICENSE_SERVER_URL = ${JSON.stringify(server.origin)};\n`);
+await rm(path.join(output, "dist/dev-bridge.js"), { force: true });
+console.log("Release extension saved in extension/release. Load this directory for customer testing.");

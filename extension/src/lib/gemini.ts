@@ -1,3 +1,4 @@
+import { requireLicense, isLicenseFailure } from "./license-client.js";
 /** Ported from src/lib/ai/gemini-provider.ts as a plain REST call — no @google/genai SDK, since the extension build is bare tsc with no bundler. */
 
 import { getSettings, getApiKeyState, pickAvailableKey, markKeyCooldown, recordKeyError, maskKey } from "./store.js";
@@ -134,6 +135,7 @@ async function callGeminiOnce(model: string, apiKey: string, params: GenerateObj
   ];
 
   return withRetry(async () => {
+    await requireLicense();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), GEMINI_FETCH_TIMEOUT_MS);
     let res: Response;
@@ -211,6 +213,7 @@ async function generateObjectOnKeys<T>(params: GenerateObjectParams): Promise<T>
       await recordKeyError(apiKey, null);
       return JSON.parse(text) as T;
     } catch (err) {
+      if (isLicenseFailure(err)) throw err;
       const geminiErr = err as GeminiError;
       const tagged = new GeminiError(`${geminiErr?.message ?? String(err)} [key ${maskKey(apiKey)}]`);
       tagged.status = geminiErr?.status;

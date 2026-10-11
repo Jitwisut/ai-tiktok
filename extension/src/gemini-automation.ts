@@ -11,6 +11,7 @@ interface GeminiClip {
 }
 
 interface GeminiVideoJob {
+  startIndex?: number;
   videoId: string;
   clips: GeminiClip[];
   duration: number;
@@ -337,6 +338,7 @@ function geminiTrustedClick(selector: string, bringToFront: boolean): Promise<{ 
  * DevTools click stopped the answer it had just asked for.
  */
 async function geminiSubmit(): Promise<boolean> {
+  await extensionRequireLicense();
   const responsesBefore = geminiResponses().length;
   const queriesBefore = document.querySelectorAll("user-query").length;
   const sent = () =>
@@ -362,6 +364,7 @@ async function geminiSubmit(): Promise<boolean> {
     // Never click while it is a stop button — that cancels the reply.
     if (sent()) return true;
     // `.submit` is only on the send state, so the DevTools click cannot land on "stop" even if it flips in between.
+    await extensionRequireLicense();
     const click = await geminiTrustedClick(".send-button.submit button", bringToFront);
     if (!click.ok) {
       if (sent()) return true;
@@ -648,6 +651,7 @@ async function geminiRunJob(job: GeminiVideoJob, startIndex: number) {
       await geminiClearActiveJob();
       return;
     }
+    await extensionRequireLicense();
     const label = total > 1 ? `คลิป ${clip.index + 1}/${total}` : "";
     geminiReportProgress(job.videoId, clip.index + 1, total, "generating");
 
@@ -697,7 +701,8 @@ function geminiStartJob(job: GeminiVideoJob, startIndex = 0): { ok: boolean; err
   const heartbeat = setInterval(geminiHeartbeat, GEMINI_HEARTBEAT_MS);
   geminiSaveActiveJob(job, startIndex)
     .then(() => geminiRunJob(job, startIndex))
-    .catch((err) => {
+    .catch(async (err) => {
+      await extensionReportLicensePause(job.videoId, err);
       const text = err instanceof Error ? err.message : String(err);
       geminiShowBanner(
         /context invalidated/i.test(text) ? "Extension ถูกรีโหลดระหว่างทำงาน — กด F5 รีเฟรชหน้านี้" : `เกิดข้อผิดพลาด: ${text}`,
@@ -725,7 +730,7 @@ chrome.runtime.onMessage.addListener((message: { type: string; job?: GeminiVideo
     return;
   }
   if (message.type !== "RUN_VIDEO_JOB" || !message.job) return;
-  sendResponse(geminiStartJob(message.job));
+  sendResponse(geminiStartJob(message.job, message.job.startIndex ?? 0));
 });
 
 aiPanelMount({ site: "gemini", siteLabel: "Gemini" });
@@ -735,7 +740,7 @@ aiPanelMount({ site: "gemini", siteLabel: "Gemini" });
 if (window.location.pathname.startsWith(GEMINI_VIDEOS_PATH)) {
   chrome.runtime.sendMessage({ type: "GET_PENDING_VIDEO_JOB", site: "gemini" }, (result: { job: GeminiVideoJob | null } | undefined) => {
     if (chrome.runtime.lastError) return;
-    if (result?.job) geminiStartJob(result.job);
+    if (result?.job) geminiStartJob(result.job, result.job.startIndex ?? 0);
   });
 } else if (window.location.pathname.startsWith("/app/")) {
   void geminiResumeIfAbandoned();

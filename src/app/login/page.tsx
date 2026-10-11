@@ -40,7 +40,7 @@ export default function LoginPage() {
       return;
     }
 
-    router.push("/dashboard");
+    router.push(new URLSearchParams(window.location.search).get("next") === "/admin/licenses" ? "/admin/licenses" : "/dashboard");
     router.refresh();
   }
 
