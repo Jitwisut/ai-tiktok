@@ -526,6 +526,26 @@ function metaClassifyRefusal(text: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Meta's own failure notice ("Something went wrong. Please try again.") —
+ * a short red line under the prompt, with no reply and no retry button.
+ * Read from the element itself rather than the reply text: Meta collapses a
+ * long prompt bubble after sending, so a length-based slice of the
+ * conversation can start past the end and never see this line, which left a
+ * job waiting out the whole META_MAX_WAIT_MS. Short leaf-ish elements only,
+ * so the prompt we typed can never be read back as the notice.
+ */
+function metaErrorNotice(): string | undefined {
+  const root = document.querySelector<HTMLElement>("main") ?? document.body;
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>("div, span, p"))) {
+    if (el.childElementCount > 2) continue;
+    const text = (el.innerText ?? "").trim();
+    if (text.length > 120) continue;
+    if (/^(something went wrong|เกิดข้อผิดพลาดบางอย่าง|มีบางอย่างผิดพลาด)/i.test(text)) return text;
+  }
+  return undefined;
+}
+
 type MetaOutcome = { urls: string[] } | { error: string };
 
 /**
@@ -540,6 +560,7 @@ async function metaWaitForVideos(videoId: string, expected: number, sinceMark: n
   let lastSignature = "";
   let announced = 0;
   let lastReport = 0;
+  let errorPolls = 0;
   // Everything on screen right now is the prompt we just sent; the reply is
   // whatever gets added after it.
   const promptLength = metaConversationText().length;
@@ -559,6 +580,16 @@ async function metaWaitForVideos(videoId: string, expected: number, sinceMark: n
       if (Date.now() - lastReport > 60_000) {
         lastReport = Date.now();
         metaReportProgress(videoId, urls.length, expected, "generating");
+      }
+
+      // Meta gave up on the request outright. Nothing more is coming, so fail
+      // now — autopilot retries the step in a fresh chat — instead of waiting
+      // out the full timeout. Two polls in a row, so a notice that flashes
+      // while Meta recovers on its own is not taken as final.
+      const notice = urls.length === 0 && !metaIsGenerating() ? metaErrorNotice() : undefined;
+      errorPolls = notice ? errorPolls + 1 : 0;
+      if (notice && errorPolls >= 2) {
+        return { error: `Meta AI ขัดข้อง: "${notice}" — ลองสั่งใหม่ได้เลย (โหมดอัตโนมัติจะลองใหม่ในแชทใหม่ให้เอง)` };
       }
 
       const signature = `${urls.length}|${metaVideoCount()}|${metaConversationText().length}`;
