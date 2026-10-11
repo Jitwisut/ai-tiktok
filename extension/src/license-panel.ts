@@ -9,7 +9,10 @@ export function initLicensePanel() {
   function render(value: LicenseSnapshot) {
     const expiryLabel = value.expiresAt ? ` • หมดอายุ ${new Date(value.expiresAt).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" })} (เวลาไทย)` : "";
     status.textContent = (value.ok ? "เปิดใช้แล้ว" : value.error ?? "กรอก License Key เพื่อเปิดใช้โปรแกรม") + expiryLabel;
-    status.style.color = value.ok ? "#86efac" : "#fbbf24";
+    // The key form starts folded; a licence that needs action opens it. Never
+    // force it shut — the user may have opened it to change keys.
+    const card = document.getElementById("license-card") as HTMLDetailsElement | null;
+    if (card) { card.dataset.state = value.ok ? "ok" : "warn"; if (!value.ok) card.open = true; }
     expiry = value.expiresAt ? Date.parse(value.expiresAt) : 0;
     anchor = value.serverTime ? Date.parse(value.serverTime) : 0; receivedAt = performance.now(); countdown();
   }

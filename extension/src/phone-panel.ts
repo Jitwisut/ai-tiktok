@@ -41,7 +41,7 @@ export function initPhonePanel(options: { getVideos: () => Promise<PhoneVideo[]>
     const key = JSON.stringify([transfers, address.value]); if (key === qrKey) return; qrKey = key;
     const root = $('phone-transfers'); root.replaceChildren();
     for (const transfer of [...transfers].reverse()) {
-      const card = document.createElement('section'); card.style.cssText = 'border:1px solid #374151;border-radius:10px;padding:12px;margin-top:12px';
+      const card = document.createElement('section'); card.className = 'transfer';
       const title = document.createElement('strong'); title.textContent = transfer.productName; card.append(title);
       const detail = document.createElement('p'); detail.className = 'hint';
       const stage = transfer.postedReportedAt ? 'ผู้ใช้ยืนยันจากหน้ารับคลิปว่าโพสต์พร้อมสินค้าแล้ว — ตรวจคลิปก่อนบันทึกผล' : transfer.downloadRequestedAt ? 'มีการขอดาวน์โหลดไฟล์แล้ว — รอปักสินค้าและโพสต์' : transfer.phoneConnectedAt ? 'เปิดหน้ารับคลิปแล้ว — รอดาวน์โหลด' : transfer.state === 'ready' ? 'พร้อมรับคลิป — สแกน QR ด้วยกล้องมือถือ' : transfer.state === 'uploading' ? 'กำลังส่งไฟล์จากคอมพิวเตอร์' : 'ยังส่งไฟล์ไม่เสร็จ กรุณายกเลิกรายการแล้วส่งใหม่';
@@ -50,7 +50,7 @@ export function initPhonePanel(options: { getVideos: () => Promise<PhoneVideo[]>
       if (transfer.state === 'ready' && address.value) {
         try {
           const qr = await request<{ mobileUrl: string; svg: string }>(`/api/transfers/${transfer.id}/qr?base=${encodeURIComponent(address.value)}`);
-          const image = document.createElement('img'); image.alt = 'QR รับคลิป Shopee บนมือถือ'; image.width = 240; image.style.cssText = 'max-width:100%;display:block;background:white;border-radius:8px';
+          const image = document.createElement('img'); image.alt = 'QR รับคลิป Shopee บนมือถือ'; image.width = 240;
           // Generated locally by the paired helper. A data URL avoids retaining a blob per card.
           image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qr.svg)}`; card.append(image);
           const url = document.createElement('input'); url.type = 'text'; url.readOnly = true; url.value = qr.mobileUrl; url.setAttribute('aria-label', 'ลิงก์รับคลิปบนมือถือ'); card.append(url);

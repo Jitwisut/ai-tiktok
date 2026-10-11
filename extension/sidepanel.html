@@ -2,626 +2,1425 @@
 <html lang="th">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI Affiliate Studio</title>
     <style>
-      * {
-        box-sizing: border-box;
+      /* ============================================================
+         Creative Intelligence OS — side panel design system.
+         Dark-only on purpose: content scripts push status colours
+         chosen for a dark surface. Kept inline because build:release
+         ships only sidepanel.html + dist/.
+         ============================================================ */
+      :root {
+        --bg: #0a0b11;
+        --surface: #11131b;
+        --surface-2: #171a24;
+        --surface-3: #1e2130;
+        --line: rgba(255, 255, 255, 0.07);
+        --line-strong: rgba(255, 255, 255, 0.12);
+        --text: #eef0f7;
+        --muted: #a6abbe;
+        --faint: #6e7389;
+        --violet: #a78bfa;
+        --violet-solid: #7c5cff;
+        --indigo: #6366f1;
+        --cyan: #67e8f9;
+        --coral: #ff8a98;
+        --success: #4ade80;
+        --warning: #fbbf24;
+        --danger: #f87171;
+        --signature: linear-gradient(120deg, #8b5cf6 0%, #6366f1 48%, #22d3ee 100%);
+        --radius: 12px;
+        --radius-sm: 8px;
+        --shadow: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 12px 32px -18px rgba(0, 0, 0, 0.7);
+        --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Sukhumvit Set", "Segoe UI", "Leelawadee UI",
+          "Noto Sans Thai", "IBM Plex Sans Thai", sans-serif;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color-scheme: dark;
       }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      html { background: var(--bg); }
       body {
         margin: 0;
-        background: #0b1220;
-        color: #f9fafb;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        min-height: 100vh;
+        background:
+          radial-gradient(28rem 14rem at 0% -4rem, rgba(124, 92, 255, 0.16), transparent 70%),
+          radial-gradient(22rem 12rem at 100% 0, rgba(34, 211, 238, 0.07), transparent 70%),
+          var(--bg);
+        background-repeat: no-repeat;
+        color: var(--text);
+        font-family: var(--font);
         font-size: 13px;
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
       }
-      button {
-        font-family: inherit;
-        cursor: pointer;
+      button, input, select, textarea { font: inherit; color: inherit; }
+      button { cursor: pointer; }
+      a { color: var(--violet); }
+      ::selection { background: rgba(124, 92, 255, 0.4); }
+      :focus-visible { outline: 2px solid var(--violet); outline-offset: 2px; }
+      * { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.16) transparent; }
+
+      /* ---------- icons (CSS masks, so JS label swaps never wipe them) ---------- */
+      .ic, .btn[data-icon]::before, .tab[data-icon]::before {
+        display: inline-block;
+        width: 15px;
+        height: 15px;
+        flex-shrink: 0;
+        background: currentColor;
+        -webkit-mask: var(--i) center / contain no-repeat;
+        mask: var(--i) center / contain no-repeat;
       }
-      input,
-      select,
-      textarea {
-        font-family: inherit;
+      .btn[data-icon]::before, .tab[data-icon]::before { content: ""; }
+      :root {
+        --i-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+        --i-key: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4'/%3E%3Cpath d='m21 2-9.6 9.6'/%3E%3Ccircle cx='7.5' cy='15.5' r='5.5'/%3E%3C/svg%3E");
+        --i-refresh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3Cpath d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16'/%3E%3Cpath d='M8 16H3v5'/%3E%3C/svg%3E");
+        --i-play: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='6 3 20 12 6 21 6 3'/%3E%3C/svg%3E");
+        --i-package: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z'/%3E%3Cpath d='M12 22V12'/%3E%3Cpath d='m3.3 7 7.7 4.7a2 2 0 0 0 2 0L20.7 7'/%3E%3C/svg%3E");
+        --i-clapper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z'/%3E%3Cpath d='m6.2 5.3 3.1 3.9'/%3E%3Cpath d='m12.4 3.4 3.1 4'/%3E%3Cpath d='M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z'/%3E%3C/svg%3E");
+        --i-zap: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'/%3E%3C/svg%3E");
+        --i-phone: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='20' x='5' y='2' rx='2' ry='2'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E");
+        --i-sliders: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4'/%3E%3C/svg%3E");
+        --i-more: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='1'/%3E%3Ccircle cx='19' cy='12' r='1'/%3E%3Ccircle cx='5' cy='12' r='1'/%3E%3C/svg%3E");
+        --i-download: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3Cpath d='M12 15V3'/%3E%3C/svg%3E");
+        --i-upload: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/%3E%3Cpath d='m17 8-5-5-5 5'/%3E%3Cpath d='M12 3v12'/%3E%3C/svg%3E");
+        --i-music: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18V5l12-2v13'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Ccircle cx='18' cy='16' r='3'/%3E%3C/svg%3E");
+        --i-store: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7'/%3E%3Cpath d='M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8'/%3E%3Cpath d='M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4'/%3E%3Cpath d='M2 7h20'/%3E%3Cpath d='M22 7v3a2 2 0 0 1-2 2 2.7 2.7 0 0 1-2-1 2.7 2.7 0 0 1-2 1 2.7 2.7 0 0 1-2-1 2.7 2.7 0 0 1-2 1 2.7 2.7 0 0 1-2-1 2.7 2.7 0 0 1-2 1 2.7 2.7 0 0 1-2-1 2.7 2.7 0 0 1-2 1 2 2 0 0 1-2-2V7'/%3E%3C/svg%3E");
+        --i-bag: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z'/%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M16 10a4 4 0 0 1-8 0'/%3E%3C/svg%3E");
+        --i-plus: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12h14'/%3E%3Cpath d='M12 5v14'/%3E%3C/svg%3E");
+        --i-trash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 6h18'/%3E%3Cpath d='M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6'/%3E%3Cpath d='M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2'/%3E%3C/svg%3E");
+        --i-scan: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7V5a2 2 0 0 1 2-2h2'/%3E%3Cpath d='M17 3h2a2 2 0 0 1 2 2v2'/%3E%3Cpath d='M21 17v2a2 2 0 0 1-2 2h-2'/%3E%3Cpath d='M7 21H5a2 2 0 0 1-2-2v-2'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='m16 16-1.9-1.9'/%3E%3C/svg%3E");
+        --i-sparkles: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0l1.58 6.14a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z'/%3E%3C/svg%3E");
+        --i-x: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E");
+        --i-terminal: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 17 6-6-6-6'/%3E%3Cpath d='M12 19h8'/%3E%3C/svg%3E");
+        --i-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='14' x='8' y='8' rx='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/svg%3E");
+        --i-pause: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='14' y='4' width='4' height='16' rx='1'/%3E%3Crect x='6' y='4' width='4' height='16' rx='1'/%3E%3C/svg%3E");
+        --i-skip: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 4l10 8-10 8z'/%3E%3Cpath d='M19 5v14'/%3E%3C/svg%3E");
+        --i-stop: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='14' x='5' y='5' rx='2'/%3E%3C/svg%3E");
+        --i-info: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+        --i-link: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E");
+        --i-send: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M14.54 21.69a.5.5 0 0 0 .94-.03l6.5-19a.5.5 0 0 0-.64-.63l-19 6.5a.5.5 0 0 0-.02.93l7.93 3.18a2 2 0 0 1 1.11 1.11z'/%3E%3Cpath d='m21.85 2.15-10.94 10.94'/%3E%3C/svg%3E");
+        --i-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+        --i-film: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2'/%3E%3Cpath d='M7 3v18M3 7.5h4M3 12h18M3 16.5h4M17 3v18M17 7.5h4M17 16.5h4'/%3E%3C/svg%3E");
+        --i-layers: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z'/%3E%3Cpath d='m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65'/%3E%3Cpath d='m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65'/%3E%3C/svg%3E");
+        --i-target: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Ccircle cx='12' cy='12' r='6'/%3E%3Ccircle cx='12' cy='12' r='2'/%3E%3C/svg%3E");
+        --i-quote: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z'/%3E%3Cpath d='M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z'/%3E%3C/svg%3E");
+        --i-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='18' height='18' x='3' y='3' rx='2'/%3E%3Ccircle cx='9' cy='9' r='2'/%3E%3Cpath d='m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21'/%3E%3C/svg%3E");
       }
-      #tabs {
+      [data-icon="chevron"] { --i: var(--i-chevron); }
+      [data-icon="key"] { --i: var(--i-key); }
+      [data-icon="refresh"] { --i: var(--i-refresh); }
+      [data-icon="play"] { --i: var(--i-play); }
+      [data-icon="package"] { --i: var(--i-package); }
+      [data-icon="clapper"] { --i: var(--i-clapper); }
+      [data-icon="zap"] { --i: var(--i-zap); }
+      [data-icon="phone"] { --i: var(--i-phone); }
+      [data-icon="sliders"] { --i: var(--i-sliders); }
+      [data-icon="more"] { --i: var(--i-more); }
+      [data-icon="download"] { --i: var(--i-download); }
+      [data-icon="upload"] { --i: var(--i-upload); }
+      [data-icon="music"] { --i: var(--i-music); }
+      [data-icon="store"] { --i: var(--i-store); }
+      [data-icon="bag"] { --i: var(--i-bag); }
+      [data-icon="plus"] { --i: var(--i-plus); }
+      [data-icon="trash"] { --i: var(--i-trash); }
+      [data-icon="scan"] { --i: var(--i-scan); }
+      [data-icon="sparkles"] { --i: var(--i-sparkles); }
+      [data-icon="x"] { --i: var(--i-x); }
+      [data-icon="terminal"] { --i: var(--i-terminal); }
+      [data-icon="copy"] { --i: var(--i-copy); }
+      [data-icon="pause"] { --i: var(--i-pause); }
+      [data-icon="skip"] { --i: var(--i-skip); }
+      [data-icon="stop"] { --i: var(--i-stop); }
+      [data-icon="info"] { --i: var(--i-info); }
+      [data-icon="link"] { --i: var(--i-link); }
+      [data-icon="send"] { --i: var(--i-send); }
+      [data-icon="check"] { --i: var(--i-check); }
+      [data-icon="film"] { --i: var(--i-film); }
+      [data-icon="layers"] { --i: var(--i-layers); }
+      [data-icon="target"] { --i: var(--i-target); }
+      [data-icon="quote"] { --i: var(--i-quote); }
+      [data-icon="image"] { --i: var(--i-image); }
+
+      /* ---------- header ---------- */
+      .app-header {
         display: flex;
-        border-bottom: 1px solid #1f2937;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 14px 10px;
+      }
+      .logo {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        border-radius: 9px;
+        background: var(--signature);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 8px 20px -8px #7c5cff;
+        flex-shrink: 0;
+      }
+      .brand { min-width: 0; flex: 1; line-height: 1.2; }
+      .brand-name { font-weight: 700; font-size: 14px; letter-spacing: -0.01em; }
+      .brand-sub {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+
+      /* ---------- license ---------- */
+      .license {
+        margin: 0 14px 10px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+      #license-card > summary {
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        cursor: pointer;
+        border-radius: var(--radius);
+      }
+      #license-card > summary::-webkit-details-marker { display: none; }
+      .license-foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 12px;
+        border-top: 1px solid var(--line);
+      }
+      .license-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--warning);
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.15);
+        flex-shrink: 0;
+      }
+      #license-card[data-state="ok"] .license-dot { background: var(--success); box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.15); }
+      .license-text { min-width: 0; flex: 1; }
+      .license-label { font-size: 10.5px; color: var(--faint); letter-spacing: 0.02em; }
+      #license-status { margin: 0; font-weight: 600; font-size: 12px; color: var(--warning); overflow-wrap: anywhere; }
+      #license-card[data-state="ok"] #license-status { color: var(--success); }
+      #license-remaining { margin: 1px 0 0; font-size: 11px; color: var(--muted); }
+      .license-caret { width: 14px; height: 14px; color: var(--faint); transition: transform 0.2s; }
+      #license-card[open] .license-caret { transform: rotate(180deg); }
+      .license-body { padding: 0 12px 12px; display: grid; gap: 8px; }
+      .license-body label { font-size: 11px; color: var(--muted); }
+
+      /* ---------- tabs ---------- */
+      #tabs {
         position: sticky;
         top: 0;
-        background: #0b1220;
-        z-index: 1;
+        z-index: 5;
+        display: flex;
+        gap: 2px;
+        margin: 0;
+        padding: 6px 10px;
+        background: rgba(10, 11, 17, 0.82);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--line);
       }
-      #tabs button {
+      .tab {
+        position: relative;
         flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        padding: 7px 2px 6px;
+        border: 0;
+        border-radius: 9px;
         background: none;
-        border: none;
-        color: #9ca3af;
-        padding: 12px 6px;
-        font-size: 13px;
+        color: var(--faint);
+        font-size: 11px;
         font-weight: 600;
-        border-bottom: 2px solid transparent;
+        white-space: nowrap;
+        transition: color 0.15s, background-color 0.15s;
       }
-      #tabs button.active {
-        color: #f9fafb;
-        border-bottom-color: #2563eb;
+      .tab::before { width: 16px; height: 16px; }
+      .tab:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+      .tab.active { color: var(--text); background: rgba(124, 92, 255, 0.14); }
+      .tab.active::before { color: var(--violet); }
+      .tab.active::after {
+        content: "";
+        position: absolute;
+        left: 30%;
+        right: 30%;
+        bottom: -7px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--signature);
+        box-shadow: 0 0 10px #7c5cff;
       }
-      .view {
+
+      /* ---------- layout primitives ---------- */
+      .view { padding: 14px; display: grid; gap: 14px; }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
         padding: 14px;
       }
-      .view[hidden] {
-        display: none;
-      }
-      #view-phone .hint { color: #b3bed0; line-height: 1.65; }
-      #view-phone textarea { background: #1f2937; color: #f9fafb; border: 1px solid #374151; border-radius: 6px; padding: 8px; }
-      #phone-transfers section { scroll-margin-top: 60px; }
-      .section-title {
-        font-size: 11px;
-        font-weight: 700;
-        color: #6b7280;
-        margin: 14px 0 6px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-      .section-title:first-child {
-        margin-top: 0;
-      }
-      .row {
+      .card-head {
         display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .card-title { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+      .card-desc { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+      .eyebrow {
+        display: flex;
+        align-items: center;
         gap: 8px;
-        flex-wrap: wrap;
-        margin-bottom: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--faint);
+        margin: 4px 2px -4px;
       }
-      button.btn {
-        background: #1f2937;
-        color: #e5e7eb;
-        border: 1px solid #374151;
-        border-radius: 6px;
-        padding: 8px 14px;
+      /* Thai has stacked tone marks — no tracking on Thai labels, only on the mono step number. */
+      .eyebrow b { color: var(--violet); font-weight: 600; font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; }
+      .eyebrow::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+      .stack { display: grid; gap: 8px; }
+      .hint { font-size: 11px; color: var(--faint); line-height: 1.6; margin: 0; }
+      .muted { color: var(--muted); }
+      .empty {
+        display: grid;
+        justify-items: center;
+        gap: 4px;
+        padding: 18px 12px;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--radius-sm);
+        color: var(--muted);
         font-size: 12px;
+        line-height: 1.6;
+        text-align: center;
       }
-      button.btn-primary {
-        background: #2563eb;
-        color: #fff;
-        border: none;
+      .empty::before {
+        content: "";
+        width: 28px;
+        height: 28px;
+        margin-bottom: 4px;
+        border-radius: 8px;
+        background: rgba(124, 92, 255, 0.14);
+        box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.3);
+      }
+
+      /* ---------- buttons ---------- */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-height: 32px;
+        padding: 6px 12px;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 12px;
         font-weight: 600;
+        line-height: 1.25;
+        text-align: center;
+        transition: background-color 0.15s, border-color 0.15s, transform 0.1s, filter 0.15s;
       }
-      button.btn-success {
-        background: #16a34a;
+      .btn:hover:not(:disabled) { background: var(--surface-3); border-color: rgba(255, 255, 255, 0.18); }
+      .btn:active:not(:disabled) { transform: translateY(1px); }
+      .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      .btn-primary {
+        background: var(--violet-solid);
+        border-color: transparent;
         color: #fff;
-        border: none;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
+      .btn-primary:hover:not(:disabled) { background: #8b6dff; border-color: transparent; }
+      .btn-success,
+      .btn-signature {
+        background: var(--signature);
+        border-color: transparent;
+        color: #fff;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 10px 26px -12px #7c5cff;
+      }
+      .btn-success:hover:not(:disabled),
+      .btn-signature:hover:not(:disabled) { filter: brightness(1.1); border-color: transparent; background: var(--signature); }
+      .btn-danger { background: rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.35); color: var(--danger); }
+      .btn-danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.5); }
+      .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+      .btn-ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.05); border-color: transparent; color: var(--text); }
+      .btn-sm { min-height: 26px; padding: 3px 9px; font-size: 11px; border-radius: 7px; }
+      .btn-lg { min-height: 40px; padding: 9px 16px; font-size: 13px; border-radius: 11px; }
+      .btn-block { width: 100%; }
+
+      /* ---------- form fields ---------- */
+      .field { display: grid; gap: 5px; min-width: 0; }
+      .field > label, .field-label {
+        font-size: 11px;
         font-weight: 600;
-      }
-      button.btn-danger {
-        background: #7f1d1d;
-        color: #fecaca;
-        border: 1px solid #b91c1c;
-      }
-      button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+        color: var(--muted);
+        letter-spacing: 0.01em;
       }
       select,
       input[type="text"],
       input[type="password"],
-      input[type="url"] {
-        background: #1f2937;
-        color: #f9fafb;
-        border: 1px solid #374151;
-        border-radius: 6px;
-        padding: 8px;
-        font-size: 12px;
+      input[type="url"],
+      input[type="number"],
+      textarea {
         width: 100%;
+        min-height: 34px;
+        padding: 7px 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 9px;
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 12px;
+        transition: border-color 0.15s, box-shadow 0.15s;
       }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
+      textarea { resize: vertical; line-height: 1.5; }
+      select {
+        appearance: none;
+        padding-right: 28px;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a6abbe' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 9px center;
+        background-size: 14px;
+        text-overflow: ellipsis;
+      }
+      select:hover, input:hover, textarea:hover { border-color: rgba(255, 255, 255, 0.2); }
+      select:focus, input:focus, textarea:focus {
+        outline: none;
+        border-color: var(--violet-solid);
+        box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.22);
+      }
+      input::placeholder, textarea::placeholder { color: var(--faint); }
+      input[type="checkbox"], input[type="radio"] { accent-color: var(--violet-solid); width: 15px; height: 15px; margin: 0; flex-shrink: 0; }
+
+      /* ---------- disclosure menu ---------- */
+      details.menu { position: relative; }
+      details.menu > summary { list-style: none; }
+      details.menu > summary::-webkit-details-marker { display: none; }
+      .menu-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 6px);
+        z-index: 4;
+        display: grid;
+        gap: 2px;
+        min-width: 180px;
+        padding: 5px;
+        border: 1px solid var(--line-strong);
+        border-radius: 11px;
+        background: var(--surface-2);
+        box-shadow: 0 18px 40px -12px rgba(0, 0, 0, 0.8);
+      }
+      .menu-panel .btn { justify-content: flex-start; background: transparent; border-color: transparent; font-weight: 500; }
+      .menu-panel .btn:hover { background: rgba(255, 255, 255, 0.06); }
+
+      /* ---------- import sources ---------- */
+      .sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .source {
+        display: grid;
+        gap: 6px;
+        justify-items: start;
+        min-height: 74px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-2);
+        color: var(--text);
+        font-size: 11.5px;
+        font-weight: 600;
+        text-align: left;
+        line-height: 1.3;
+        transition: border-color 0.15s, background-color 0.15s, transform 0.15s;
+      }
+      .btn.source[data-icon]::before {
+        width: 26px;
+        height: 26px;
+        -webkit-mask-size: 15px;
+        mask-size: 15px;
+      }
+      .source:hover:not(:disabled) { border-color: rgba(167, 139, 250, 0.4); background: var(--surface-3); transform: translateY(-1px); }
+      .source[data-tone="tiktok"]::before { color: var(--cyan); }
+      .source[data-tone="showcase"]::before { color: var(--violet); }
+      .source[data-tone="shopee"]::before { color: var(--coral); }
+      /* Icons for sources sit inside a tinted tile drawn by a second layer. */
+      .source { position: relative; }
+      .source::after {
+        content: "";
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        background: currentColor;
+        opacity: 0.08;
+        pointer-events: none;
+      }
+      @media (max-width: 340px) { .sources { grid-template-columns: 1fr; } }
+
+      .status-line { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+      #catalog-status, #settings-status { font-size: 12px; color: var(--warning); }
+      #settings-status { color: var(--success); }
+
+      /* ---------- product list ---------- */
+      .list-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
         margin-bottom: 10px;
       }
-      th {
-        text-align: left;
-        color: #6b7280;
-        padding: 4px;
-        border-bottom: 1px solid #374151;
+      .count-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 9px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 600;
       }
-      td {
-        padding: 6px 4px;
-        border-bottom: 1px solid #1f2937;
+      .product-list { display: grid; gap: 6px; max-height: 340px; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+      .product-row {
+        display: grid;
+        grid-template-columns: auto 44px minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface-2);
+        cursor: pointer;
+        transition: border-color 0.15s, background-color 0.15s;
       }
-      td img {
-        width: 36px;
-        height: 36px;
+      .product-row:hover { border-color: rgba(255, 255, 255, 0.14); }
+      .product-row.is-selected {
+        border-color: rgba(167, 139, 250, 0.55);
+        background: linear-gradient(120deg, rgba(124, 92, 255, 0.14), rgba(34, 211, 238, 0.05)), var(--surface-2);
+      }
+      .thumb {
+        width: 44px;
+        height: 44px;
+        border-radius: 9px;
         object-fit: cover;
-        border-radius: 4px;
-        background: #374151;
+        background: var(--surface-3) center / 18px no-repeat;
         display: block;
       }
-      .card {
-        display: flex;
-        gap: 10px;
+      .thumb:not([src]) { border: 1px dashed var(--line-strong); background: rgba(255, 255, 255, 0.02); }
+      .product-meta { min-width: 0; display: grid; gap: 2px; }
+      .product-name { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .product-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); min-width: 0; }
+      .product-price { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+      .product-id { font-family: var(--mono); font-size: 10px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      .tag {
+        display: inline-flex;
         align-items: center;
-        padding: 10px;
-        border: 1px solid #374151;
-        border-radius: 10px;
-        margin-bottom: 8px;
-      }
-      .merged-video {
-        display: flex;
-        gap: 10px;
-        align-items: flex-start;
-        margin-top: 8px;
-      }
-      .merged-video video {
-        width: 160px;
-        border-radius: 8px;
-        background: #000;
+        gap: 4px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 10px;
+        font-weight: 600;
+        white-space: nowrap;
         flex-shrink: 0;
       }
-      .merged-video .badge {
-        display: inline-block;
-        background: #16a34a;
-        color: #fff;
-        font-size: 11px;
-        font-weight: 700;
-        border-radius: 999px;
-        padding: 2px 8px;
-        margin-bottom: 6px;
-      }
-      .ap-status {
-        display: none;
-        border: 1px solid #374151;
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-        background: #111827;
-        font-size: 12px;
-        line-height: 1.6;
-      }
-      .ap-status .ap-state {
-        font-weight: 700;
-        font-size: 13px;
-      }
-      .ap-inline {
+      .tag-tiktok { color: var(--cyan); background: rgba(103, 232, 249, 0.08); border-color: rgba(103, 232, 249, 0.2); }
+      .tag-shopee { color: var(--coral); background: rgba(255, 138, 152, 0.08); border-color: rgba(255, 138, 152, 0.22); }
+      .tag-ok { color: var(--success); background: rgba(74, 222, 128, 0.08); border-color: rgba(74, 222, 128, 0.22); }
+      .tag-muted { color: var(--faint); background: rgba(255, 255, 255, 0.04); border-color: var(--line); }
+      .tag-violet { color: var(--violet); background: rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.25); }
+      .tag-warn { color: var(--warning); background: rgba(251, 191, 36, 0.08); border-color: rgba(251, 191, 36, 0.22); }
+      .tag-danger { color: var(--danger); background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.25); }
+
+      .selection-bar {
         display: flex;
         align-items: center;
         gap: 6px;
-        font-size: 12px;
-        color: #d1d5db;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
       }
-      .ap-inline input[type="number"] {
-        background: #1f2937;
-        color: #f9fafb;
-        border: 1px solid #374151;
-        border-radius: 6px;
-        padding: 4px 6px;
+      .selection-bar .spacer { flex: 1; }
+
+      /* ---------- studio (create video) ---------- */
+      .studio { position: relative; overflow: hidden; }
+      .studio::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.7), rgba(103, 232, 249, 0.5), transparent);
       }
-      .ap-products {
-        max-height: 240px;
-        overflow-y: auto;
-        border: 1px solid #1f2937;
-        border-radius: 8px;
-        margin-bottom: 6px;
-      }
-      .ap-product {
+      .studio-target {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 6px 8px;
-        border-bottom: 1px solid #1f2937;
+        padding: 8px 10px;
+        margin-bottom: 12px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px dashed var(--line-strong);
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .studio-target.is-ready { border-style: solid; border-color: rgba(167, 139, 250, 0.4); background: rgba(124, 92, 255, 0.08); color: var(--text); }
+      .studio-target img { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; background: var(--surface-3); }
+      .studio-target span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .style-desc {
+        margin-top: 6px;
+        padding: 8px 10px;
+        border-left: 2px solid var(--violet-solid);
+        border-radius: 0 8px 8px 0;
+        background: rgba(124, 92, 255, 0.07);
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+      .style-desc:empty { display: none; }
+
+      .stepper { display: grid; gap: 0; margin-top: 14px; counter-reset: step; }
+      .step {
+        position: relative;
+        display: grid;
+        grid-template-columns: 26px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 0;
+      }
+      .step + .step::before {
+        content: "";
+        position: absolute;
+        left: 12.5px;
+        top: -9px;
+        height: 18px;
+        width: 1px;
+        background: var(--line-strong);
+      }
+      .step[data-state="done"] + .step::before { background: linear-gradient(var(--violet-solid), var(--line-strong)); }
+      .step-num {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 1px solid var(--line-strong);
+        background: var(--surface-2);
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+      }
+      .step[data-state="done"] .step-num {
+        border-color: transparent;
+        background: var(--violet-solid);
+        color: #fff;
+        font-size: 0;
+      }
+      .step[data-state="done"] .step-num::after {
+        content: "";
+        width: 13px;
+        height: 13px;
+        background: #fff;
+        -webkit-mask: var(--i-check) center / contain no-repeat;
+        mask: var(--i-check) center / contain no-repeat;
+      }
+      .step-title { font-size: 12.5px; font-weight: 600; }
+      .step-desc { font-size: 11px; color: var(--faint); line-height: 1.45; }
+      .step .btn { min-width: 124px; }
+      section, .card { scroll-margin-top: 72px; }
+
+      /* ---------- review / storyboard ---------- */
+      #review { display: grid; gap: 12px; }
+      .review-block { display: grid; gap: 8px; }
+      .review-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; }
+      .review-head .ic { color: var(--violet); }
+      .review-head small { margin-left: auto; font-weight: 500; color: var(--faint); font-size: 10.5px; }
+      .insight { display: grid; gap: 5px; }
+      .insight-label { font-size: 11px; font-weight: 700; color: var(--faint); }
+      .insight-text { font-size: 12px; color: var(--text); line-height: 1.6; }
+      .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+      .chip {
+        padding: 3px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .chip-pain { border-color: rgba(255, 138, 152, 0.25); background: rgba(255, 138, 152, 0.07); }
+      .chip-sell { border-color: rgba(74, 222, 128, 0.22); background: rgba(74, 222, 128, 0.06); }
+      .chip-angle { border-color: rgba(167, 139, 250, 0.3); background: rgba(167, 139, 250, 0.09); }
+      .hook {
+        position: relative;
+        padding: 12px 14px;
+        border-radius: 11px;
+        background: linear-gradient(130deg, rgba(124, 92, 255, 0.2), rgba(34, 211, 238, 0.07));
+        border: 1px solid rgba(167, 139, 250, 0.3);
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.45;
+        letter-spacing: -0.01em;
+      }
+      .hook-label { display: block; margin-bottom: 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.12em; color: var(--violet); font-family: var(--mono); }
+      .kv { display: grid; gap: 2px; padding: 8px 10px; border-radius: 9px; background: rgba(255, 255, 255, 0.025); border: 1px solid var(--line); }
+      .kv b { font-size: 11px; color: var(--faint); font-weight: 700; }
+      .kv span { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+      .overlay-texts { display: flex; flex-wrap: wrap; gap: 6px; }
+      .overlay-text {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 9px;
+        border-radius: 8px;
+        background: #000;
+        border: 1px solid var(--line-strong);
+        font-weight: 700;
         font-size: 12px;
       }
-      .ap-product img {
-        width: 30px;
-        height: 30px;
-        object-fit: cover;
-        border-radius: 4px;
-        background: #374151;
-        flex-shrink: 0;
+      .overlay-text small { font-weight: 500; color: var(--faint); font-size: 10px; }
+      .storyboard {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(168px, 72%);
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 6px;
+        scroll-snap-type: x mandatory;
       }
-      .ap-product .name {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .ap-tag {
-        font-size: 10px;
-        border-radius: 999px;
-        padding: 1px 6px;
-        flex-shrink: 0;
-      }
-      .ap-history-row {
-        font-size: 11px;
-        padding: 6px 0;
-        border-bottom: 1px solid #1f2937;
-        line-height: 1.5;
-      }
-      .clip-parts-label {
-        font-size: 11px;
-        color: #6b7280;
-        margin-top: 8px;
-      }
-      .card img {
-        width: 40px;
-        height: 40px;
-        object-fit: cover;
-        border-radius: 8px;
-        background: #374151;
-        flex-shrink: 0;
-      }
-      .card .info {
-        flex: 1;
-        min-width: 0;
-      }
-      .card .title {
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .card .subtitle {
-        font-size: 11px;
-        color: #9ca3af;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .empty {
-        color: #9ca3af;
-        font-size: 12px;
-        line-height: 1.6;
-        padding: 12px 0;
-      }
-      #review {
-        display: none;
-        background: #111827;
-        border: 1px solid #374151;
-        border-radius: 8px;
+      .scene {
+        scroll-snap-align: start;
+        display: grid;
+        align-content: start;
+        gap: 6px;
         padding: 10px;
-        margin-bottom: 12px;
+        border-radius: 11px;
+        background: var(--surface-2);
+        border: 1px solid var(--line);
+        position: relative;
+      }
+      .scene-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+      .scene-no { font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: var(--violet); letter-spacing: 0.08em; }
+      .scene-desc { font-size: 12px; line-height: 1.55; }
+      .scene-visual { font-size: 11px; color: var(--faint); line-height: 1.5; }
+      .scene-speech {
+        font-size: 11.5px;
+        line-height: 1.5;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: rgba(103, 232, 249, 0.06);
+        border-left: 2px solid var(--cyan);
+      }
+      .scene-speech.vo { background: rgba(167, 139, 250, 0.07); border-left-color: var(--violet); }
+      .scene-speech b { display: block; font-size: 10px; color: var(--faint); font-weight: 700; }
+
+      /* ---------- activity / toast ---------- */
+      #log { display: grid; gap: 0; max-height: 150px; overflow-y: auto; font-size: 11px; color: var(--muted); }
+      #log div { padding: 5px 0; border-bottom: 1px solid var(--line); line-height: 1.5; }
+      #log div:first-child { color: var(--text); }
+      #log:empty::before { content: "ยังไม่มีกิจกรรม"; color: var(--faint); }
+      .toast {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        z-index: 20;
+        display: flex;
+        gap: 9px;
+        align-items: flex-start;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line-strong);
+        background: rgba(23, 26, 36, 0.96);
+        backdrop-filter: blur(10px);
+        box-shadow: 0 20px 40px -12px rgba(0, 0, 0, 0.85);
+        font-size: 12px;
+        line-height: 1.5;
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity 0.2s, transform 0.2s;
+      }
+      .toast.show { opacity: 1; transform: none; }
+      .toast::before { content: ""; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--violet); flex-shrink: 0; }
+
+      /* ---------- library ---------- */
+      .live-card { display: grid; gap: 10px; }
+      #status-text {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 9px 11px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--surface);
+        font-size: 12px;
+        line-height: 1.55;
+        color: var(--text);
+      }
+      #status-text::before { content: ""; width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; background: var(--violet); flex-shrink: 0; animation: breathe 2.2s ease-in-out infinite; }
+      #status-text[data-tone="danger"] { color: #fecaca; border-color: rgba(248, 113, 113, 0.3); background: rgba(248, 113, 113, 0.07); }
+      #status-text[data-tone="danger"]::before { background: var(--danger); animation: none; }
+      #status-text[data-tone="warning"] { color: #fde68a; border-color: rgba(251, 191, 36, 0.3); background: rgba(251, 191, 36, 0.06); }
+      #status-text[data-tone="warning"]::before { background: var(--warning); animation: none; }
+      #status-text[data-tone="success"] { color: #bbf7d0; border-color: rgba(74, 222, 128, 0.3); background: rgba(74, 222, 128, 0.06); }
+      #status-text[data-tone="success"]::before { background: var(--success); animation: none; }
+
+      #progress-wrap {
+        position: relative;
+        overflow: hidden;
+        padding: 14px;
+        border-radius: var(--radius);
+        border: 1px solid rgba(167, 139, 250, 0.3);
+        background: linear-gradient(140deg, rgba(124, 92, 255, 0.14), rgba(34, 211, 238, 0.04)), var(--surface);
+        box-shadow: 0 14px 40px -20px #7c5cff;
+      }
+      #progress-wrap[data-state="failed"] { border-color: rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.06); box-shadow: none; }
+      #progress-wrap[data-state="done"] { border-color: rgba(74, 222, 128, 0.35); background: rgba(74, 222, 128, 0.05); box-shadow: none; }
+      #progress-wrap[data-state="paused"] { border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.05); box-shadow: none; }
+      .progress-eyebrow { font-size: 11px; font-weight: 600; color: var(--violet); margin-bottom: 2px; }
+      #progress-label { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+      #progress-track { position: relative; height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+      #progress-bar { height: 100%; width: 0%; border-radius: 999px; background: var(--signature); transition: width 0.4s ease; }
+      #progress-track.is-indeterminate::after {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 35%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, rgba(167, 139, 250, 0.9), transparent);
+        animation: sweep 1.5s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+      }
+      #progress-wrap[data-state="failed"] #progress-bar { background: var(--danger); }
+      #progress-wrap[data-state="done"] #progress-bar { background: var(--success); }
+      #progress-wrap[data-state="paused"] #progress-bar { background: var(--warning); }
+      #queue-info { margin-top: 8px; font-size: 11px; color: var(--muted); }
+      .progress-actions { margin-top: 12px; display: flex; justify-content: flex-end; }
+
+      .media-row {
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 9px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: var(--surface);
+      }
+      .media-row + .media-row { margin-top: 6px; }
+      .media-row .thumb { width: 42px; height: 56px; border-radius: 8px; }
+      .media-title { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .media-sub { font-size: 11px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.45; }
+
+      .video-card {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+      .video-card + .video-card { margin-top: 10px; }
+      .video-head { display: grid; gap: 3px; }
+      .video-head .media-title { font-size: 13px; }
+      .video-hero { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 12px; align-items: start; }
+      .player {
+        width: 100%;
+        aspect-ratio: 9 / 16;
+        object-fit: cover;
+        border-radius: 10px;
+        background: #000;
+        border: 1px solid var(--line-strong);
+        display: block;
+      }
+      .clip-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+      .clip-strip .player { width: 74px; flex-shrink: 0; }
+      .clip-strip.is-main .player { width: 104px; }
+      .video-side { display: grid; gap: 8px; align-content: start; }
+      .section-label { font-size: 11px; font-weight: 700; color: var(--faint); }
+      .post-block {
+        display: grid;
+        gap: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+      }
+      .post-status { font-size: 11.5px; line-height: 1.5; }
+      .post-status[data-tone="danger"] { color: var(--danger); }
+      .post-status[data-tone="success"] { color: var(--success); }
+      .post-status[data-tone="warning"] { color: var(--warning); }
+      .check { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); cursor: pointer; }
+      @media (max-width: 360px) { .video-hero { grid-template-columns: 1fr; } .video-hero .player { max-width: 180px; } }
+
+      details.disclosure > summary {
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      details.disclosure > summary::-webkit-details-marker { display: none; }
+      details.disclosure > summary::after {
+        content: "";
+        margin-left: auto;
+        width: 14px;
+        height: 14px;
+        background: currentColor;
+        -webkit-mask: var(--i-chevron) center / contain no-repeat;
+        mask: var(--i-chevron) center / contain no-repeat;
+        transition: transform 0.2s;
+      }
+      details.disclosure[open] > summary::after { transform: rotate(180deg); }
+      details.disclosure[open] > summary { margin-bottom: 10px; color: var(--text); }
+      #job-log {
+        max-height: 220px;
+        overflow-y: auto;
+        padding: 10px;
+        border-radius: 9px;
+        background: #07080c;
+        border: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        line-height: 1.65;
+        color: var(--muted);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      /* ---------- autopilot ---------- */
+      .ap-status {
+        position: relative;
+        display: grid;
+        gap: 4px;
+        padding: 14px;
+        border-radius: var(--radius);
+        border: 1px solid var(--line-strong);
+        background: var(--surface);
         font-size: 12px;
         line-height: 1.6;
-      }
-      #catalog-status,
-      #settings-status {
-        display: none;
-        color: #fbbf24;
-        margin-bottom: 8px;
-        font-size: 12px;
-      }
-      #progress-wrap {
-        display: none;
-        margin-bottom: 10px;
-      }
-      #progress-label {
-        font-size: 11px;
-        font-weight: 600;
-        margin-bottom: 4px;
-      }
-      #progress-track {
-        height: 6px;
-        background: #374151;
-        border-radius: 999px;
         overflow: hidden;
       }
-      #progress-bar {
-        height: 100%;
-        width: 0%;
-        background: #2563eb;
-        transition: width 0.3s;
+      .ap-status[data-state="running"] {
+        border-color: rgba(74, 222, 128, 0.35);
+        background: linear-gradient(140deg, rgba(74, 222, 128, 0.09), rgba(34, 211, 238, 0.04)), var(--surface);
       }
-      #log {
-        max-height: 140px;
-        overflow-y: auto;
-        color: #9ca3af;
-        font-size: 10px;
+      .ap-status[data-state="paused"] { border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.05); }
+      .ap-state { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13.5px; }
+      .ap-state .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+      .ap-status[data-state="running"] .dot { background: var(--success); box-shadow: 0 0 0 4px rgba(74, 222, 128, 0.15); animation: breathe 2s ease-in-out infinite; }
+      .ap-status[data-state="paused"] .dot { background: var(--warning); }
+      .ap-state small { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+      .ap-current { margin-top: 6px; padding: 9px 10px; border-radius: 9px; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); }
+      .ap-current b { font-weight: 700; }
+      .ap-msg { color: var(--warning); }
+      .ap-err { color: var(--danger); }
+      .ap-meta { color: var(--faint); font-size: 11px; }
+      .ap-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+      .ap-inline input[type="number"] { width: 58px; min-height: 30px; padding: 4px 8px; }
+      .ap-products { display: grid; max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-2); }
+      .ap-product {
+        display: grid;
+        grid-template-columns: auto 32px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        cursor: pointer;
       }
-      #log div {
-        border-bottom: 1px solid #1f2937;
-        padding: 4px 0;
+      .ap-product:last-child { border-bottom: 0; }
+      .ap-product:hover { background: rgba(255, 255, 255, 0.025); }
+      .ap-product:has(input:checked) { background: rgba(124, 92, 255, 0.1); }
+      .ap-product img { width: 32px; height: 32px; object-fit: cover; border-radius: 7px; background: var(--surface-3); }
+      .ap-product .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .mode-options { display: grid; gap: 6px; }
+      .mode-option {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 9px;
+        align-items: start;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--surface-2);
+        cursor: pointer;
+        font-size: 12px;
       }
-      .field {
-        margin-bottom: 12px;
-      }
-      .field label {
-        display: block;
-        font-size: 11px;
-        color: #9ca3af;
-        margin-bottom: 4px;
-      }
-      .hint {
-        font-size: 11px;
-        color: #6b7280;
+      .mode-option input { margin-top: 2px; }
+      .mode-option:has(input:checked) { border-color: rgba(167, 139, 250, 0.5); background: rgba(124, 92, 255, 0.09); }
+      .mode-option b { display: block; font-size: 12.5px; }
+      .mode-option span { color: var(--muted); font-size: 11.5px; }
+      #ap-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; }
+      .ap-history-row {
+        display: grid;
+        gap: 2px;
+        padding: 9px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
         line-height: 1.5;
-        margin-top: 4px;
+      }
+      .ap-history-row:last-child { border-bottom: 0; }
+      .ap-history-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .ap-history-top .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .ap-history-meta { font-size: 11px; color: var(--faint); }
+      .ap-history-err { font-size: 11px; color: var(--danger); }
+
+      /* ---------- phone / settings ---------- */
+      #view-phone details.disclosure p { margin: 0 0 6px; }
+      .transfer {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface-2);
+      }
+      .transfer img { max-width: 100%; display: block; background: #fff; border-radius: 10px; padding: 6px; }
+      #phone-transfers section { scroll-margin-top: 60px; }
+      .key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); }
+      .key-row + .key-row { margin-top: 6px; }
+      .key-row .actions { display: flex; gap: 6px; }
+      .key-masked { font-family: var(--mono); font-size: 12px; }
+      .key-state { font-size: 11px; line-height: 1.5; }
+      .key-state[data-tone="ok"] { color: var(--success); }
+      .key-state[data-tone="bad"] { color: var(--danger); }
+
+      @keyframes breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+      @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
       }
     </style>
   </head>
   <body>
-    <div id="tabs">
-      <button id="tab-products" class="active">สินค้า</button>
-      <button id="tab-library">คลัง/งาน</button>
-      <button id="tab-autopilot">อัตโนมัติ</button>
-      <button id="tab-phone">มือถือ</button>
-      <button id="tab-settings">ตั้งค่า</button>
-    </div>
+    <header class="app-header">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+          <rect x="6.5" y="3" width="11" height="18" rx="2.6" stroke="white" stroke-width="1.8" />
+          <path d="M10.4 9.2v5.6L15 12l-4.6-2.8Z" fill="white" />
+        </svg>
+      </span>
+      <div class="brand">
+        <div class="brand-name">AI Affiliate Studio</div>
+        <div class="brand-sub">Creative Intelligence OS</div>
+      </div>
+    </header>
 
-    <section style="padding:12px 14px;border-bottom:1px solid #374151" aria-label="สิทธิ์ใช้โปรแกรม">
-      <strong>License ใช้งานโปรแกรม</strong>
-      <p id="license-status" role="status" aria-live="polite">กำลังตรวจสิทธิ์...</p>
-      <p id="license-remaining" class="hint"></p>
-      <label for="license-key">License Key จากผู้ขาย (แยกจาก Gemini API Key)</label>
-      <input id="license-key" type="password" autocomplete="off" placeholder="AAS_..." style="margin:6px 0" />
-      <button id="license-activate" class="btn btn-primary">เปิดใช้คีย์</button>
-      <button id="license-refresh" class="btn">ตรวจสิทธิ์อีกครั้ง</button>
-      <button id="license-resume" class="btn">ทำงานที่พักต่อ</button>
+    <section class="license" aria-label="สิทธิ์ใช้โปรแกรม">
+    <details id="license-card">
+      <summary>
+        <span class="license-dot" aria-hidden="true"></span>
+        <span class="license-text">
+          <span class="license-label">License ใช้งานโปรแกรม</span>
+          <p id="license-status" role="status" aria-live="polite">กำลังตรวจสิทธิ์...</p>
+          <p id="license-remaining"></p>
+        </span>
+        <i class="ic license-caret" data-icon="chevron" aria-hidden="true"></i>
+      </summary>
+      <div class="license-body">
+        <label for="license-key">License Key จากผู้ขาย (แยกจาก Gemini API Key)</label>
+        <input id="license-key" type="password" autocomplete="off" placeholder="AAS_..." />
+        <div class="row">
+          <button id="license-activate" class="btn btn-primary" data-icon="key">เปิดใช้คีย์</button>
+          <button id="license-refresh" class="btn" data-icon="refresh">ตรวจสิทธิ์อีกครั้ง</button>
+        </div>
+      </div>
+    </details>
+      <!-- Outside the fold on purpose: after a renewal the licence reads OK (card folded) but paused work still needs this. -->
+      <div class="license-foot">
+        <span class="hint">งานถูกพักเพราะสิทธิ์หมด? ต่ออายุแล้วกดปุ่มนี้</span>
+        <button id="license-resume" class="btn btn-sm" data-icon="play">ทำงานที่พักต่อ</button>
+      </div>
     </section>
 
-    <div id="view-products" class="view">
-      <div class="section-title">คลังสินค้า</div>
-      <div class="row">
-        <button id="get-shopee-product" class="btn btn-primary">ดึงจากหน้า Shopee</button>
-        <button id="get-product" class="btn btn-primary">ดึงจากหน้า TikTok</button>
-        <button id="sync-showcase" class="btn btn-primary">ดึงสินค้าจาก Showcase</button>
-        <button id="add-current-page" class="btn">+ เพิ่มจากหน้านี้</button>
-        <button id="export-csv" class="btn">Export CSV</button>
-        <button id="import-json" class="btn">Import</button>
-        <button id="download-json" class="btn">Download JSON</button>
-        <input id="import-file" type="file" accept="application/json" style="display: none" />
-      </div>
-      <div id="shopee-import-status" role="status" aria-live="polite" style="color:#9ca3af;font-size:12px;margin-bottom:8px">Shopee: เปิดหน้าสินค้า หรือข้อเสนอผลิตภัณฑ์ในเว็บ Affiliate แล้วกดดึง เพื่อนำเข้าโปรแกรมสำหรับสร้างวิดีโอ</div>
-      <div id="catalog-status"></div>
+    <nav id="tabs" role="tablist" aria-label="เมนูหลัก">
+      <button id="tab-products" class="tab active" role="tab" aria-selected="true" aria-controls="view-products" data-icon="package">สินค้า</button>
+      <button id="tab-library" class="tab" role="tab" aria-selected="false" aria-controls="view-library" data-icon="clapper">คลัง/งาน</button>
+      <button id="tab-autopilot" class="tab" role="tab" aria-selected="false" aria-controls="view-autopilot" data-icon="zap">อัตโนมัติ</button>
+      <button id="tab-phone" class="tab" role="tab" aria-selected="false" aria-controls="view-phone" data-icon="phone">มือถือ</button>
+      <button id="tab-settings" class="tab" role="tab" aria-selected="false" aria-controls="view-settings" data-icon="sliders">ตั้งค่า</button>
+    </nav>
 
-      <div class="section-title">การเลือก</div>
-      <div class="row">
-        <button id="delete-selected" class="btn btn-danger" disabled>Delete (0)</button>
-        <button id="reset-selection" class="btn">Reset (0)</button>
-      </div>
+    <!-- ===================== Products ===================== -->
+    <main id="view-products" class="view" role="tabpanel" aria-labelledby="tab-products">
+      <section class="card" aria-labelledby="import-title">
+        <div class="card-head">
+          <div>
+            <h2 id="import-title" class="card-title">นำเข้าสินค้า</h2>
+            <p class="card-desc">เปิดหน้าสินค้าในแท็บที่ใช้งานอยู่ แล้วเลือกแหล่งที่มา</p>
+          </div>
+          <details class="menu">
+            <summary class="btn btn-sm btn-ghost" data-icon="more" aria-label="จัดการข้อมูลสินค้า">ข้อมูล</summary>
+            <div class="menu-panel">
+              <button id="export-csv" class="btn" data-icon="download">Export CSV</button>
+              <button id="download-json" class="btn" data-icon="download">Download JSON</button>
+              <button id="import-json" class="btn" data-icon="upload">Import</button>
+            </div>
+          </details>
+          <input id="import-file" type="file" accept="application/json" hidden />
+        </div>
+        <div class="sources">
+          <button id="get-product" class="btn source" data-tone="tiktok" data-icon="music">ดึงจากหน้า TikTok</button>
+          <button id="sync-showcase" class="btn source" data-tone="showcase" data-icon="store">ดึงสินค้าจาก Showcase</button>
+          <button id="get-shopee-product" class="btn source" data-tone="shopee" data-icon="bag">ดึงจากหน้า Shopee</button>
+        </div>
+        <div class="stack" style="margin-top: 8px">
+          <button id="add-current-page" class="btn btn-block" data-icon="plus">เพิ่มจากหน้านี้</button>
+          <div id="shopee-import-status" class="status-line" role="status" aria-live="polite">Shopee: เปิดหน้าสินค้า หรือข้อเสนอผลิตภัณฑ์ในเว็บ Affiliate แล้วกดดึง เพื่อนำเข้าโปรแกรมสำหรับสร้างวิดีโอ</div>
+          <div id="catalog-status" hidden></div>
+        </div>
+      </section>
 
-      <div class="section-title">รีวิวและสร้างวิดีโอ</div>
-      <div class="row">
-        <select id="publish-platform" title="แพลตฟอร์มของวิดีโอ"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
-        <select id="style"></select>
-        <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
-          <option value="8">8 วิ · คลิปเดียว</option>
-          <option value="16">16 วิ · ต่อ 2 คลิป</option>
-          <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
-        </select>
-        <select id="repeat" title="สร้างกี่วิดีโอจากคอนเทนต์นี้ — แต่ละวิดีโอจะต่างกัน และรันต่อกันอัตโนมัติ">
-          <option value="1" selected>ทำ 1 วิดีโอ</option>
-          <option value="2">ทำ 2 วิดีโอ</option>
-          <option value="3">ทำ 3 วิดีโอ</option>
-          <option value="4">ทำ 4 วิดีโอ</option>
-          <option value="5">ทำ 5 วิดีโอ</option>
-        </select>
-        <select id="site">
-          <option value="aistudio">AI Studio</option>
-          <option value="flow" selected>Google Flow</option>
-          <option value="gemini">Gemini</option>
-          <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
-        </select>
-        <select id="presenter" title="คนรีวิวในวิดีโอ — สลับ = เปลี่ยนหญิง/ชายทุกวิดีโอ (ใช้กับระบบอัตโนมัติด้วย) เสียงและคำลงท้าย ครับ/ค่ะ จะตามเพศผู้รีวิว">
-          <option value="alternate" selected>ผู้รีวิว: สลับ หญิง-ชาย</option>
-          <option value="female">ผู้รีวิว: ผู้หญิง</option>
-          <option value="male">ผู้รีวิว: ผู้ชาย</option>
-        </select>
-      </div>
-      <div id="style-desc" class="hint"></div>
-      <div class="row">
-        <button id="analyze" class="btn btn-primary">1. วิเคราะห์สินค้า</button>
-        <button id="generate-scenes" class="btn btn-primary">2. สร้างฉาก</button>
-        <button id="create-video" class="btn btn-success" disabled>3. สร้างวิดีโอ</button>
-      </div>
-      <div id="review"></div>
+      <section class="card" aria-labelledby="library-title">
+        <div class="list-toolbar">
+          <div>
+            <h2 id="library-title" class="card-title">คลังสินค้า</h2>
+            <p class="card-desc">เลือก 1 ชิ้นเพื่อสร้างวิดีโอ หรือหลายชิ้นเพื่อลบ</p>
+          </div>
+          <span id="product-count" class="count-pill">0 ชิ้น</span>
+        </div>
+        <div id="products-tbody" class="product-list" role="list"></div>
+        <div class="selection-bar">
+          <span id="selection-label" class="hint">ยังไม่ได้เลือก</span>
+          <span class="spacer"></span>
+          <button id="reset-selection" class="btn btn-sm btn-ghost">Reset (0)</button>
+          <button id="delete-selected" class="btn btn-sm btn-danger" data-icon="trash" disabled>Delete (0)</button>
+        </div>
+      </section>
 
-      <table>
-        <thead>
-          <tr>
-            <th></th>
-            <th>รูป</th>
-            <th>ชื่อสินค้า</th>
-            <th>ราคา</th>
-            <th>ID</th>
-          </tr>
-        </thead>
-        <tbody id="products-tbody"></tbody>
-      </table>
+      <section class="card studio" aria-labelledby="studio-title">
+        <div class="card-head">
+          <div>
+            <h2 id="studio-title" class="card-title">สตูดิโอสร้างวิดีโอ</h2>
+            <p class="card-desc">วิเคราะห์สินค้า → เขียนสคริปต์และฉาก → ส่งไปเรนเดอร์</p>
+          </div>
+        </div>
+        <div id="studio-target" class="studio-target">
+          <span>เลือกสินค้า 1 ชิ้นจากคลังด้านบน</span>
+        </div>
 
-      <div class="section-title">Activity Log</div>
-      <div id="log"></div>
-    </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="publish-platform">แพลตฟอร์ม</label>
+            <select id="publish-platform" title="แพลตฟอร์มของวิดีโอ"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
+          </div>
+          <div class="field">
+            <label for="site">เว็บสร้างวิดีโอ</label>
+            <select id="site">
+              <option value="aistudio">AI Studio</option>
+              <option value="flow" selected>Google Flow</option>
+              <option value="gemini">Gemini</option>
+              <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" style="margin-top: 10px">
+          <label for="style">สไตล์คอนเทนต์</label>
+          <select id="style"></select>
+          <div id="style-desc" class="style-desc"></div>
+        </div>
+        <div class="grid-2" style="margin-top: 10px">
+          <div class="field">
+            <label for="duration">ความยาว</label>
+            <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
+              <option value="8">8 วิ · คลิปเดียว</option>
+              <option value="16">16 วิ · ต่อ 2 คลิป</option>
+              <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="repeat">จำนวนวิดีโอ</label>
+            <select id="repeat" title="สร้างกี่วิดีโอจากคอนเทนต์นี้ — แต่ละวิดีโอจะต่างกัน และรันต่อกันอัตโนมัติ">
+              <option value="1" selected>ทำ 1 วิดีโอ</option>
+              <option value="2">ทำ 2 วิดีโอ</option>
+              <option value="3">ทำ 3 วิดีโอ</option>
+              <option value="4">ทำ 4 วิดีโอ</option>
+              <option value="5">ทำ 5 วิดีโอ</option>
+            </select>
+          </div>
+          <div class="field" style="grid-column: 1 / -1">
+            <label for="presenter">ผู้รีวิวในวิดีโอ</label>
+            <select id="presenter" title="คนรีวิวในวิดีโอ — สลับ = เปลี่ยนหญิง/ชายทุกวิดีโอ (ใช้กับระบบอัตโนมัติด้วย) เสียงและคำลงท้าย ครับ/ค่ะ จะตามเพศผู้รีวิว">
+              <option value="alternate" selected>ผู้รีวิว: สลับ หญิง-ชาย</option>
+              <option value="female">ผู้รีวิว: ผู้หญิง</option>
+              <option value="male">ผู้รีวิว: ผู้ชาย</option>
+            </select>
+          </div>
+        </div>
 
-    <div id="view-library" class="view" hidden>
-      <div id="status-text" style="display: none; font-size: 12px; margin-bottom: 8px"></div>
-      <div id="progress-wrap">
+        <ol class="stepper" aria-label="ขั้นตอนสร้างวิดีโอ" style="list-style: none; padding: 0; margin-bottom: 0">
+          <li id="step-analyze" class="step">
+            <span class="step-num">1</span>
+            <span><span class="step-title">วิเคราะห์สินค้า</span><br /><span class="step-desc">หากลุ่มเป้าหมาย Pain point และจุดขาย</span></span>
+            <button id="analyze" class="btn" data-icon="scan">วิเคราะห์สินค้า</button>
+          </li>
+          <li id="step-scenes" class="step">
+            <span class="step-num">2</span>
+            <span><span class="step-title">สคริปต์และฉาก</span><br /><span class="step-desc">Hook · Script · Storyboard ตามสไตล์</span></span>
+            <button id="generate-scenes" class="btn" data-icon="sparkles">สร้างฉาก</button>
+          </li>
+          <li id="step-video" class="step">
+            <span class="step-num">3</span>
+            <span><span class="step-title">เรนเดอร์วิดีโอ</span><br /><span class="step-desc">ส่งไปเว็บสร้างวิดีโอที่เลือก</span></span>
+            <button id="create-video" class="btn btn-success" data-icon="play" disabled>สร้างวิดีโอ</button>
+          </li>
+        </ol>
+      </section>
+
+      <section id="review" class="card" aria-label="ผลลัพธ์จาก AI" hidden></section>
+
+      <section class="card" aria-labelledby="activity-title">
+        <div class="card-head" style="margin-bottom: 8px">
+          <h2 id="activity-title" class="card-title" style="font-size: 12.5px">กิจกรรมล่าสุด</h2>
+        </div>
+        <div id="log" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <!-- ===================== Library ===================== -->
+    <main id="view-library" class="view" role="tabpanel" aria-labelledby="tab-library" hidden>
+      <div id="status-text" role="status" aria-live="polite" hidden></div>
+      <section id="progress-wrap" aria-live="polite" hidden>
+        <div class="progress-eyebrow">กำลังผลิต</div>
         <div id="progress-label"></div>
         <div id="progress-track"><div id="progress-bar"></div></div>
-        <div id="queue-info" style="display: none; font-size: 11px; color: #9ca3af; margin-top: 4px"></div>
-        <div class="row" style="margin-top: 8px">
-          <button id="cancel-job" class="btn btn-danger">ยกเลิกงานนี้</button>
+        <div id="queue-info" hidden></div>
+        <div class="progress-actions">
+          <button id="cancel-job" class="btn btn-sm btn-danger" data-icon="x">ยกเลิกงานนี้</button>
         </div>
-      </div>
+      </section>
 
-      <div class="section-title">งานที่รออยู่</div>
+      <div class="eyebrow"><b>01</b> งานที่รออยู่</div>
       <div id="jobs-list"></div>
 
-      <div class="section-title">สร้างจากคอนเทนต์</div>
+      <div class="eyebrow"><b>02</b> สร้างจากคอนเทนต์</div>
       <div id="contents-list"></div>
 
-      <div class="section-title">คลิปที่เสร็จแล้ว</div>
+      <div class="eyebrow"><b>03</b> คลิปที่เสร็จแล้ว</div>
       <div id="clips-list"></div>
 
-      <div class="section-title" style="display: flex; align-items: center; justify-content: space-between">
-        <span>บันทึกขั้นตอนงาน (สำหรับแก้บั๊ก)</span>
-        <button id="copy-job-log" class="btn" style="padding: 2px 8px; font-size: 10px; text-transform: none">
-          คัดลอก
-        </button>
-      </div>
-      <div
-        id="job-log"
-        style="
-          max-height: 220px;
-          overflow-y: auto;
-          background: #0b1220;
-          border: 1px solid #374151;
-          border-radius: 8px;
-          padding: 8px;
-          font-family: monospace;
-          font-size: 10px;
-          color: #9ca3af;
-          line-height: 1.6;
-        "
-      ></div>
-    </div>
-
-    <div id="view-autopilot" class="view" hidden>
-      <div id="ap-status" class="ap-status"></div>
-
-      <div id="ap-setup">
-        <div class="section-title">1. เลือกสินค้า</div>
-        <div class="row" style="align-items: center">
-          <label class="ap-inline">ทำ <input id="ap-count" type="number" min="1" value="5" style="width: 56px" /> ชิ้นแรก</label>
-          <button id="ap-pick-first" class="btn">เลือก</button>
-          <button id="ap-pick-none" class="btn">ล้าง</button>
-          <span id="ap-selected-count" class="hint" style="margin: 0"></span>
+      <details class="card disclosure">
+        <summary><i class="ic" data-icon="terminal" aria-hidden="true"></i>บันทึกขั้นตอนงาน (สำหรับแก้บั๊ก)</summary>
+        <div class="row" style="justify-content: flex-end; margin-bottom: 8px">
+          <button id="copy-job-log" class="btn btn-sm" data-icon="copy">คัดลอก</button>
         </div>
-        <div id="ap-products" class="ap-products"></div>
-
-        <div class="section-title">2. ตั้งค่าวิเคราะห์ วิดีโอและโพสต์</div>
-        <div class="field">
-          <label for="ap-text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
-          <select id="ap-text-source">
-            <option value="gemini-web">เว็บ Gemini (gemini.google.com)</option>
-            <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com)</option>
-            <option value="api">Gemini API key</option>
-          </select>
-          <div class="hint">ใช้แหล่งนี้กับการวิเคราะห์สินค้า เขียนสคริปต์ และวางฉากตลอดรอบอัตโนมัติ ต้องล็อกอินเว็บที่เลือกไว้ใน Chrome</div>
-        </div>
-        <div class="row">
-          <select id="ap-platform" title="ปลายทางโพสต์"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
-          <select id="ap-style"></select>
-          <select id="ap-duration">
-            <option value="8" selected>8 วิ · คลิปเดียว</option>
-            <option value="16">16 วิ · ต่อ 2 คลิป</option>
-            <option value="24">24 วิ · ต่อ 3 คลิป</option>
-          </select>
-          <select id="ap-site" title="เว็บที่ใช้สร้างวิดีโอ">
-            <option value="flow" selected>Google Flow</option>
-            <option value="gemini">Gemini</option>
-            <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
-            <option value="aistudio">AI Studio</option>
-          </select>
-        </div>
-        <div id="ap-style-desc" class="hint"></div>
-        <div class="row">
-          <select id="ap-post-mode">
-            <option value="prepare" selected>เตรียมโพสต์ให้ (รอกด Post เอง)</option>
-            <option value="auto">โพสต์อัตโนมัติ (กด Post ให้เลย)</option>
-            <option value="none">สร้างวิดีโออย่างเดียว ไม่โพสต์</option>
-          </select>
-        </div>
-        <div class="hint" id="ap-post-hint">
-          โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง
-        </div>
-
-        <div class="section-title">3. เวลาทำงาน</div>
-        <div class="row" style="flex-direction: column; gap: 6px">
-          <label class="ap-inline"><input type="radio" name="ap-mode" value="batch" checked /> ทำเลย — ไล่ทำทีละชิ้นจนครบแล้วหยุด</label>
-          <label class="ap-inline"><input type="radio" name="ap-mode" value="schedule" /> ตามเวลา — ทุกวัน ถึงเวลาทำ 1 ชิ้น วนสินค้าไปเรื่อยๆ</label>
-        </div>
-        <div id="ap-schedule-box" hidden>
-          <input id="ap-times" type="text" placeholder="09:00, 12:30, 19:00" value="09:00, 12:30, 19:00" />
-          <div class="hint">เวลาในเครื่องนี้ ถึงเวลาจะเริ่มสร้างทันทีและโพสต์เมื่อวิดีโอเสร็จ (ประมาณ 5–15 นาทีหลังเวลาที่ตั้ง)</div>
-        </div>
-
-        <div class="row" style="margin-top: 12px">
-          <button id="ap-start" class="btn btn-success">เริ่มระบบอัตโนมัติ</button>
-        </div>
-        <div class="hint">
-          ระหว่างทำงาน เปิด Chrome ค้างไว้และอย่าให้เครื่องหลับ — เบราว์เซอร์ที่ย่อไว้หรือเครื่องที่หลับจะหยุดการอัปโหลดของ เว็บสร้างวิดีโอและเว็บโพสต์
-        </div>
-      </div>
-
-      <div id="ap-controls" class="row" hidden>
-        <button id="ap-pause" class="btn">หยุดชั่วคราว</button>
-        <button id="ap-resume" class="btn btn-primary">ทำต่อ</button>
-        <button id="ap-skip" class="btn">ข้ามชิ้นนี้</button>
-        <button id="ap-stop" class="btn btn-danger">หยุดทั้งหมด</button>
-      </div>
-
-      <div class="section-title">ประวัติ</div>
-      <div id="ap-history"></div>
-    </div>
-
-    <div id="view-phone" class="view" hidden>
-      <div class="section-title">โพสต์ Shopee ผ่าน Android / iPhone</div>
-      <p class="hint">รับคลิป แคปชัน และลิงก์สินค้าผ่าน Wi-Fi เดียวกัน จากนั้นปักสินค้าและกดโพสต์ในแอป Shopee ใช้ได้ทั้ง Windows และ macOS</p>
-      <details>
-        <summary>ติดตั้งและเปิด Phone Bridge ครั้งแรก</summary>
-        <p class="hint">ติดตั้ง Node.js 20 ขึ้นไป แล้วเปิดโฟลเดอร์ phone-bridge ที่มาพร้อมโปรแกรม</p>
-        <p class="hint">Windows: ดับเบิลคลิก start-windows.cmd<br>macOS: ดับเบิลคลิก start-mac.command<br>หรือเปิด Terminal ในโฟลเดอร์โปรแกรมแล้วรัน npm run phone:setup ตามด้วย npm run phone:bridge</p>
-        <p class="hint">เปิดหน้าต่าง Phone Bridge ไว้ คัดลอกรหัส 6 หลักด้านล่าง หาก Firewall ถาม ให้อนุญาต Node.js ในเครือข่ายส่วนตัว ไม่ใช้ Wi-Fi สาธารณะ คลิปจะส่งผ่านเครือข่ายนี้โดยไม่อัปโหลดขึ้นคลาวด์</p>
+        <div id="job-log"></div>
       </details>
-      <div id="phone-connect-form">
-        <div class="field"><label for="phone-code">รหัส 6 หลักจาก Phone Bridge</label><input id="phone-code" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="123456"></div>
-        <div class="field"><label for="phone-port">พอร์ต (ใช้ค่าเดิมหากไม่ได้เปลี่ยน)</label><input id="phone-port" type="text" inputmode="numeric" value="47832"></div>
-        <button id="phone-connect" class="btn btn-primary">เชื่อมต่อ Phone Bridge</button>
+    </main>
+
+    <!-- ===================== Autopilot ===================== -->
+    <main id="view-autopilot" class="view" role="tabpanel" aria-labelledby="tab-autopilot" hidden>
+      <div id="ap-status" class="ap-status" role="status" aria-live="polite" hidden></div>
+
+      <div id="ap-controls" hidden>
+        <button id="ap-pause" class="btn" data-icon="pause">หยุดชั่วคราว</button>
+        <button id="ap-resume" class="btn btn-primary" data-icon="play">ทำต่อ</button>
+        <button id="ap-skip" class="btn" data-icon="skip">ข้ามชิ้นนี้</button>
+        <button id="ap-stop" class="btn btn-danger" data-icon="stop">หยุดทั้งหมด</button>
       </div>
-      <div id="phone-connected" hidden>
-        <div class="row"><button id="phone-refresh" class="btn">อัปเดตสถานะ</button><button id="phone-disconnect" class="btn">ตัดการเชื่อมต่อ</button></div>
+
+      <div id="ap-setup" class="stack" style="gap: 14px">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <div class="eyebrow" style="margin: 0 0 4px"><b>01</b> เลือกสินค้า</div>
+              <p class="card-desc">ระบบจะไล่ทำทีละชิ้นตามลำดับ</p>
+            </div>
+            <span id="ap-selected-count" class="count-pill"></span>
+          </div>
+          <div class="row" style="margin-bottom: 10px">
+            <label class="ap-inline">ทำ <input id="ap-count" type="number" min="1" value="5" aria-label="จำนวนชิ้นแรกที่จะเลือก" /> ชิ้นแรก</label>
+            <button id="ap-pick-first" class="btn btn-sm">เลือก</button>
+            <button id="ap-pick-none" class="btn btn-sm btn-ghost">ล้าง</button>
+          </div>
+          <div id="ap-products" class="ap-products"></div>
+        </section>
+
+        <section class="card">
+          <div class="eyebrow" style="margin: 0 0 12px"><b>02</b> ตั้งค่าวิเคราะห์ วิดีโอและโพสต์</div>
+          <div class="field">
+            <label for="ap-text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
+            <select id="ap-text-source">
+              <option value="gemini-web">เว็บ Gemini (gemini.google.com)</option>
+              <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com)</option>
+              <option value="api">Gemini API key</option>
+            </select>
+            <p class="hint">ใช้แหล่งนี้กับการวิเคราะห์สินค้า เขียนสคริปต์ และวางฉากตลอดรอบอัตโนมัติ ต้องล็อกอินเว็บที่เลือกไว้ใน Chrome</p>
+          </div>
+          <div class="grid-2" style="margin-top: 10px">
+            <div class="field">
+              <label for="ap-platform">ปลายทางโพสต์</label>
+              <select id="ap-platform" title="ปลายทางโพสต์"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
+            </div>
+            <div class="field">
+              <label for="ap-site">เว็บสร้างวิดีโอ</label>
+              <select id="ap-site" title="เว็บที่ใช้สร้างวิดีโอ">
+                <option value="flow" selected>Google Flow</option>
+                <option value="gemini">Gemini</option>
+                <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
+                <option value="aistudio">AI Studio</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ap-style">สไตล์</label>
+              <select id="ap-style"></select>
+            </div>
+            <div class="field">
+              <label for="ap-duration">ความยาว</label>
+              <select id="ap-duration">
+                <option value="8" selected>8 วิ · คลิปเดียว</option>
+                <option value="16">16 วิ · ต่อ 2 คลิป</option>
+                <option value="24">24 วิ · ต่อ 3 คลิป</option>
+              </select>
+            </div>
+          </div>
+          <div id="ap-style-desc" class="style-desc"></div>
+          <div class="field" style="margin-top: 10px">
+            <label for="ap-post-mode">การโพสต์</label>
+            <select id="ap-post-mode">
+              <option value="prepare" selected>เตรียมโพสต์ให้ (รอกด Post เอง)</option>
+              <option value="auto">โพสต์อัตโนมัติ (กด Post ให้เลย)</option>
+              <option value="none">สร้างวิดีโออย่างเดียว ไม่โพสต์</option>
+            </select>
+            <p class="hint" id="ap-post-hint">โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง</p>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="eyebrow" style="margin: 0 0 12px"><b>03</b> เวลาทำงาน</div>
+          <div class="mode-options" role="radiogroup" aria-label="เวลาทำงาน">
+            <label class="mode-option"><input type="radio" name="ap-mode" value="batch" checked /><span><b>ทำเลย</b><span>ไล่ทำทีละชิ้นจนครบแล้วหยุด</span></span></label>
+            <label class="mode-option"><input type="radio" name="ap-mode" value="schedule" /><span><b>ตามเวลา</b><span>ทุกวัน ถึงเวลาทำ 1 ชิ้น วนสินค้าไปเรื่อยๆ</span></span></label>
+          </div>
+          <div id="ap-schedule-box" class="field" style="margin-top: 10px" hidden>
+            <label for="ap-times">เวลาที่จะเริ่มทำ (คั่นด้วย ,)</label>
+            <input id="ap-times" type="text" placeholder="09:00, 12:30, 19:00" value="09:00, 12:30, 19:00" />
+            <p class="hint">เวลาในเครื่องนี้ ถึงเวลาจะเริ่มสร้างทันทีและโพสต์เมื่อวิดีโอเสร็จ (ประมาณ 5–15 นาทีหลังเวลาที่ตั้ง)</p>
+          </div>
+        </section>
+
+        <button id="ap-start" class="btn btn-success btn-lg btn-block" data-icon="zap">เริ่มระบบอัตโนมัติ</button>
+        <p class="hint" style="text-align: center">
+          ระหว่างทำงาน เปิด Chrome ค้างไว้และอย่าให้เครื่องหลับ — เบราว์เซอร์ที่ย่อไว้หรือเครื่องที่หลับจะหยุดการอัปโหลดของ เว็บสร้างวิดีโอและเว็บโพสต์
+        </p>
+      </div>
+
+      <section class="card">
+        <div class="card-head" style="margin-bottom: 4px"><h2 class="card-title" style="font-size: 12.5px">ประวัติ</h2></div>
+        <div id="ap-history"></div>
+      </section>
+    </main>
+
+    <!-- ===================== Phone ===================== -->
+    <main id="view-phone" class="view" role="tabpanel" aria-labelledby="tab-phone" hidden>
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">โพสต์ Shopee ผ่าน Android / iPhone</h2>
+            <p class="card-desc">รับคลิป แคปชัน และลิงก์สินค้าผ่าน Wi-Fi เดียวกัน จากนั้นปักสินค้าและกดโพสต์ในแอป Shopee ใช้ได้ทั้ง Windows และ macOS</p>
+          </div>
+        </div>
+        <details class="disclosure">
+          <summary><i class="ic" data-icon="info" aria-hidden="true"></i>ติดตั้งและเปิด Phone Bridge ครั้งแรก</summary>
+          <p class="hint">ติดตั้ง Node.js 20 ขึ้นไป แล้วเปิดโฟลเดอร์ phone-bridge ที่มาพร้อมโปรแกรม</p>
+          <p class="hint">Windows: ดับเบิลคลิก start-windows.cmd<br />macOS: ดับเบิลคลิก start-mac.command<br />หรือเปิด Terminal ในโฟลเดอร์โปรแกรมแล้วรัน npm run phone:setup ตามด้วย npm run phone:bridge</p>
+          <p class="hint">เปิดหน้าต่าง Phone Bridge ไว้ คัดลอกรหัส 6 หลักด้านล่าง หาก Firewall ถาม ให้อนุญาต Node.js ในเครือข่ายส่วนตัว ไม่ใช้ Wi-Fi สาธารณะ คลิปจะส่งผ่านเครือข่ายนี้โดยไม่อัปโหลดขึ้นคลาวด์</p>
+        </details>
+      </section>
+
+      <section id="phone-connect-form" class="card stack" style="gap: 10px">
+        <div class="field"><label for="phone-code">รหัส 6 หลักจาก Phone Bridge</label><input id="phone-code" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="123456" /></div>
+        <div class="field"><label for="phone-port">พอร์ต (ใช้ค่าเดิมหากไม่ได้เปลี่ยน)</label><input id="phone-port" type="text" inputmode="numeric" value="47832" /></div>
+        <button id="phone-connect" class="btn btn-primary btn-block" data-icon="link">เชื่อมต่อ Phone Bridge</button>
+      </section>
+
+      <section id="phone-connected" class="card stack" style="gap: 10px" hidden>
+        <div class="row"><button id="phone-refresh" class="btn btn-sm" data-icon="refresh">อัปเดตสถานะ</button><button id="phone-disconnect" class="btn btn-sm btn-ghost">ตัดการเชื่อมต่อ</button></div>
         <div class="field"><label for="phone-address">IP สำหรับมือถือ (Wi-Fi เดียวกัน)</label><select id="phone-address"></select></div>
         <div class="field"><label for="phone-video">คลิป Shopee ที่สร้างเสร็จแล้ว</label><select id="phone-video"></select></div>
-        <div class="field"><label for="phone-caption">แคปชัน (ไม่เกิน 150 ตัวอักษร)</label><textarea id="phone-caption" rows="3" maxlength="150" style="width:100%"></textarea></div>
+        <div class="field"><label for="phone-caption">แคปชัน (ไม่เกิน 150 ตัวอักษร)</label><textarea id="phone-caption" rows="3" maxlength="150"></textarea></div>
         <p id="phone-product" class="hint"></p>
-        <button id="phone-send" class="btn btn-primary">ส่งคลิปและสร้าง QR รับบนมือถือ</button>
+        <button id="phone-send" class="btn btn-success btn-block" data-icon="send">ส่งคลิปและสร้าง QR รับบนมือถือ</button>
         <div id="phone-transfers"></div>
-      </div>
-      <p id="phone-status" class="hint" role="status" aria-live="polite">ยังไม่ได้เชื่อมต่อ Phone Bridge</p>
+      </section>
+
+      <p id="phone-status" class="status-line" role="status" aria-live="polite">ยังไม่ได้เชื่อมต่อ Phone Bridge</p>
       <p class="hint">ลิงก์รับคลิปมีอายุ 30 นาที เก็บเฉพาะคลิปที่คุณเลือก ไม่ส่งรหัสผ่าน Shopee หากสแกนไม่ได้ ปิด VPN หรือเลือก IP Wi-Fi อื่น และตรวจ Firewall / การแยกอุปกรณ์บนเราเตอร์</p>
-    </div>
+    </main>
 
-    <div id="view-settings" class="view" hidden>
-      <div class="field">
-        <label for="text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
-        <select id="text-source">
-          <option value="gemini-web">เว็บ Gemini (gemini.google.com) — ไม่ต้องใช้ API key</option>
-          <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com) — ไม่ต้องใช้ API key</option>
-          <option value="api">Gemini API key</option>
-        </select>
-        <div class="hint">
-          แบบเว็บ Gemini หรือ ChatGPT: ระบบจะเปิดแท็บของเว็บที่เลือก ถามทีละขั้น (วิเคราะห์ → สคริปต์ → ฉาก) แล้วส่งคำตอบไปสร้างวิดีโอต่อ
-          ต้องล็อกอินเว็บที่เลือกไว้ในเบราว์เซอร์นี้ ใช้โควต้าแชทของบัญชีนั้น และแต่ละครั้งจะเป็นแชทใหม่ในประวัติ
+    <!-- ===================== Settings ===================== -->
+    <main id="view-settings" class="view" role="tabpanel" aria-labelledby="tab-settings" hidden>
+      <section class="card">
+        <div class="card-head"><div><h2 class="card-title">AI เขียนคอนเทนต์</h2><p class="card-desc">แหล่งที่ใช้วิเคราะห์สินค้าและเขียนสคริปต์</p></div></div>
+        <div class="field">
+          <label for="text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
+          <select id="text-source">
+            <option value="gemini-web">เว็บ Gemini (gemini.google.com) — ไม่ต้องใช้ API key</option>
+            <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com) — ไม่ต้องใช้ API key</option>
+            <option value="api">Gemini API key</option>
+          </select>
+          <p class="hint">
+            แบบเว็บ Gemini หรือ ChatGPT: ระบบจะเปิดแท็บของเว็บที่เลือก ถามทีละขั้น (วิเคราะห์ → สคริปต์ → ฉาก) แล้วส่งคำตอบไปสร้างวิดีโอต่อ
+            ต้องล็อกอินเว็บที่เลือกไว้ในเบราว์เซอร์นี้ ใช้โควต้าแชทของบัญชีนั้น และแต่ละครั้งจะเป็นแชทใหม่ในประวัติ
+          </p>
         </div>
-      </div>
-      <div class="field">
-        <label for="gemini-api-keys">Gemini API Keys (บรรทัดละ 1 key)</label>
-        <textarea
-          id="gemini-api-keys"
-          rows="4"
-          placeholder="AIza...&#10;AIza... (จากอีกบัญชี)&#10;AIza..."
-          style="background:#1f2937;color:#f9fafb;border:1px solid #374151;border-radius:6px;padding:8px;font-size:12px;width:100%;font-family:monospace;resize:vertical"
-        ></textarea>
-        <div class="hint">
-          ใส่ได้หลาย key จากหลายบัญชี Google — ระบบจะสลับ key อัตโนมัติแบบ round-robin
-          และพัก key ที่ติด rate limit (429) ไว้ชั่วคราวโดยไม่ต้องสลับเอง ไม่มี server กลางแล้ว
-          เรียก Gemini ตรงจาก extension นี้
-        </div>
-      </div>
-      <div class="field">
-        <label for="gemini-model">Gemini Model</label>
-        <input id="gemini-model" type="text" placeholder="gemini-flash-latest" />
-      </div>
-      <div class="field">
-        <label for="flow-project-url">Google Flow Project URL</label>
-        <input id="flow-project-url" type="url" placeholder="https://flow.google.com/project/..." />
-      </div>
-      <button id="save-settings" class="btn btn-primary">บันทึก</button>
-      <div id="settings-status"></div>
+      </section>
 
-      <div class="section-title">สถานะ Key</div>
-      <div id="key-status-list"></div>
-    </div>
+      <section class="card stack" style="gap: 12px">
+        <div class="card-head" style="margin-bottom: 0"><div><h2 class="card-title">Gemini API</h2><p class="card-desc">ใช้เมื่อเลือกแหล่ง “Gemini API key”</p></div></div>
+        <div class="field">
+          <label for="gemini-api-keys">Gemini API Keys (บรรทัดละ 1 key)</label>
+          <textarea id="gemini-api-keys" rows="4" placeholder="AIza...&#10;AIza... (จากอีกบัญชี)&#10;AIza..." style="font-family: var(--mono)"></textarea>
+          <p class="hint">
+            ใส่ได้หลาย key จากหลายบัญชี Google — ระบบจะสลับ key อัตโนมัติแบบ round-robin
+            และพัก key ที่ติด rate limit (429) ไว้ชั่วคราวโดยไม่ต้องสลับเอง ไม่มี server กลางแล้ว
+            เรียก Gemini ตรงจาก extension นี้
+          </p>
+        </div>
+        <div class="field">
+          <label for="gemini-model">Gemini Model</label>
+          <input id="gemini-model" type="text" placeholder="gemini-flash-latest" />
+        </div>
+        <div>
+          <div class="field-label" style="margin-bottom: 6px">สถานะ Key</div>
+          <div id="key-status-list"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><div><h2 class="card-title">Google Flow</h2><p class="card-desc">ต้องตั้งก่อนสร้างวิดีโอผ่าน Flow</p></div></div>
+        <div class="field">
+          <label for="flow-project-url">Google Flow Project URL</label>
+          <input id="flow-project-url" type="url" placeholder="https://flow.google.com/project/..." />
+        </div>
+      </section>
+
+      <button id="save-settings" class="btn btn-primary btn-lg btn-block" data-icon="check">บันทึก</button>
+      <div id="settings-status" role="status" hidden></div>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script src="dist/sidepanel.js" type="module"></script>
   </body>
