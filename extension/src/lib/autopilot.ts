@@ -260,6 +260,15 @@ export function createAutopilot(deps: AutopilotDeps) {
       // A job started by hand from the side panel owns Flow until it's done.
       if (await deps.isManualJobRunning()) return false;
 
+      // Products deleted from the library since the run started (e.g. by the
+      // showcase sync, for selling out) leave the run quietly — they are not
+      // failures, and three "failures" in a row would pause the whole run.
+      const inLibrary = new Set((await store.listProducts()).map((p) => p.id));
+      if (state.productIds.some((id) => !inLibrary.has(id))) {
+        state.productIds = state.productIds.filter((id) => inLibrary.has(id));
+        await save(state);
+      }
+
       let productId: string | undefined;
       if (state.mode === "batch") {
         productId = state.productIds.shift();

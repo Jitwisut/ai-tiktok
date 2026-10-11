@@ -336,6 +336,13 @@ export async function deleteProducts(ids: string[]): Promise<number> {
   return removed;
 }
 
+/** Products with a video still queued or rendering — deleting them would pull the job out from under it. */
+export async function productIdsWithActiveVideos(): Promise<Set<string>> {
+  const [videos, contents] = await Promise.all([getAll("videos"), getAll("contents")]);
+  const activeContentIds = new Set(videos.filter((v) => v.status === "queued" || v.status === "processing").map((v) => v.contentId));
+  return new Set(contents.filter((c) => activeContentIds.has(c.id)).map((c) => c.productId));
+}
+
 /** TikTok product IDs round-trip through sourceUrl so re-import is idempotent. */
 export async function importTikTokProducts(
   items: { tiktokId: string; name: string; price?: number; image?: string; images?: string[]; description?: string }[],

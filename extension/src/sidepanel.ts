@@ -727,14 +727,32 @@ $("sync-showcase").addEventListener("click", () => {
   const button = $("sync-showcase") as HTMLButtonElement;
   button.disabled = true;
   button.textContent = "กำลังดึง...";
-  send<{ ok: boolean; added?: number; total?: number; error?: string }>({ type: "SYNC_TIKTOK_SHOWCASE" }).then((result) => {
+  send<{
+    ok: boolean;
+    added?: number;
+    total?: number;
+    removed?: { name: string; reason: "missing" | "unavailable" }[];
+    kept?: number;
+    error?: string;
+  }>({ type: "SYNC_TIKTOK_SHOWCASE" }).then((result) => {
     button.disabled = false;
     button.textContent = "ดึงสินค้าจาก Showcase";
     if (!result?.ok) {
       log(result?.error ?? "ดึงสินค้าไม่สำเร็จ");
       return;
     }
-    log(`ดึงสินค้าจาก Showcase แล้ว ${result.total ?? 0} รายการ (ใหม่ ${result.added ?? 0})`);
+    const removed = result.removed ?? [];
+    const soldOut = removed.filter((r) => r.reason === "unavailable").length;
+    const missing = removed.length - soldOut;
+    const cleanup = removed.length
+      ? ` · ลบออก ${removed.length} รายการ (${[soldOut ? `สินค้าหมด ${soldOut}` : "", missing ? `ไม่อยู่ใน Showcase แล้ว ${missing}` : ""].filter(Boolean).join(", ")})`
+      : " · สินค้าในโปรแกรมตรงกับ Showcase แล้ว";
+    const kept = result.kept ? ` · เก็บไว้ก่อน ${result.kept} รายการเพราะยังมีวิดีโอกำลังสร้าง (จะลบในการดึงครั้งถัดไป)` : "";
+    // The log shows newest first, so the summary goes last to sit on top (and in the toast).
+    for (const item of removed.slice(0, 5)) {
+      log(`ลบ "${item.name.slice(0, 50)}" — ${item.reason === "unavailable" ? "สินค้าหมด" : "ไม่อยู่ใน Showcase แล้ว"}`);
+    }
+    log(`ดึงสินค้าจาก Showcase แล้ว ${result.total ?? 0} รายการ (ใหม่ ${result.added ?? 0})${cleanup}${kept}`);
     loadProducts();
   });
 });

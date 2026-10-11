@@ -790,6 +790,8 @@ interface ShowcaseProduct {
   image?: string;
   images?: string[];
   description?: string;
+  /** Out of stock or hidden: TikTok's product picker can't link it, so a video for it can't carry a cart. */
+  unavailable?: boolean;
 }
 
 /**
@@ -797,7 +799,7 @@ interface ShowcaseProduct {
  * endpoint with the page's cookies, which the worker can't send cross-site.
  * Must be self-contained — it is serialized into the page by executeScript.
  */
-async function fetchShowcaseInPage(): Promise<{ ok: boolean; products?: ShowcaseProduct[]; error?: string }> {
+async function fetchShowcaseInPage(): Promise<{ ok: boolean; products?: ShowcaseProduct[]; complete?: boolean; error?: string }> {
   const count = 20;
   const products: ShowcaseProduct[] = [];
   for (let offset = 0; offset < 1000; offset += count) {
@@ -825,11 +827,14 @@ async function fetchShowcaseInPage(): Promise<{ ok: boolean; products?: Showcase
         image: cover ?? urls[0],
         images: [...new Set([cover, ...urls].filter(Boolean) as string[])].slice(0, 5),
         description: details.join(" · ") || undefined,
+        // Measured on a real showcase: sold-out rows carry stock_status 2 and
+        // stock_num 0, everything on sale stock_status 1.
+        unavailable: item.stock_status === 2 || item.stock_num === 0 || item.is_hide === true,
       });
     }
-    if (page.length < count || products.length >= (body.data?.total ?? 0)) break;
+    if (page.length < count || products.length >= (body.data?.total ?? 0)) return { ok: true, products, complete: true };
   }
-  return { ok: true, products };
+  return { ok: true, products, complete: false };
 }
 
 const PRODUCT_DETAIL_MAX_IMAGES = 8;
@@ -934,7 +939,24 @@ async function waitForTabComplete(tabId: number, timeoutMs = 30_000): Promise<vo
   }
 }
 
-async function syncTikTokShowcase(): Promise<{ ok: boolean; added?: number; total?: number; detailed?: number; error?: string }> {
+type ShowcaseSyncResult = {
+  ok: boolean;
+  added?: number;
+  total?: number;
+  detailed?: number;
+  /** Products deleted because they left the showcase or sold out. */
+  removed?: { name: string; reason: "missing" | "unavailable" }[];
+  /** Would have been deleted, but a video for them is still being made. */
+  kept?: number;
+  error?: string;
+};
+
+/**
+ * Pulls the account's showcase and makes the library match it: products on
+ * sale are added or refreshed, and TikTok products that left the showcase or
+ * sold out are deleted — a video for them could never carry the cart.
+ */
+async function syncTikTokShowcase(): Promise<ShowcaseSyncResult> {
   let [tab] = await chrome.tabs.query({ url: "https://www.tiktok.com/*" });
   let opened = false;
   if (!tab?.id) {
@@ -948,11 +970,41 @@ async function syncTikTokShowcase(): Promise<{ ok: boolean; added?: number; tota
     if (!result?.ok || !result.products) {
       return { ok: false, error: `ดึงสินค้าไม่สำเร็จ: ${result?.error ?? "ไม่ได้ผลลัพธ์"} — ตรวจว่า login TikTok ใน Chrome นี้แล้ว` };
     }
-    const detailed = await Promise.all(result.products.map(withProductDetail));
+    const onSale = result.products.filter((p) => !p.unavailable);
+    const detailed = await Promise.all(onSale.map(withProductDetail));
     const before = (await store.listProducts()).length;
     await store.importTikTokProducts(detailed);
     const after = (await store.listProducts()).length;
-    return { ok: true, added: after - before, total: result.products.length, detailed: detailed.filter((p) => p.detailed).length };
+
+    // Deleting needs the whole showcase: a list cut short (or an account that
+    // came back empty, e.g. a different login) must not wipe the library.
+    let removed: ShowcaseSyncResult["removed"] = [];
+    let kept = 0;
+    if (result.complete && result.products.length > 0) {
+      const status = new Map(result.products.map((p) => [p.tiktokId, p.unavailable ? "unavailable" : "ok"] as const));
+      const busy = await store.productIdsWithActiveVideos();
+      const autopilotCurrent = ((await chrome.storage.local.get("autopilot")).autopilot as { current?: { productId?: string } | null } | undefined)?.current?.productId;
+      const stale = (await store.listProducts()).flatMap((p) => {
+        const tiktokId = store.tiktokIdFromSourceUrl(p.sourceUrl);
+        if (!tiktokId) return []; // Shopee / manual products are not the showcase's business.
+        const state = status.get(tiktokId);
+        if (state === "ok") return [];
+        return [{ product: p, reason: state === "unavailable" ? ("unavailable" as const) : ("missing" as const) }];
+      });
+      const deletable = stale.filter(({ product }) => !busy.has(product.id) && product.id !== autopilotCurrent);
+      kept = stale.length - deletable.length;
+      if (deletable.length) await store.deleteProducts(deletable.map(({ product }) => product.id));
+      removed = deletable.map(({ product, reason }) => ({ name: product.name, reason }));
+    }
+
+    return {
+      ok: true,
+      added: after - before,
+      total: onSale.length,
+      detailed: detailed.filter((p) => p.detailed).length,
+      removed,
+      kept,
+    };
   } finally {
     if (opened) chrome.tabs.remove(tab.id!).catch(() => {});
   }
