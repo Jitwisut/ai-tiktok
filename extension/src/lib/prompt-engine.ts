@@ -1,7 +1,7 @@
 import { platformForStyle, salesContext, type PublishPlatform } from "./commerce.js";
 /** Ported from src/lib/prompt-engine/{types,prompt-builder,clip-planner}.ts — pure functions, no server dependency. */
 
-import { getStylePlaybook, assertSpeechFits, stylePerformance, styleCameraMotion, styleUsesOnScreenText, type PresenterMode, type SpeechAmount, type StylePlaybook } from "./style-playbooks.js";
+import { getStylePlaybook, movesBetweenClips, locationKey, assertSpeechFits, stylePerformance, styleCameraMotion, styleUsesOnScreenText, type PresenterMode, type SpeechAmount, type StylePlaybook } from "./style-playbooks.js";
 
 export interface VideoSettings {
   duration: number;
@@ -32,6 +32,8 @@ export interface ScenePromptInput {
   cameraMotion?: string;
   /** The 8-second clip this scene was planned for. */
   clip?: number;
+  /** Where the scene takes place; only styles that move between clips use it. */
+  location?: string;
   dialogue?: string;
   voiceover?: string;
 }
@@ -287,6 +289,8 @@ export interface PlannedClip {
   index: number;
   prompt: string;
   startSecond: number;
+  /** Starts in a different location from the clip before, so it is not seeded with that clip's last frame. */
+  newLocation: boolean;
 }
 
 /** Short Thai overlay text written by the script step; either may be missing on older content. */
@@ -523,10 +527,17 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
   const gender = input.presenter ?? (cast ? castGender(cast) : undefined);
   const groups = groupScenes(scenes, clipCount);
   const spoken = new Set<string>();
+  // Styles that move take each clip's place from its scenes; that place replaces the look's setting.
+  const places = groups.map((group) =>
+    movesBetweenClips(style, clipCount) ? group.scenes.map((scene) => scene.location?.trim()).find(Boolean) : undefined,
+  );
+  const moved = places.map((place, i) => Boolean(i > 0 && place && places[i - 1] && locationKey(place) !== locationKey(places[i - 1])));
+  const newPlace = "This part moves to a new location: only the place changes — the person, wardrobe and product stay exactly the same as in the other parts.";
 
   return groups.map((group, index) => {
     const isFirst = index === 0;
     const isLast = index === clipCount - 1;
+    const place = places[index];
     // A whole advert rendered in one generation that is longer than a single shot (Gemini's 20 seconds).
     const longTake = clipCount === 1 && clipSeconds > 10;
     const beats = timeline(group.scenes, clipSeconds);
@@ -551,7 +562,11 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
           ? `[CAST] ${cast.person}. Only these hands are seen — the same hands, nails and sleeves in every part, and never a face.`
           : `[CAST] ${cast.person}. Exactly this person and wardrobe in every part — same face, hair, body and clothes.`,
       );
-      sections.push(`[SETTING] ${cast.setting}. Same location, time of day and light direction in every part.`);
+      sections.push(
+        place
+          ? `[SETTING] ${place}. ${moved[index] ? newPlace : "Keep this location, time of day and light direction for the whole part."}`
+          : `[SETTING] ${cast.setting}. Same location, time of day and light direction in every part.`,
+      );
     } else if (longTake) {
       sections.push(
         hands
@@ -560,11 +575,18 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       );
     } else if (clipCount > 1) {
       sections.push(
-        isFirst
+        place
+          ? isFirst
+            ? `[CAST] Establish ${hands ? "one pair of hands and sleeves" : "one person and wardrobe"} that every later part must keep.`
+            : `[CAST] Identical ${hands ? "hands, nails, sleeves" : "person (face, hair, body) and wardrobe"} as part ${index}.`
+          : isFirst
           ? `[CAST & SETTING] Establish ${hands ? "one pair of hands, sleeves" : "one person, wardrobe"} and location that every later part must keep.`
           : `[CAST & SETTING] Identical ${hands ? "hands, nails, sleeves" : "person (face, hair, body), wardrobe"}, location, time of day and light direction as part ${index}.`,
       );
     }
+    // Without a planned look the location still follows the style, not a default home desk.
+    if (!cast && place) sections.push(`[SETTING] ${place}.${moved[index] ? ` ${newPlace}` : ""}`);
+    else if (!cast && platform !== "shopee") sections.push(`[SETTING] ${playbook.place}.`);
 
     // What happened before, so this part moves the story on instead of re-shooting it.
     const alreadyShown = scenes.slice(0, group.first).map(visualOf).join(" / ");
@@ -582,7 +604,11 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
 
     sections.push(
       `[TIMELINE] ${clipCount === 1 ? `Follow these beats in order, filling all ${clipSeconds} seconds: ` : ""}${beats.map(({ start, end, scene }) => `[${start}-${end}s] ${visualOf(scene)}.`).join(" ")}` +
-        (clipCount === 1 || isLast ? " End on the product looking appealing." : " End mid-motion on a clear, steady frame that the next part can continue from."),
+        (clipCount === 1 || isLast
+          ? " End on the product looking appealing."
+          : moved[index + 1]
+          ? " End on a calm, settled moment that closes this location; the next part takes place somewhere else."
+          : " End mid-motion on a clear, steady frame that the next part can continue from."),
     );
 
     // A continuation clip does not re-speak the lines its first stage already said.
@@ -612,6 +638,8 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
         ? `[CAMERA] ${motion}. Slow, stable, motivated camera moves; a clean cut between beats is fine, but no jarring jump cuts, and ${playbook.presenter === "hands" ? "the hands" : "the person"}, product, location and lighting look identical in every shot.`
         : isFirst || clipCount === 1
         ? `[CAMERA] One continuous, stable take with no cuts: ${motion}. The camera moves slowly; ${noSpin}.`
+        : moved[index]
+        ? `[CAMERA] Open on a calm establishing shot of ${subject} in the new location, then ${motion}. One continuous, stable take; ${noSpin}.`
         : `[CAMERA] Open on a calm, steady shot of ${subject}, continuing naturally from the end of part ${index}, then ${motion}. One continuous, stable take; ${noSpin}.`,
     );
 
@@ -621,7 +649,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
         // A fixed [CAST] line already names the person, so only the framing can change.
         cast
           ? `[VARIATION] Version ${variant.index + 1} of ${variant.total}: use a noticeably different camera angle and framing from the other versions while following the timeline above.`
-          : `[VARIATION] Version ${variant.index + 1} of ${variant.total}: make it clearly different from the other versions — ${hands ? "different hands styling" : "a different person"}, setting and camera angle — while keeping the same product and message.`,
+          : `[VARIATION] Version ${variant.index + 1} of ${variant.total}: make it clearly different from the other versions — ${hands ? "different hands styling" : "a different person"}, ${place ? "" : "setting and "}camera angle — while keeping the same product and message.`,
       );
     }
 
@@ -635,6 +663,7 @@ export function planClips(input: PlanClipsInput): PlannedClip[] {
       index,
       prompt: sections.join("\n"),
       startSecond: index * clipSeconds,
+      newLocation: moved[index],
     };
   });
 }

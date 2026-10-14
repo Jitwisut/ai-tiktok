@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { assertAdminOrigin, requireLicenseAdmin, licenseService, licenseResponseError } from "@/lib/licensing/server";
 import { LicenseError } from "@/lib/licensing/policy";
+import { MAX_LICENSE_DAYS } from "@/lib/licensing/limits";
 const schema = z.object({
   requestId: z.uuid(), action: z.enum(["create", "extend", "suspend", "restore", "rotate"]),
-  licenseId: z.string().max(100).optional(), days: z.number().int().min(1).max(3650).optional(),
+  licenseId: z.string().max(100).optional(), days: z.number().int().min(1).max(MAX_LICENSE_DAYS).optional(),
   name: z.string().trim().min(1).max(160).optional(), contact: z.string().max(200).optional(), note: z.string().max(1000).optional(),
 }).strict();
 export async function GET(request: Request) {

@@ -4,6 +4,8 @@
 interface StudioClip {
   index: number;
   prompt: string;
+  /** Takes place somewhere new, so it does not continue from the previous clip's last frame. */
+  newLocation?: boolean;
 }
 
 interface StudioVideoJob {
@@ -403,10 +405,11 @@ async function runJob(job: StudioVideoJob, startIndex = 0) {
   }
 
   const total = job.clips.length;
-  let frame: StudioFrame | null =
+  const productFrame: StudioFrame | null =
     job.imageBase64 && job.imageMimeType
       ? { base64: job.imageBase64, mimeType: job.imageMimeType }
       : null;
+  let frame = productFrame;
   let previousFilename = "";
 
   let mergeOutcome: { ok: boolean; seconds?: number; error?: string; warning?: string } | undefined;
@@ -422,12 +425,14 @@ async function runJob(job: StudioVideoJob, startIndex = 0) {
     if (previousFilename) await clearStartFrame(previousFilename);
     const filename = `frame-${clip.index}.jpg`;
 
-    const video = await generateClip(clip, frame, filename, label);
+    // A clip in a new location starts like the first one, from the product photo, not the last frame of a different place.
+    const startFrame = clip.newLocation ? productFrame : frame;
+    const video = await generateClip(clip, startFrame, filename, label);
     if (!video) {
       reportProgress(job.videoId, clip.index + 1, total, "failed");
       return;
     }
-    previousFilename = frame ? filename : "";
+    previousFilename = startFrame ? filename : "";
 
     showBanner(`AI Affiliate Studio: ${label} กำลังอัปโหลด...`, "#111827");
     reportProgress(job.videoId, clip.index + 1, total, "uploading");

@@ -1,4 +1,5 @@
 import type { PrismaClient, Prisma } from "../generated/prisma/client";
+import { isValidLicenseDays } from "../lib/licensing/limits";
 import { DAY_MS, extendExpiry, licenseState, LicenseError, newSecret, secretHash } from "../lib/licensing/policy";
 
 type Tx = Prisma.TransactionClient;
@@ -70,7 +71,7 @@ export function createLicenseService(db: PrismaClient) {
   }
 
   async function command(actorId: string, input: LicenseCommand) {
-    if (["create", "extend"].includes(input.action) && (!Number.isSafeInteger(input.days) || input.days! < 1 || input.days! > 3650)) throw new LicenseError("invalid_days", 400);
+    if (["create", "extend"].includes(input.action) && !isValidLicenseDays(input.days)) throw new LicenseError("invalid_days", 400);
     if (input.action === "create" && !input.name?.trim()) throw new LicenseError("invalid_customer", 400);
     const requestHash = secretHash(JSON.stringify({ actorId, ...input }));
     return db.$transaction(async tx => {

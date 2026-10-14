@@ -68,7 +68,7 @@ export const STYLE_LABELS: Record<(typeof CONTENT_STYLES)[number], StyleLabel> =
   UGC: { name: "คนจริงรีวิวเอง (UGC)", description: "เหมือนครีเอเตอร์ถ่ายเองด้วยมือถือ พูดกับกล้องแบบเป็นกันเอง ดูเป็นธรรมชาติ ไม่เหมือนโฆษณา" },
   Review: { name: "รีวิวสินค้า", description: "ลองใช้ให้ดูจริง บอกจุดเด่นที่เห็นในคลิปและเหมาะกับใคร เน้นความน่าเชื่อถือ" },
   "Problem Solution": { name: "ปัญหา → ทางแก้", description: "เปิดด้วยปัญหาที่คนดูเจอบ่อย แล้วโชว์ว่าสินค้าช่วยแก้ได้อย่างไร" },
-  Storytelling: { name: "เล่าเรื่อง", description: "เรื่องสั้นที่มีจุดเปลี่ยน ใช้ตัวละครเดียวและสถานที่เดียว ชวนดูจนจบ" },
+  Storytelling: { name: "เล่าเรื่อง", description: "เรื่องสั้นที่มีจุดเปลี่ยน ตัวละครเดียว เล่าผ่านสถานที่ตามจังหวะเรื่อง ชวนดูจนจบ" },
   "Before After": { name: "ก่อน-หลังใช้", description: "เทียบภาพก่อนและหลังใช้สินค้าในมุมเดียวกัน ให้เห็นความต่างชัดๆ" },
   Unboxing: { name: "แกะกล่อง", description: "เปิดกล่องให้ดูทีละขั้น โชว์รายละเอียดสินค้าและความรู้สึกแรกที่เห็น" },
   Demo: { name: "สาธิตวิธีใช้", description: "โชว์วิธีใช้งานทีละขั้น เห็นมือกับสินค้าชัด พร้อมเสียงอธิบายว่าแต่ละขั้นดียังไง" },
@@ -91,6 +91,12 @@ export interface StylePlaybook {
   writing: string;
   videoDirection: string;
   speechMode: string;
+  /** Where the advert takes place, so each style gets its own kind of location instead of one home desk. */
+  setting: string;
+  /** One concrete place from that range, for examples and for clips rendered without a planned look. */
+  place: string;
+  /** Whether the story may move to a new location between clips; styles built on one fixed spot (a comparison, a before/after) never do. */
+  moves: boolean;
   /** Video prompt: what shoots the advert and from where (replaces one fixed camera for every style). */
   camera: string;
   lighting: string;
@@ -114,6 +120,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "ใช้ภาษาไทยกันเอง ประโยคสั้น มีความเป็นภาษาพูดได้เล็กน้อย ห้ามเปิดด้วยการแนะนำตัวหรือภาษาขายของแข็งๆ",
     videoDirection: "casual creator UGC, spontaneous handheld smartphone framing, imperfect but believable gestures, natural reaction, one clear product interaction",
     speechMode: "dialogue เป็นหลัก พูดกับกล้องเหมือนแนะนำให้เพื่อนฟัง เว้นจังหวะให้เห็นการใช้สินค้า",
+    setting: "the creator's own lived-in everyday space — a bedroom corner, sofa or vanity that suits the product — casual rather than staged",
+    place: "a lived-in Thai bedroom corner by a window",
+    moves: false,
     camera: "handheld smartphone held at arm's length, casual creator framing",
     lighting: "natural window daylight",
     presenter: "face",
@@ -127,6 +136,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "พูดจากสิ่งที่เห็นหรือทดลองในคลิปนี้ ใช้ถ้อยคำเช่น ‘จากที่ลองในคลิปนี้’, ‘จุดที่เห็นชัดคือ’, ‘เหมาะกับคนที่...’ ห้ามอ้างว่าใช้มาหลายวัน/หลายเดือน ซื้อซ้ำ หรือเห็นผลตามเวลา ถ้าไม่มีข้อมูลยืนยัน",
     videoDirection: "trustworthy on-camera product review, medium talking-head framing mixed with close-up practical test, calm eye contact, show evidence before making a claim",
     speechMode: "dialogue เป็นหลัก รีวิวจากสิ่งที่เห็น เว้นช่วงให้ดูหลักฐานหรือการสาธิต แทรก voiceover ได้ตอนเห็นสินค้าเต็มจอ",
+    setting: "a tidy review spot at home — a desk or table with a simple, softly blurred background and the product within reach",
+    place: "a tidy home desk with a softly blurred background",
+    moves: false,
     camera: "steady smartphone on a tripod at eye level, medium shot with close-up inserts of the product",
     lighting: "soft even daylight",
     presenter: "face",
@@ -140,6 +152,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "ปัญหาต้องเฉพาะกับสินค้าและกลุ่มเป้าหมาย ไม่ใช้คำกว้างๆ และห้ามอ้างผลลัพธ์เกินจริง",
     videoDirection: "clear problem-to-solution visual arc, start with a recognizable frustrating moment, then show the product solving the exact task in a close-up",
     speechMode: "พูดต่อเนื่องตั้งแต่เล่าปัญหาจนถึงวิธีแก้ ใช้ dialogue เป็นหลัก แทรก voiceover ได้ตามจังหวะภาพ",
+    setting: "the exact everyday place where the product's problem happens — e.g. a kitchen counter, bathroom, car, office desk or doorway, whichever fits the product",
+    place: "a lived-in home kitchen counter",
+    moves: false,
     camera: "handheld smartphone, medium shot moving in to close-ups of the product at work",
     lighting: "natural indoor daylight",
     presenter: "mixed",
@@ -150,9 +165,12 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
   Storytelling: {
     goal: "เล่า micro-story ที่มีจุดเปลี่ยนชัดเจนภายในเวลาสั้น ทำให้คนดูอยากรู้ตอนจบ",
     structure: "micro-story setup → problem or curiosity → product discovery → interaction → payoff → CTA",
-    writing: "ใช้ตัวละครหลักคนเดียวและสถานที่เดียวเป็นค่าเริ่มต้น เล่าให้กระชับ ไม่สร้างหลายเหตุการณ์จนตามไม่ทัน",
-    videoDirection: "short cinematic micro-story with one protagonist and one location, motivated camera movement, visual cause-and-effect, a satisfying payoff on the product",
+    writing: "ใช้ตัวละครหลักคนเดียว ถ้าวิดีโอมีหลายช่วงให้เรื่องเดินผ่านสถานที่ได้ไม่เกินสามแห่งตามจังหวะเรื่อง เล่าให้กระชับ ไม่สร้างหลายเหตุการณ์จนตามไม่ทัน",
+    videoDirection: "short cinematic micro-story with one protagonist moving through at most a few story locations, motivated camera movement, visual cause-and-effect, a satisfying payoff on the product",
     speechMode: "voiceover เล่าเฉพาะจังหวะสำคัญ ปล่อยให้การกระทำเล่าเรื่องได้ ไม่ต้องพูดกับกล้องหรือชวนซื้อทุกช่วง",
+    setting: "real-life locations tied to the story's moments — e.g. a morning kitchen, an office, a café table or a commute stop, whichever fits how the product is used",
+    place: "a calm home kitchen in the morning",
+    moves: true,
     camera: "cinematic camera on a smooth gimbal with shallow depth of field",
     lighting: "warm, soft cinematic light with gentle contrast",
     presenter: "mixed",
@@ -166,6 +184,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "ผลลัพธ์หลังใช้ต้องอิงข้อเท็จจริง ห้ามสร้างการรักษา การเปลี่ยนแปลงทางร่างกาย หรือ performance ที่ไม่มีข้อมูลรองรับ สำหรับสินค้าทั่วไปให้เน้นความเป็นระเบียบ ความสะดวก หรือขั้นตอนการทำงานที่ดีขึ้น",
     videoDirection: "visually obvious before-and-after composition, match the framing across both states, show the transition through real product use, avoid magical transformations",
     speechMode: "voiceover อธิบาย before/after ต่อเนื่อง ชี้ให้เห็นความต่างและบอกว่าดีกับคนดูอย่างไร",
+    setting: "the real place where the product makes its change — e.g. a shelf, sink, wardrobe or table — dressed identically in both states",
+    place: "a home shelf filmed from one fixed spot",
+    moves: false,
     camera: "locked-off camera on a tripod with identical framing for the before and the after state",
     lighting: "the same neutral daylight in both states",
     presenter: "mixed",
@@ -179,6 +200,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "บรรยายสิ่งที่เห็นจริง อย่าแต่งแพ็กเกจพรีเมียมหรืออุปกรณ์เสริมที่ไม่มีในรูปสินค้า",
     videoDirection: "satisfying unboxing tabletop shot, deliberate hand movements, tactile close-ups of real packaging and product details, reveal the product progressively",
     speechMode: "voiceover แบบพูดไปแกะไปจากหลังกล้อง สั้นๆ ไม่กี่ประโยค เว้นจังหวะให้ได้ยินเสียงแกะกล่อง แล้วปิดด้วยการชวนซื้อ",
+    setting: "a clean tabletop with a plain neutral surface, the parcel in the centre and nothing else competing for attention",
+    place: "a clean neutral tabletop",
+    moves: false,
     camera: "tabletop smartphone shot from slightly above, close on the hands and the package",
     lighting: "bright soft daylight on a clean table",
     presenter: "hands",
@@ -192,6 +216,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "เล่าไปพร้อมการสาธิตทุกขั้นตอน บอกด้วยว่าแต่ละขั้นช่วยคนดูอย่างไร แต่คำพูดต้องตรงกับภาพที่เห็น",
     videoDirection: "instructional product demonstration, hands and product stay clearly visible, purposeful close-ups, step-by-step action, minimal decorative shots",
     speechMode: "voiceover อธิบายทุกขั้นตอนไปพร้อมการสาธิต พูดต่อเนื่องแต่ให้ตรงกับสิ่งที่เห็นในภาพ",
+    setting: "the work surface where the product is normally used — e.g. a kitchen counter, desk, bathroom vanity or workbench — clear of clutter",
+    place: "a clutter-free work desk",
+    moves: false,
     camera: "steady smartphone slightly overhead, close on the hands and the product",
     lighting: "bright even daylight",
     presenter: "hands",
@@ -205,6 +232,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "ใช้คำพูดเหมือนคิดหรือพูดกับตัวเองในสถานการณ์จริง ไม่อธิบายกว้างๆ แบบโฆษณา",
     videoDirection: "first-person POV smartphone video, hands enter the frame naturally, immersive close-ups, audience feels present in the real situation, no unnecessary talking head",
     speechMode: "voiceover หรือเสียงพูดนอกเฟรมแบบคิดดังๆ ต่อเนื่องและเป็นธรรมชาติ",
+    setting: "the real places the viewer would use the product, seen from first person — e.g. their own desk, kitchen, car seat or bathroom",
+    place: "the viewer's own desk, seen from first person",
+    moves: true,
     camera: "first-person point of view from the viewer's eyes, smartphone at chest height, only the viewer's own hands visible",
     lighting: "the natural light of the real situation",
     presenter: "hands",
@@ -218,6 +248,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "พูดน้อยมาก ใช้คำอธิบายสั้นๆ เท่าที่จำเป็น ห้ามใส่เสียงหรือการกระทำที่สินค้าไม่สามารถทำได้จริง",
     videoDirection: "clean satisfying ASMR product macro shots, deliberate tactile movements, crisp natural foley, stable composition, no distracting music or exaggerated effects",
     speechMode: "ไม่มีบทพูดหรือ voiceover ให้เสียงสัมผัสจริงของสินค้าเป็นเสียงหลัก ใช้ภาพเปิดและภาพจบแทนคำพูด ส่วนคำชวนซื้ออยู่ใน caption",
+    setting: "a minimal close-up surface with a pleasing texture — e.g. light wood, linen, marble or stone — against a plain, softly blurred backdrop",
+    place: "a light wooden surface against a plain, softly blurred backdrop",
+    moves: false,
     camera: "macro close-up on a stable tripod",
     lighting: "soft clean studio light",
     presenter: "hands",
@@ -231,6 +264,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "เปรียบเทียบเฉพาะความต่างที่ยืนยันได้จากข้อมูลสินค้า ห้ามตั้งชื่อหรือใส่ข้อเสียของคู่แข่งที่ไม่มีข้อมูลรองรับ",
     videoDirection: "fair side-by-side comparison layout, matching camera angle and lighting for both options, one observable test, neutral evidence-led presentation",
     speechMode: "พูดเปรียบเทียบต่อเนื่องแบบผู้เชี่ยวชาญที่เป็นกลาง ไม่ใช้น้ำเสียงโจมตี",
+    setting: "a plain neutral tabletop against a simple backdrop where both options stand side by side",
+    place: "a plain neutral tabletop against a simple backdrop",
+    moves: false,
     camera: "locked-off tripod shot with both options side by side in the same frame",
     lighting: "identical neutral daylight on both options",
     presenter: "mixed",
@@ -244,6 +280,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "การทดสอบต้องไม่อันตราย ไม่หลอกคนดู และห้ามประกาศว่าผ่านหรือได้ผลเกินกว่าที่ภาพแสดง",
     videoDirection: "single safe product test with a clear setup and payoff, energetic but believable pacing, show the test result plainly without spectacle or dangerous stunts",
     speechMode: "dialogue ต่อเนื่อง ตั้งโจทย์ เล่าไประหว่างทดสอบ แล้วสรุปผลและชวนซื้อ",
+    setting: "a practical test spot that suits the test — e.g. a kitchen sink, outdoor yard, balcony or workbench — with safe open space around",
+    place: "a bright balcony with open space around",
+    moves: false,
     camera: "handheld smartphone, medium shot with close-ups on the test result",
     lighting: "bright natural daylight",
     presenter: "face",
@@ -257,6 +296,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "พูดเหมือนเล่า routine ให้เพื่อนฟัง เน้นประโยชน์ที่เกิดขึ้นในสถานการณ์จริง ไม่สร้างสถานที่หรือตัวละครมากเกินเวลาคลิป",
     videoDirection: "warm day-in-the-life vlog, natural transitions within one routine, authentic environment, product used as part of the action rather than held up in every shot",
     speechMode: "voiceover เล่า routine แบบเป็นกันเอง หรือ dialogue สั้นๆ ตามเหตุการณ์ เว้นจังหวะให้เห็นการใช้งานจริง",
+    setting: "a real daily-routine location for the moment the product is used — e.g. a morning bedroom, kitchen, office, gym or café",
+    place: "a sunny bedroom during a morning routine",
+    moves: true,
     camera: "handheld vlog smartphone with natural, gentle movement",
     lighting: "warm natural daylight of a real home",
     presenter: "mixed",
@@ -270,6 +312,9 @@ const STYLE_PLAYBOOKS: Record<ContentStyle, StylePlaybook> = {
     writing: "สอนเพียงหนึ่งเรื่องให้ชัด ใช้ภาษาง่าย ไม่ทำตัวเป็นผู้เชี่ยวชาญทางการแพทย์ และไม่ใส่ข้อมูลที่ไม่มีหลักฐาน",
     videoDirection: "clear educational short-form tutorial, presenter or hands demonstrate one useful tip, intentional framing with room for a concise visual cue, confident but friendly tone",
     speechMode: "voiceover หรือ dialogue อธิบายทีละขั้นต่อเนื่องจนจบ tip แล้วชวนซื้อ",
+    setting: "a clean, well-organised spot where the tip is carried out — e.g. a kitchen counter, desk or vanity",
+    place: "a well-organised kitchen counter",
+    moves: false,
     camera: "steady smartphone on a tripod, medium shot with close-ups on the key step",
     lighting: "bright even daylight",
     presenter: "mixed",
@@ -287,6 +332,9 @@ export function getStylePlaybook(style: string): StylePlaybook {
       writing: "ภาษาไทยแบบภาษาพูด กระชับ และไม่กล่าวอ้างเกินจริง",
       videoDirection: "natural short-form product video with clear product interaction and varied framing",
       speechMode: "พูดขายต่อเนื่องเกือบตลอดคลิป เลือก dialogue หรือ voiceover ให้เหมาะกับภาพ",
+      setting: "an everyday location where the product is naturally used",
+      place: "a tidy everyday home space",
+      moves: false,
       camera: "handheld smartphone",
       lighting: "natural daylight",
       presenter: "mixed",
@@ -346,6 +394,16 @@ export function sellingScriptRule(speech: SpeechAmount): string {
         ]),
     "ห้ามพูดวนซ้ำความเดิมเพื่อให้ยาวขึ้น ทุกประโยคต้องเพิ่มข้อมูลใหม่หรือเหตุผลใหม่ที่ทำให้อยากซื้อ",
   ].join("\n");
+}
+
+/** A video rendered in one generation has no clip boundary to change location at. */
+export function movesBetweenClips(style: string, clipCount: number): boolean {
+  return getStylePlaybook(style).moves && clipCount > 1;
+}
+
+/** Locations written twice for the same place may differ in case, spacing or a final full stop. */
+export function locationKey(location?: string | null): string {
+  return (location ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.。]$/, "");
 }
 
 /** Who may appear on screen, for the storyboard writer. */

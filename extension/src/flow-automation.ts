@@ -4,6 +4,8 @@
 interface FlowClip {
   index: number;
   prompt: string;
+  /** Takes place somewhere new, so it does not continue from the previous clip's last frame. */
+  newLocation?: boolean;
 }
 
 interface FlowVideoJob {
@@ -1387,7 +1389,7 @@ async function flowGenerateClip(
     return null;
   }
 
-  const withContinuity = clip.index > 0;
+  const withContinuity = clip.index > 0 && !clip.newLocation;
   const image = productImage;
   for (let attempt = 1; attempt <= FLOW_MAX_IMAGE_RETRIES; ) {
     const result = await flowSubmitAndWaitOnce(clip, label, aspectRatio, withContinuity, image);
