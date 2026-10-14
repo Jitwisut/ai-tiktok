@@ -29,6 +29,8 @@ export interface Scene {
   cameraMotion?: string;
   /** English visual direction handed to the video model (older plans only have `description`). */
   visual?: string;
+  /** Where the scene takes place (English), for styles that move between clips. */
+  location?: string;
   /** Which 8-second clip (0-based) the scene belongs to — the storyboard is planned in render blocks. */
   clip?: number;
   /** Thai line spoken on camera by the visible person. */
@@ -73,6 +75,8 @@ export type VideoStatus = "queued" | "processing" | "completed" | "cancelled" | 
 export interface VideoJobClip {
   index: number;
   prompt: string;
+  /** The clip moves to a new location, so it must not continue from the previous clip's last frame. */
+  newLocation?: boolean;
 }
 
 export interface VideoJob {

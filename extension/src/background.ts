@@ -78,6 +78,7 @@ function clearPendingJob(): Promise<void> {
 interface JobClip {
   index: number;
   prompt: string;
+  newLocation?: boolean;
 }
 
 interface VideoJob {
@@ -400,7 +401,7 @@ async function replanClips(videoId: string, targetDuration: number, site: Genera
     productLook: content.productLook,
     presenter: video.presenter,
   });
-  const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt }));
+  const mapped = clips.map((c) => ({ index: c.index, prompt: c.prompt, newLocation: c.newLocation }));
   await store.updateVideoJob(videoId, {
     clips: mapped,
     duration: clips.length * clipSecondsForSite(site, targetDuration),
@@ -652,7 +653,7 @@ async function createJobForContent(
     productLook: content.productLook,
     presenter,
   });
-  const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt }));
+  const clips = planned.map((c) => ({ index: c.index, prompt: c.prompt, newLocation: c.newLocation }));
   const video = await store.createVideoJob({
     contentId: content.id,
     clips,

@@ -4,7 +4,7 @@ import { platformForStyle, platformRule, salesContext, type PublishPlatform } fr
 import type { JsonSchema } from "./gemini.js";
 import type { Product, ProductAnalysis, Scene } from "./store.js";
 import { MAX_CLIPS, clipCountFor } from "./prompt-engine.js";
-import { getStylePlaybook, NATURAL_SPEECH_RULE, SPEAKABLE_SCRIPT_RULE, styleCameraMotion, speechBudget, styleStoryRule, shotPlanningRule, sellingScriptRule, presenterRule, styleUsesOnScreenText, stylePlaybookPrompt } from "./style-playbooks.js";
+import { getStylePlaybook, movesBetweenClips, NATURAL_SPEECH_RULE, SPEAKABLE_SCRIPT_RULE, styleCameraMotion, speechBudget, styleStoryRule, shotPlanningRule, sellingScriptRule, presenterRule, styleUsesOnScreenText, stylePlaybookPrompt } from "./style-playbooks.js";
 
 export { CONTENT_STYLES } from "./style-playbooks.js";
 
@@ -100,6 +100,7 @@ export const SCENE_PLAN_SCHEMA: JsonSchema = {
           description: { type: "string", description: "สรุปภาพของฉาก ภาษาไทยสั้นๆ" },
           visual: { type: "string", description: "สิ่งที่เห็นในเฟรม ภาษาอังกฤษล้วน เรียกคนว่า the person" },
           cameraMotion: { type: "string", description: "การเคลื่อนกล้อง ภาษาอังกฤษสั้นๆ" },
+          location: { type: "string", description: "สถานที่ของฉาก ภาษาอังกฤษ: สถานที่เจาะจงหนึ่งแห่ง เวลา และทิศทางแสง (ใช้เมื่อสไตล์ย้ายสถานที่ระหว่าง clip ไม่งั้นเป็น \"\")" },
           dialogue: { type: "string", description: "คำพูดภาษาไทยของคนในภาพ หรือ \"\"" },
           voiceover: { type: "string", description: "เสียงบรรยายภาษาไทยนอกจอ หรือ \"\"" },
         },
@@ -156,14 +157,17 @@ export function scenePlanExample(blocks: number, clipSeconds: number, style = "U
     "ASMR / Satisfying": ["The hands gently open the product lid with an audible click", "The hands pour water into the product", "The hands gently close the lid", "The hands set the product on the table with a soft tap"],
     POV: ["From the viewer's eyes, the hands reach for the product", "From the same viewpoint, the hands open the lid", "The hands fill the product", "The hands close the lid, ready to carry it"],
   };
+  // Styles that move show two places across clips, so a copied example does not teach one fixed spot.
+  const places = movesBetweenClips(style, blocks) ? [playbook.place, "a bright office desk at midday", "a quiet café table in the afternoon"] : [];
   const steps = actions[style] ?? ["The person opens the product lid", "The person fills the product with water", "The person closes the lid", "The person places the product ready to carry"];
   const scenes = Array.from({ length: blocks }, (_, clip) => {
     const action = hands ? steps[clip % steps.length].replace(/The person/g, "The hands") : steps[clip % steps.length];
     const words = playbook.speech === "silent" || (playbook.speech === "light" && clip < blocks - 1) ? "" : clip === blocks - 1 ? (platformForStyle(style) === "shopee" ? "ดูสินค้าที่แนบได้เลย" : "ดูที่ตะกร้าได้เลย") : "พกน้ำสะดวกขึ้นนะ";
     return {
       clip, duration: clipSeconds, description: "สาธิตหนึ่งขั้นแล้วค้างภาพให้เห็นรายละเอียด",
-      visual: `Close-up at desk height${platformForStyle(style) === "shopee" ? ` in ${salesContext(style)}` : ""}, ${action}. The product starts within reach, the contact point stays visible, and the final state is held briefly`,
+      visual: `Close-up${platformForStyle(style) === "shopee" ? ` in ${salesContext(style)}` : ""}, ${action}. The product starts within reach, the contact point stays visible, and the final state is held briefly`,
       cameraMotion: styleCameraMotion(style),
+      location: places.length ? places[clip % places.length] : "",
       dialogue: hands || style === "Storytelling" || style === "Lifestyle Vlog" ? "" : words,
       voiceover: hands || style === "Storytelling" || style === "Lifestyle Vlog" ? words : "",
     };
@@ -171,10 +175,10 @@ export function scenePlanExample(blocks: number, clipSeconds: number, style = "U
   return {
     productLook: "A tall matte silver stainless steel tumbler, a black flip-up straw lid and a black side handle, a small engraved logo near the bottom",
     castOptions: [
-      { person: hands ? "hands only, a Thai woman's hands, short clean nails, beige sleeves" : "Thai woman in her late 20s, black ponytail, plain beige shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "tidy Thai home desk, soft daylight from the left", gender: "female" },
-      { person: hands ? "hands only, a Thai man's hands, short clean nails, navy sleeves" : "Thai man in his early 30s, short black hair, plain navy shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "tidy Thai home desk, soft daylight from the left", gender: "male" },
-      { person: hands ? "hands only, a Thai woman's hands, short clean nails, white sleeves" : "Thai woman in her mid-20s, shoulder-length black hair, plain white shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "clean condo table, even daylight", gender: "female" },
-      { person: hands ? "hands only, a Thai man's hands, short clean nails, grey sleeves" : "Thai man in his late 20s, short black hair, plain grey shirt", setting: platformForStyle(style) === "shopee" ? salesContext(style) : "clean condo table, even daylight", gender: "male" },
+      { person: hands ? "hands only, a Thai woman's hands, short clean nails, beige sleeves" : "Thai woman in her late 20s, black ponytail, plain beige shirt", setting: platformForStyle(style) === "shopee" ? playbook.place : `${playbook.place}, soft daylight from the left`, gender: "female" },
+      { person: hands ? "hands only, a Thai man's hands, short clean nails, navy sleeves" : "Thai man in his early 30s, short black hair, plain navy shirt", setting: platformForStyle(style) === "shopee" ? playbook.place : `${playbook.place}, soft daylight from the left`, gender: "male" },
+      { person: hands ? "hands only, a Thai woman's hands, short clean nails, white sleeves" : "Thai woman in her mid-20s, shoulder-length black hair, plain white shirt", setting: platformForStyle(style) === "shopee" ? playbook.place : `${playbook.place}, even daylight`, gender: "female" },
+      { person: hands ? "hands only, a Thai man's hands, short clean nails, grey sleeves" : "Thai man in his late 20s, short black hair, plain grey shirt", setting: platformForStyle(style) === "shopee" ? playbook.place : `${playbook.place}, even daylight`, gender: "male" },
     ],
     scenes,
   };
@@ -297,6 +301,7 @@ export function buildScenePrompt(
   const platform = platformForStyle(content.style, content.platform);
   const playbook = getStylePlaybook(content.style);
   const budget = speechBudget(clipSeconds, playbook.speech);
+  const moving = movesBetweenClips(content.style, blocks);
 
   return {
     system: [
@@ -311,9 +316,15 @@ export function buildScenePrompt(
         ? "วิดีโอนี้ยาวกว่าช็อตเดียว ตัดภาพระหว่างฉากได้แบบนุ่มนวล แต่ห้ามตัดกระโดดกลางการกระทำ ทุกฉากต้องเป็นคนเดิม ชุดเดิม สถานที่เดิม แสงเดิม และแต่ละฉากต้องมีการกระทำใหม่ที่พาเรื่องเดินหน้า ห้ามโชว์สินค้าซ้ำแบบเดิม"
         : "ภายใน clip เดียวกัน กล้องถ่ายต่อเนื่องเป็นเทคเดียว ไม่มีการตัดภาพ ฉากใน clip เดียวกันคือจังหวะต่อเนื่องของการกระทำ (เช่น หยิบสินค้า → เปิดฝา → ลองใช้) ที่เปลี่ยนระยะภาพได้ด้วยการเคลื่อนกล้องเท่านั้น",
       blocks > 1
-        ? "ข้าม clip เรื่องต้องเดินหน้า: แต่ละ clip มีการกระทำใหม่ที่ต่างจาก clip ก่อนหน้าชัดเจน ห้ามโชว์สินค้าซ้ำๆ แบบเดิมหรือทำการกระทำเดิมซ้ำ แต่ยังเป็นคนเดิม ชุดเดิม สถานที่เดิม แสงเดิม"
+        ? moving
+          ? `ข้าม clip เรื่องต้องเดินหน้า: แต่ละ clip มีการกระทำใหม่ที่ต่างจาก clip ก่อนหน้าชัดเจน ห้ามโชว์สินค้าซ้ำๆ แบบเดิม คนเดิม ชุดเดิม แต่สไตล์นี้ให้ย้ายสถานที่ระหว่าง clip: ใช้ ${Math.min(blocks, 3) === 2 ? "2" : "2-3"} สถานที่ที่ต่างกันตามจังหวะเรื่อง (เช่น ห้องนอนตอนเช้า → ระหว่างเดินทาง → ที่ทำงาน) ทุกสถานที่ต้องเป็นที่ที่ใช้สินค้านี้ได้จริง`
+          : "ข้าม clip เรื่องต้องเดินหน้า: แต่ละ clip มีการกระทำใหม่ที่ต่างจาก clip ก่อนหน้าชัดเจน ห้ามโชว์สินค้าซ้ำๆ แบบเดิมหรือทำการกระทำเดิมซ้ำ แต่ยังเป็นคนเดิม ชุดเดิม สถานที่เดิม แสงเดิม"
         : "",
-      blocks > 1 ? "clip ที่ไม่ใช่ช่วงสุดท้ายต้องจบด้วยท่าทางหรือการเคลื่อนไหวที่นิ่งและต่อได้ และ clip ถัดไปต้องเริ่มจากท่านั้น" : "",
+      blocks > 1
+        ? moving
+          ? "ถ้า clip ถัดไปอยู่สถานที่เดิม ให้จบ clip ด้วยท่าทางที่นิ่งและต่อได้ แล้ว clip ถัดไปเริ่มจากท่านั้น ถ้า clip ถัดไปย้ายสถานที่ ให้จบด้วยจังหวะที่ปิดเรื่องของสถานที่นั้นอย่างเป็นธรรมชาติ แล้ว clip ถัดไปเปิดด้วยภาพคนเดิมในสถานที่ใหม่"
+          : "clip ที่ไม่ใช่ช่วงสุดท้ายต้องจบด้วยท่าทางหรือการเคลื่อนไหวที่นิ่งและต่อได้ และ clip ถัดไปต้องเริ่มจากท่านั้น"
+        : "",
       "เรียงเรื่องให้เดินหน้าตามโครงเรื่องของสไตล์ ใช้การกระทำและภาพเล่าเรื่อง ไม่ต้องถือสินค้ายื่นเข้ากล้องทุกฉาก",
       "description: สรุปภาพของฉากเป็นภาษาไทยสั้นๆ (ใช้แสดงให้ผู้ใช้ตรวจ)",
       "visual: บรรยายสิ่งที่เห็นในเฟรมเป็นภาษาอังกฤษอย่างเป็นรูปธรรม (ท่าทาง การใช้สินค้า ระยะภาพ) เพราะจะส่งให้โมเดลสร้างวิดีโอโดยตรง ห้ามมีตัวอักษรไทยใน visual — เรียกคนในภาพว่า \"the person\" ห้ามระบุเพศ อายุ หรือหน้าตาใน visual เพราะลุคของคนถูกกำหนดแยกไว้ใน castOptions",
@@ -325,13 +336,18 @@ export function buildScenePrompt(
         playbook.speech === "silent" ? "ทุกฉากทั้ง dialogue และ voiceover ต้องเป็นสตริงว่าง ใช้เสียงสัมผัสจริงของสินค้า" : "เว้นช่วงให้ภาพหรือเสียงสินค้าเล่าเรื่องได้ ไม่ต้องพูดเต็มทุกวินาที"
       }`,
       "แบ่ง script ตามรอยต่อประโยคเท่านั้น ห้ามตัดกลางประโยค แต่ละฉากได้ประโยคที่ครบความ และคำพูดในฉากต้องพูดถึงสิ่งที่กำลังเห็นในภาพของฉากนั้น",
-      "ทั้งวิดีโอเป็นเรื่องเดียวต่อเนื่อง: คนเดิม สถานที่เดิม ช่วงเวลาเดียวกัน ฉากถัดไปเริ่มจากสิ่งที่ฉากก่อนจบไว้ (ท่าทาง ตำแหน่งสินค้า) ห้ามเปลี่ยนสถานที่หรือขึ้นเหตุการณ์ใหม่ที่ไม่เกี่ยวกันในแต่ละ clip",
+      moving
+        ? "ทั้งวิดีโอเป็นเรื่องเดียวต่อเนื่อง: คนเดิม ชุดเดิม ภายใน clip เดียวกันอยู่สถานที่เดียว (เป็นเทคเดียว) ฉากถัดไปใน clip เดียวกันเริ่มจากสิ่งที่ฉากก่อนจบไว้ ห้ามขึ้นเหตุการณ์ใหม่ที่ไม่เกี่ยวกับเรื่อง"
+        : "ทั้งวิดีโอเป็นเรื่องเดียวต่อเนื่อง: คนเดิม สถานที่เดิม ช่วงเวลาเดียวกัน ฉากถัดไปเริ่มจากสิ่งที่ฉากก่อนจบไว้ (ท่าทาง ตำแหน่งสินค้า) ห้ามเปลี่ยนสถานที่หรือขึ้นเหตุการณ์ใหม่ที่ไม่เกี่ยวกันในแต่ละ clip",
+      moving
+        ? "location: สถานที่ของฉากเป็นภาษาอังกฤษ — สถานที่เจาะจงหนึ่งแห่งพร้อมเวลาและทิศทางแสง (เช่น \"a bright office desk at midday, window light from the left\") ห้ามเขียนเป็นรายการตัวเลือก ทุกฉากใน clip เดียวกันใช้ location เดียวกัน และเมื่อสถานที่ไม่เปลี่ยนให้คัดลอกข้อความเดิมทุกตัวอักษร location ใช้แทน castOptions.setting ในวิดีโอจริง และ visual ไม่ต้องบรรยายสถานที่ซ้ำ"
+        : "location: ให้เป็นสตริงว่าง \"\" ทุกฉาก เพราะสไตล์นี้ใช้สถานที่เดียวจาก castOptions.setting",
       "นำเฉพาะคำพูดใน script มาแบ่งใส่ dialogue/voiceover ตามลำดับ ใช้คำตามต้นฉบับครบ ไม่ซ้ำ ไม่เพิ่มคำพูดจาก hook หรือ cta ที่ไม่ได้อยู่ใน script",
       `ใน 1 clip ใช้ผู้พูดแบบเดียว คำพูดรวมไม่เกิน ${budget[1]} ตัวอักษร เว้นเวลาสำหรับการกระทำและการหายใจ แบ่งคำพูดเป็นประโยคครบความ หากใส่ script ไม่ลงให้รายงานปัญหา ห้ามตัดคำพูดทิ้ง`,
       SPEAKABLE_SCRIPT_RULE,
       GENDER_NEUTRAL_RULE,
       "ให้คำพูดอยู่กับภาพที่กำลังอธิบาย เว้นจังหวะหายใจ ห้ามยัดประโยคยาวลงฉากสั้น ถ้าเป็น dialogue ให้เห็นหน้าคนพูดตอนเริ่มพูด",
-      "castOptions: เสนอ 4 ลุคที่ต่างกันชัดเจน เป็นผู้หญิง 2 ลุคและผู้ชาย 2 ลุค (ระบบจะเลือกเพศตามที่ผู้ใช้ตั้ง) ระบุ gender ทุกลุค เป็นภาษาอังกฤษ แต่ละลุคเป็นคนไทยทั่วไปแบบแม่ค้า/พ่อค้าหรือครีเอเตอร์ที่ขายของจริงบนแพลตฟอร์มที่เลือก อายุและการแต่งตัวเข้ากับกลุ่มลูกค้าของสินค้า แต่งตัวแบบใส่อยู่บ้านหรือไปทำงานจริง ไม่ใช่นายแบบนางแบบ มี person (เช่น \"Thai woman in her mid-20s, shoulder-length black hair, natural makeup, plain beige oversized T-shirt\" หรือ \"hands only — a Thai woman's hands, short clean nails\" ถ้าสินค้าเหมาะกับการถ่ายแค่มือ) และ setting (สถานที่ เวลา ทิศทางแสง เช่น \"bright minimal bedroom desk by a window, late-morning daylight from the left\") ทุกลุคต้องใช้ได้กับทุกฉากที่วางไว้ (ถ้ามีฉากที่มี dialogue หรือเห็นหน้าคน ห้ามเสนอลุคแบบเห็นแค่มือ) และสมเหตุสมผลกับสินค้า ไม่ต้องบรรยายรูปร่างหน้าตาละเอียดเกินจำเป็น",
+      "castOptions: เสนอ 4 ลุคที่ต่างกันชัดเจน เป็นผู้หญิง 2 ลุคและผู้ชาย 2 ลุค (ระบบจะเลือกเพศตามที่ผู้ใช้ตั้ง) ระบุ gender ทุกลุค เป็นภาษาอังกฤษ แต่ละลุคเป็นคนไทยทั่วไปแบบแม่ค้า/พ่อค้าหรือครีเอเตอร์ที่ขายของจริงบนแพลตฟอร์มที่เลือก อายุและการแต่งตัวเข้ากับกลุ่มลูกค้าของสินค้า แต่งตัวแบบใส่อยู่บ้านหรือไปทำงานจริง ไม่ใช่นายแบบนางแบบ มี person (เช่น \"Thai woman in her mid-20s, shoulder-length black hair, natural makeup, plain beige oversized T-shirt\" หรือ \"hands only — a Thai woman's hands, short clean nails\" ถ้าสินค้าเหมาะกับการถ่ายแค่มือ) และ setting (สถานที่เจาะจงเพียงแห่งเดียวตามฉากของสไตล์ที่ให้ไว้ พร้อมเวลาและทิศทางแสง เช่น \"<one place>, late-morning daylight from the left\" ห้ามเขียนเป็นรายการตัวเลือกหรือใช้ e.g.) ทุกลุคต้องใช้ได้กับทุกฉากที่วางไว้ (ถ้ามีฉากที่มี dialogue หรือเห็นหน้าคน ห้ามเสนอลุคแบบเห็นแค่มือ) และสมเหตุสมผลกับสินค้า ไม่ต้องบรรยายรูปร่างหน้าตาละเอียดเกินจำเป็น",
       "productLook: บรรยายหน้าตาสินค้าเป็นภาษาอังกฤษ 1-2 ประโยคให้ตรงกับรูปสินค้าที่แนบมาที่สุด (รูปทรง สัดส่วน สีหลักและสีรอง วัสดุ/ผิว ฝาหรือหัว ตำแหน่งโลโก้และฉลาก ขนาดเทียบกับมือ) ห้ามเดาสิ่งที่ไม่เห็นในรูป ห้ามใส่ตัวอักษรไทยและห้ามคัดลอกข้อความบนฉลาก (บอกแค่ว่ามีโลโก้/ฉลากอยู่ตรงไหน) ถ้าไม่มีรูปให้บรรยายเท่าที่ข้อมูลสินค้ายืนยัน",
       "ใน visual ให้เรียกสินค้าว่า \"the product\" เท่านั้น ห้ามบรรยายสี รูปทรง หรือวัสดุของสินค้าซ้ำใน visual เพราะหน้าตาสินค้าถูกกำหนดไว้ใน productLook แล้ว และให้ฉากเป็นการใช้งานที่สมเหตุสมผลกับสินค้าประเภทนั้นจริงๆ",
       "ให้สินค้าอยู่ในเฟรมชัดๆ หันด้านหน้า/โลโก้เข้ากล้อง ห้ามให้มือบังโลโก้ ห้ามบิด งอ หรือแกะสินค้าจนรูปทรงเปลี่ยน เว้นแต่เป็นวิธีใช้ปกติของสินค้า",
@@ -354,6 +370,9 @@ export function buildScenePrompt(
       `สไตล์: ${content.style}\n${stylePlaybookPrompt(content.style)}`,
       // The storyboard writes the visuals, so it needs the style's look too — not only its story shape.
       `แนวภาพของสไตล์นี้ (ใช้กับ visual และ cameraMotion ทุกฉาก): ${playbook.videoDirection} / กล้อง: ${playbook.camera} / แสง: ${playbook.lighting}`,
+      moving
+        ? `ฉากของสไตล์นี้: ${playbook.setting} — สไตล์นี้ย้ายสถานที่ระหว่าง clip: สถานที่จริงของแต่ละ clip มาจาก location ของฉาก แต่ละแห่งต้องเจาะจงและอยู่ในแนวนี้ ส่วน castOptions.setting ให้เป็นสถานที่ของ clip แรก`
+        : `ฉากของสไตล์นี้: ${playbook.setting} — castOptions.setting ทุกลุคต้องเลือกสถานที่เจาะจงหนึ่งแห่งในแนวนี้ที่เข้ากับสินค้า (แต่ละลุคเลือกสถานที่ต่างกันได้แต่ต้องอยู่ในแนวของสไตล์) และ visual ทุกฉากเกิดในสถานที่นั้น ห้ามใช้โต๊ะในบ้านแบบเดียวกันทุกสไตล์`,
       "ตัวอย่าง JSON ที่แนบมาเป็นแค่รูปแบบคำตอบ ห้ามลอกสินค้า ฉาก ระยะภาพ หรือวิธีพูดจากตัวอย่าง ให้วางฉากตามสไตล์ที่เลือกนี้",
       content.angle ? `มุมการขาย: ${content.angle}` : "",
       `hook: ${content.hook}`,

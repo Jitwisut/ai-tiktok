@@ -1,5 +1,5 @@
 /** Standalone copy of src/lib/prompt-engine/creative-quality.ts for the Chrome extension build. */
-import { getStylePlaybook, speechBudget, speechBudgetUsage } from "./style-playbooks.js";
+import { getStylePlaybook, movesBetweenClips, locationKey, speechBudget, speechBudgetUsage } from "./style-playbooks.js";
 
 export interface CreativeContent {
   style: string;
@@ -9,6 +9,7 @@ export interface CreativeContent {
 export interface CreativeScene {
   clip?: number;
   duration: number;
+  location?: string | null;
   dialogue?: string | null;
   voiceover?: string | null;
 }
@@ -48,6 +49,16 @@ export function sceneIssues(scenes: CreativeScene[], content: CreativeContent, c
     if (speechBudgetUsage(words) > max) issues.push(`คำพูด clip ${clip} ใช้งบ ${speechBudgetUsage(words)} ตัวอักษรรวมเผื่อคำลงท้าย ต้องไม่เกิน ${max} จัดประโยคลง clip ใหม่โดยรักษา script ครบ`);
     if (group.some((scene) => speechBudgetUsage([scene.dialogue, scene.voiceover].filter(Boolean).join(" ")) > speechBudget(scene.duration, playbook.speech)[1])) issues.push(`คำพูดบางฉากใน clip ${clip} ยาวเกินเวลาฉาก จัด duration หรือแบ่งประโยคใหม่ให้ครบความโดยรักษา script ครบ`);
     if (group.some((scene) => scene.dialogue?.trim()) && group.some((scene) => scene.voiceover?.trim())) issues.push(`clip ${clip} ใช้ dialogue หรือ voiceover เพียงแบบเดียว`);
+  }
+  if (movesBetweenClips(content.style, clipCount)) {
+    const place = (scene: CreativeScene) => locationKey(scene.location);
+    if (scenes.some((scene) => !place(scene))) issues.push("ทุกฉากต้องมี location เป็นสถานที่เจาะจงหนึ่งแห่ง (ภาษาอังกฤษ)");
+    else {
+      for (let clip = 0; clip < clipCount; clip++) {
+        if (new Set(scenes.filter((scene) => scene.clip === clip).map(place)).size > 1) issues.push(`ฉากใน clip ${clip} ต้องใช้ location เดียวกันทุกตัวอักษร เพราะ clip หนึ่งเป็นเทคเดียว`);
+      }
+      if (new Set(scenes.map(place)).size < 2) issues.push("สไตล์นี้ต้องย้ายสถานที่ระหว่าง clip: ใช้ location อย่างน้อย 2 แห่งที่ต่างกันตามจังหวะเรื่อง");
+    }
   }
   if (playbook.presenter === "hands" && scenes.some((scene) => scene.dialogue?.trim())) issues.push("สไตล์เห็นเฉพาะมือใช้ voiceover เท่านั้น ห้ามมี dialogue");
   const actual = scenes.flatMap((scene) => [scene.dialogue ?? "", scene.voiceover ?? ""]).join(" ");

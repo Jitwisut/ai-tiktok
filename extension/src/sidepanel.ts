@@ -152,6 +152,7 @@ interface GeneratedScene {
   duration: number;
   description: string;
   visual?: string;
+  location?: string;
   clip?: number;
   dialogue?: string;
   voiceover?: string;
@@ -499,6 +500,7 @@ function renderReview() {
       const meta = el("span", "tag tag-muted", `${Number.isInteger(scene.clip) ? `คลิป ${scene.clip! + 1} · ` : ""}${scene.duration}s`);
       top.append(meta);
       card.append(top, el("div", "scene-desc", scene.description));
+      if (scene.location?.trim()) card.append(el("div", "scene-visual", `สถานที่: ${scene.location}`));
       if (scene.visual) card.append(el("div", "scene-visual", `ภาพ: ${scene.visual}`));
       const dialogue = scene.dialogue?.trim();
       const voiceover = scene.voiceover?.trim();

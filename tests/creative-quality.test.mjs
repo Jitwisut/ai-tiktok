@@ -163,3 +163,30 @@ test("persistent invalid responses stop after two rewrites", async () => {
   await assert.rejects(generateValidated(async () => { calls++; return { script: "ก".repeat(100) }; }, (value) => contentIssues(value.script, "UGC", 8)), /หลังแก้สองครั้ง/);
   assert.equal(calls, 3);
 });
+
+test("styles that move give each clip its own location and drop the carry-over from the previous part", () => {
+  const scenes = [
+    { position: 0, clip: 0, duration: 8, description: "เช้า", visual: "The person packs the product into a bag", location: "a sunny bedroom at 8am", voiceover: "" },
+    { position: 1, clip: 1, duration: 8, description: "ที่ทำงาน", visual: "The person drinks from the product", location: "a bright office desk at midday", voiceover: "" },
+  ];
+  const cast = [{ person: "Thai woman in her late 20s, black ponytail, plain beige shirt", setting: "tidy Thai home desk", gender: "female" }];
+  const plan = (style) => planClips({ productName: product.name, style, scenes, targetDuration: 16, settings: DEFAULT_VIDEO_SETTINGS, castOptions: cast });
+
+  const [first, second] = plan("Lifestyle Vlog");
+  assert.equal(second.newLocation, true);
+  assert.ok(second.prompt.includes("[SETTING] a bright office desk at midday."));
+  assert.ok(!second.prompt.includes("continuing naturally from the end of part 1"));
+  assert.ok(first.prompt.includes("closes this location") && !first.prompt.includes("End mid-motion"));
+
+  // A fixed-location style keeps the look's one setting and the frame-to-frame join.
+  const fixed = plan("Demo");
+  assert.equal(fixed[1].newLocation, false);
+  assert.ok(fixed[1].prompt.includes("[SETTING] tidy Thai home desk. Same location"));
+  assert.ok(!fixed[1].prompt.includes("office desk"));
+
+  const content = { style: "Lifestyle Vlog", script: "" };
+  const oneEach = (location) => [0, 1].map((clip) => ({ clip, duration: 8, location, voiceover: "" }));
+  assert.ok(sceneIssues(oneEach("a sunny bedroom"), content, 2, 8).some((s) => s.includes("อย่างน้อย 2 แห่ง")));
+  assert.ok(sceneIssues(oneEach(""), content, 2, 8).some((s) => s.includes("location")));
+  assert.ok(!sceneIssues(scenes, content, 2, 8).some((s) => s.includes("location")));
+});

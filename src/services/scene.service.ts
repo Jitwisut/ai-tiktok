@@ -105,6 +105,7 @@ export async function planScenes(
       `สไตล์: ${content.style}`,
       stylePlaybookPrompt(content.style),
       `แนวภาพของสไตล์นี้ (ใช้กับ visual และ cameraMotion ทุกฉาก): ${playbook.videoDirection} / กล้อง: ${playbook.camera} / แสง: ${playbook.lighting}`,
+      `ฉากของสไตล์นี้: ${playbook.setting} — เลือกสถานที่เจาะจงหนึ่งแห่งในแนวนี้ที่เข้ากับสินค้า แล้วระบุสถานที่เดียวกันนั้นใน visual ทุกฉาก ห้ามใช้โต๊ะในบ้านแบบเดียวกันทุกสไตล์`,
       content.angle ? `มุมการขาย: ${content.angle}` : "",
       `hook: ${content.hook}`,
       `script (ต้องรักษาคำพูดไว้ครบ): ${content.script}`,
