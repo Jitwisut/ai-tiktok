@@ -14,6 +14,12 @@ export interface CreativeScene {
   voiceover?: string | null;
 }
 
+/** The examples mark fields with <...>; an answer that still has them copied the example instead of writing. */
+export function placeholderIssues(fields: Record<string, unknown>): string[] {
+  const copied = Object.entries(fields).filter(([, value]) => typeof value === "string" && /<[^<>]+>/.test(value)).map(([key]) => key);
+  return copied.length ? [`ฟิลด์ ${copied.join(", ")} ยังมีข้อความใน <...> จากตัวอย่าง ให้เขียนเนื้อหาจริงของสินค้านี้แทน`] : [];
+}
+
 export function contentIssues(script: string, style: string, seconds: number, clipSeconds = seconds): string[] {
   const speech = getStylePlaybook(style).speech;
   const max = speechBudget(seconds, speech)[1];

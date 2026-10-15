@@ -105,7 +105,7 @@ type PromptPart = string | { code: string };
 function examplePart(params: GenerateObjectParams, multiline: boolean): PromptPart[] {
   if (params.example === undefined) return [];
   return [
-    "ตัวอย่างคำตอบที่ถูกรูปแบบ (สินค้าสมมติ ใช้ดูโครงสร้างและระดับความละเอียดเท่านั้น ห้ามคัดลอกเนื้อหา ให้เขียนจากสินค้าในงานนี้):",
+    "ตัวอย่างคำตอบที่ถูกรูปแบบ (สินค้าสมมติ ใช้ดูโครงสร้างและระดับความละเอียดเท่านั้น ห้ามคัดลอกเนื้อหา ให้เขียนจากสินค้าในงานนี้ ค่าที่อยู่ใน <...> คือคำอธิบายว่าช่องนั้นต้องเขียนอะไร ให้เขียนเนื้อหาจริงแทนทั้งหมด ห้ามส่งเครื่องหมาย < > กลับมา):",
     { code: JSON.stringify(params.example, null, multiline ? 2 : undefined) },
   ];
 }
