@@ -732,20 +732,49 @@ async function metaWaitWithContinue(job: MetaVideoJob, sinceMark: number): Promi
   }
 }
 
+/** How long a failed job's tab keeps watching for a video Meta delivers late. */
+const META_LATE_WATCH_MS = 15 * 60 * 1000;
+
+/**
+ * Meta sometimes delivers the video after the job was already given up on —
+ * after its failure notice, or past the wait. The job record still exists, so
+ * keep watching this page and save whatever arrives: the worker marks the
+ * video completed, and autopilot adopts it instead of counting a failure.
+ * Ends on its own when the next job reloads this tab.
+ */
+async function metaRescueLateVideos(job: MetaVideoJob, sinceMark: number) {
+  if (metaCancelled) return;
+  const found = await metaWaitFor(() => {
+    if (metaIsGenerating()) return undefined;
+    const urls = metaVideoFileUrls(sinceMark);
+    return urls.length ? urls : undefined;
+  }, META_LATE_WATCH_MS, 5000);
+  if (!found || metaCancelled) return;
+  // More scenes of the same reply may still be landing — let it settle.
+  await metaSleep(20_000);
+  const urls = metaVideoFileUrls(sinceMark).slice(0, job.clips.length);
+  metaShowBanner("AI Affiliate Studio: Meta AI ส่งวิดีโอมาช้า — กำลังบันทึกให้ ห้ามปิดแท็บนี้", "#111827");
+  await metaSaveVideos(job, urls.length ? urls : found);
+}
+
 async function metaCollectAndUpload(job: MetaVideoJob, sinceMark: number) {
   const total = job.clips.length;
   const outcome = await metaWaitWithContinue(job, sinceMark);
-  if ("error" in outcome) {
-    metaReportProgress(job.videoId, 0, total, "failed", outcome.error);
-    metaShowBanner(outcome.error, "#dc2626");
-    return;
-  }
-  if (outcome.urls.length === 0) {
-    const error = "Meta AI ตอบแล้วแต่ไม่พบไฟล์วิดีโอในหน้า — เปิดวิดีโอในแชทให้เล่นสักครั้งแล้วลองใหม่";
+  if ("error" in outcome || outcome.urls.length === 0) {
+    const error =
+      "error" in outcome ? outcome.error : "Meta AI ตอบแล้วแต่ไม่พบไฟล์วิดีโอในหน้า — เปิดวิดีโอในแชทให้เล่นสักครั้งแล้วลองใหม่";
     metaReportProgress(job.videoId, 0, total, "failed", error);
-    metaShowBanner(error, "#dc2626");
+    metaShowBanner(`${error} · ยังเฝ้าดูหน้านี้ต่อ ถ้าวิดีโอมาทีหลังจะบันทึกให้เอง`, "#dc2626");
+    await metaRescueLateVideos(job, sinceMark);
     return;
   }
+  await metaSaveVideos(job, outcome.urls);
+}
+
+/** Uploads the reply's clips to the job (joining them when there are several) and reports the result. */
+async function metaSaveVideos(job: MetaVideoJob, urls: string[]) {
+  const total = job.clips.length;
+  const outcome = { urls };
 
   // Meta answered with fewer scenes than asked for: join what came back
   // rather than throwing away generations the account has already paid for.

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:license": "node --import tsx --test tests/license.test.mjs tests/license-autopilot.test.mjs tests/license-dispatch.test.mjs tests/license-content.test.mjs",
+    "test:license": "node --import tsx --test tests/license.test.mjs tests/license-autopilot.test.mjs tests/license-dispatch.test.mjs tests/license-content.test.mjs tests/autopilot-recovery.test.mjs tests/autopilot-retry.test.mjs",
     "test:license:integration": "node --import tsx --test tests/license.integration.test.mjs tests/license-http.test.mjs tests/license-production.test.mjs",
     "phone:setup": "npm --prefix phone-bridge ci --no-audit --no-fund",
     "phone:bridge": "node phone-bridge/server.mjs",
