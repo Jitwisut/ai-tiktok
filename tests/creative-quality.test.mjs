@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CONTENT_STYLES, getStylePlaybook, speechBudget } from "../extension/src/lib/style-playbooks.ts";
 import { getStylePlaybook as serverPlaybook } from "../src/lib/prompt-engine/style-playbooks.ts";
-import { contentIssues, sceneIssues, generateValidated } from "../extension/src/lib/creative-quality.ts";
-import { buildContentPrompt, buildScenePrompt, scenePlanExample } from "../extension/src/lib/analysis-prompts.ts";
+import { contentIssues, sceneIssues, generateValidated, placeholderIssues } from "../extension/src/lib/creative-quality.ts";
+import { buildContentPrompt, buildScenePrompt, scenePlanExample, pickHookTechnique, HOOK_TECHNIQUES } from "../extension/src/lib/analysis-prompts.ts";
 import { planClips, DEFAULT_VIDEO_SETTINGS, durationOptions, clipSecondsForSite } from "../extension/src/lib/prompt-engine.ts";
 import { buildVeoPrompt } from "../src/lib/prompt-engine/prompt-builder.ts";
 import { videoSettingsSchema } from "../src/lib/prompt-engine/types.ts";
@@ -189,4 +189,16 @@ test("styles that move give each clip its own location and drop the carry-over f
   assert.ok(sceneIssues(oneEach("a sunny bedroom"), content, 2, 8).some((s) => s.includes("อย่างน้อย 2 แห่ง")));
   assert.ok(sceneIssues(oneEach(""), content, 2, 8).some((s) => s.includes("location")));
   assert.ok(!sceneIssues(scenes, content, 2, 8).some((s) => s.includes("location")));
+});
+
+test("the script example carries no sample sentences to imitate, and each run opens differently", () => {
+  for (const style of CONTENT_STYLES) {
+    const { example } = buildContentPrompt(product, null, style, 16, 8, false);
+    for (const value of [example.hook, example.script, example.cta]) assert.ok(!value || /^<[^<>]+>$/.test(value), `${style}: ${value}`);
+  }
+  const prompts = [0, 1].map((i) => buildContentPrompt(product, null, "UGC", 16, 8, false, undefined, "tiktok", pickHookTechnique(i)).prompt);
+  assert.ok(prompts[0].includes(HOOK_TECHNIQUES[0]) && prompts[1].includes(HOOK_TECHNIQUES[1]));
+  assert.equal(pickHookTechnique(HOOK_TECHNIQUES.length), HOOK_TECHNIQUES[0]);
+  assert.deepEqual(placeholderIssues({ hook: "ตื่นมาแล้วน้ำในแก้วยังเย็นอยู่ไหม", script: "" }), []);
+  assert.ok(placeholderIssues({ cta: "<เหตุผลที่ควรซื้อ แล้วชวนกดตะกร้า>" })[0].includes("cta"));
 });

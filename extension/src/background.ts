@@ -8,7 +8,7 @@ import { generateObjectOnWeb } from "./lib/gemini-web.js";
 import { generateObjectOnChatGPT } from "./lib/chatgpt-web.js";
 import * as library from "./lib/library.js";
 import * as prompts from "./lib/analysis-prompts.js";
-import { contentIssues, sceneIssues, generateValidated, creativeRepairPrompt } from "./lib/creative-quality.js";
+import { contentIssues, placeholderIssues, sceneIssues, generateValidated, creativeRepairPrompt } from "./lib/creative-quality.js";
 import {
   DEFAULT_VIDEO_SETTINGS,
   CLIP_SECONDS,
@@ -1165,8 +1165,9 @@ async function generateContentScenes(
   if (content && contentIssues(content.script, style, targetDuration, clipSeconds).length) content = null;
   if (!content) {
     // Rotate angles across generations so repeated runs for one product tell different stories.
-    const angle = prompts.pickAngle(analysis, await store.countContents(product.id));
-    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle, platform);
+    const generationIndex = await store.countContents(product.id);
+    const angle = prompts.pickAngle(analysis, generationIndex);
+    const contentPrompt = prompts.buildContentPrompt(product, analysis, style, targetDuration, clipSeconds, images.length > 0, angle, platform, prompts.pickHookTechnique(generationIndex));
     const contentResult = await generateValidated<{
       hook: string;
       script: string;
@@ -1180,7 +1181,7 @@ async function generateContentScenes(
         prompt: contentPrompt.prompt + (repair ? creativeRepairPrompt(repair) : ""),
         images, schema: prompts.CONTENT_GENERATION_SCHEMA,
       }, source, product.id),
-      (result) => [...contentIssues(result.script, style, targetDuration, clipSeconds), ...(platform === "shopee" && (!result.caption.trim() || result.caption.length > 150) ? ["แคปชัน Shopee ต้องมี 1–150 ตัวอักษรรวมแฮชแท็ก"] : [])],
+      (result) => [...contentIssues(result.script, style, targetDuration, clipSeconds), ...placeholderIssues(result), ...(platform === "shopee" && (!result.caption.trim() || result.caption.length > 150) ? ["แคปชัน Shopee ต้องมี 1–150 ตัวอักษรรวมแฮชแท็ก"] : [])],
     );
 
     content = await store.createContent({

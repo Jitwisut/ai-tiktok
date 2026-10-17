@@ -47,6 +47,24 @@ export function cleanOnScreenText(text: string | undefined, maxChars: number): s
   return Array.from(cleaned).length <= maxChars ? cleaned : undefined;
 }
 
+/**
+ * Ways to open a video. Without one the chat apps fell back to the same short
+ * benefit line every time; rotating them makes repeated runs open differently.
+ */
+export const HOOK_TECHNIQUES = [
+  "เปิดด้วยคำถามจากสถานการณ์จริงที่กลุ่มเป้าหมายเจอ เจาะจงเวลาและสถานที่ ไม่ใช่คำถามกว้างๆ",
+  "เปิดด้วยผลลัพธ์หรือภาพตอนจบก่อน แล้วค่อยเล่าว่ามาถึงตรงนั้นได้อย่างไร",
+  "เปิดด้วยรายละเอียดเล็กๆ ของสินค้าที่คนส่วนใหญ่มองข้าม",
+  "เปิดด้วยตัวเลขหรือสเปกที่จับต้องได้จากข้อมูลสินค้า (เขียนเป็นคำอ่านไทย)",
+  "เปิดด้วยความเคยชินหรือความเชื่อที่หลายคนทำผิด แล้วหักมุมด้วยสินค้า",
+  "เปิดด้วยการกระทำหรือภาพที่ผิดคาด ทำให้คนดูสงสัยว่ากำลังเกิดอะไรขึ้น",
+  "เปิดด้วยการเรียกกลุ่มคนดูให้ชัด เช่น คนที่ต้องทำอะไร ตอนไหน แล้วตามด้วยเหตุผลที่ต้องดูต่อ",
+];
+
+export function pickHookTechnique(generationIndex: number): string {
+  return HOOK_TECHNIQUES[generationIndex % HOOK_TECHNIQUES.length];
+}
+
 /** Rotates through the analysis angles so repeated generations for a product tell different stories. */
 export function pickAngle(analysis: ProductAnalysis | null, generationIndex: number): string | undefined {
   const angles = analysis?.angles?.filter((a) => a.trim()) ?? [];
@@ -135,14 +153,20 @@ export const PRODUCT_ANALYSIS_EXAMPLE = {
   ],
 };
 
-export function contentGenerationExample(withOnScreenText: boolean, silent = false, light = false) {
+/**
+ * Real sample sentences were copied in tone and wording into every answer, so
+ * the example only marks what each field holds.
+ */
+export function contentGenerationExample(withOnScreenText: boolean, silent = false, light = false, platform: PublishPlatform = "tiktok") {
   return {
-    hook: silent ? "มือเปิดฝาและวางกระบอกน้ำบนโต๊ะอย่างนุ่มนวล" : light ? "" : "พกน้ำสะดวกขึ้นนะ",
-    script: silent ? "" : light ? "ดูที่ตะกร้าได้เลย" : "พกน้ำสะดวกขึ้นนะ กดดูที่ตะกร้าได้เลย",
-    caption: "น้ำเย็นได้ทั้งวัน ไม่ต้องซื้อน้ำแข็งเพิ่ม\nกระบอกสแตนเลสสองชั้น 900 มล. พกไปทำงานได้ทั้งวัน\n#กระบอกน้ำ #กระบอกน้ำเก็บความเย็น #ของใช้ออฟฟิศ #ของดีบอกต่อ #TikTokShop",
-    cta: "ดูที่ตะกร้าได้เลย",
-    onScreenText: withOnScreenText ? "เย็นทั้งวัน" : "",
-    onScreenCta: withOnScreenText ? "กดเลย" : "",
+    hook: silent ? "<ภาพเปิดที่ทำให้หยุดดู>" : light ? "" : "<ประโยคเปิดตามวิธีเปิดที่กำหนด>",
+    script: silent ? "" : "<บทพูดที่เขียนใหม่>",
+    caption: platform === "shopee"
+      ? "<จุดขายหนึ่งประโยค> #<แฮชแท็กสินค้า> #ShopeeVideo"
+      : "<บรรทัดแรก: hook สั้นที่ทำให้หยุดเลื่อน>\n<จุดขายหนึ่งประโยค>\n#<หมวดสินค้า> #<ประเภทสินค้า> #<แฮชแท็กเจาะจง> #TikTokShop",
+    cta: platform === "shopee" ? "<เหตุผลที่ควรซื้อ แล้วชวนกดดูสินค้าที่แนบ>" : "<เหตุผลที่ควรซื้อ แล้วชวนกดตะกร้า>",
+    onScreenText: withOnScreenText ? "<พาดหัวสั้น>" : "",
+    onScreenCta: withOnScreenText ? "<คำชวนสั้น>" : "",
   };
 }
 
@@ -162,7 +186,7 @@ export function scenePlanExample(blocks: number, clipSeconds: number, style = "U
   const steps = actions[style] ?? ["The person opens the product lid", "The person fills the product with water", "The person closes the lid", "The person places the product ready to carry"];
   const scenes = Array.from({ length: blocks }, (_, clip) => {
     const action = hands ? steps[clip % steps.length].replace(/The person/g, "The hands") : steps[clip % steps.length];
-    const words = playbook.speech === "silent" || (playbook.speech === "light" && clip < blocks - 1) ? "" : clip === blocks - 1 ? (platformForStyle(style) === "shopee" ? "ดูสินค้าที่แนบได้เลย" : "ดูที่ตะกร้าได้เลย") : "พกน้ำสะดวกขึ้นนะ";
+    const words = playbook.speech === "silent" || (playbook.speech === "light" && clip < blocks - 1) ? "" : `<script ช่วง ${clip + 1}>`;
     return {
       clip, duration: clipSeconds, description: "สาธิตหนึ่งขั้นแล้วค้างภาพให้เห็นรายละเอียด",
       visual: `Close-up${platformForStyle(style) === "shopee" ? ` in ${salesContext(style)}` : ""}, ${action}. The product starts within reach, the contact point stays visible, and the final state is held briefly`,
@@ -215,6 +239,7 @@ export function buildContentPrompt(
   hasImages: boolean,
   angle?: string,
   platform: PublishPlatform = platformForStyle(style),
+  hookTechnique?: string,
 ) {
   const blocks = clipCountFor(targetDuration, clipSeconds);
   const seconds = blocks * clipSeconds;
@@ -227,6 +252,8 @@ export function buildContentPrompt(
       `คุณเป็นนักเขียนสคริปต์ ${platform === "shopee" ? "Shopee Video" : "TikTok"} affiliate มืออาชีพ ตอบเป็น JSON ตาม schema เท่านั้น ใช้ภาษาไทยที่เป็นธรรมชาติ กระชับ เหมาะกับวิดีโอสั้น`,
       "ถ้ามีรูปสินค้าแนบมา ให้ยึดสิ่งที่เห็นในรูปว่าสินค้าคืออะไร และพูดถึงประโยชน์ที่ตรงกับสินค้าประเภทนั้นจริงๆ",
       "hook ต้องดึงความสนใจภายใน 1-2 วินาทีด้วยภาพหรือคำพูดตามสไตล์ ไม่ต้องเปิดด้วยปัญหาทุกสไตล์ ห้ามเริ่มด้วยการแนะนำตัว",
+      "ห้ามใช้ประโยคสำเร็จรูปที่ใช้ได้กับทุกสินค้า เช่น \"ดูที่ตะกร้าได้เลย\" \"กดตะกร้าเหลืองได้เลย\" \"สะดวกขึ้นนะ\" \"ของมันต้องมี\" \"บอกเลยว่าดี\" — ทุกประโยคใน hook, script และ cta ต้องมีรายละเอียดเฉพาะของสินค้านี้หรือมุมขายนี้ ถ้าเปลี่ยนชื่อเป็นสินค้าอื่นแล้วยังใช้ได้ แปลว่ากว้างเกินไป",
+      "cta ต้องบอกเหตุผลที่ควรซื้อด้วยประโยชน์ของสินค้านี้หรือสถานการณ์ในคลิปก่อน แล้วค่อยชวนกด ไม่ใช่แค่สั่งให้กด",
       speech === "silent" ? 'script เป็นสตริงว่าง "" เพราะสไตล์นี้ไม่มีคำพูด hook อธิบายภาพเปิด ส่วน cta ใช้กับ caption ไม่ต้องพูดในวิดีโอ' : "script คือคำพูดทั้งหมดที่จะได้ยินในวิดีโอ เรียงตามลำดับเวลา ใช้ประโยคที่ครบความตามสไตล์ ไม่ต้องบรรยายทุกการกระทำ",
       "script ต้องพูดจบได้จริงภายในความยาววิดีโอที่กำหนดโดยไม่ต้องเร่งพูด ห้ามเขียนยาวเกินงบตัวอักษรที่กำหนด",
       SPEAKABLE_SCRIPT_RULE,
@@ -250,6 +277,7 @@ export function buildContentPrompt(
         : "",
       stylePlaybookPrompt(style),
       platform === "shopee" ? `ฉากการขายที่เลือก: ${salesContext(style)} — ผู้ขายแสดงสินค้าและสาธิตจริง ไม่ยืนพูดเฉยๆ` : "",
+      hookTechnique ? `วิธีเปิดคลิปครั้งนี้: ${hookTechnique} — ใช้กับ hook และประโยคแรกของ script ให้เข้ากับสไตล์` : "",
       angle
         ? `มุมการขายที่เลือก: "${angle}" — สร้าง hook, script และ CTA ทั้งหมดรอบมุมนี้ ห้ามเปลี่ยนไปใช้มุมอื่นกลางคลิป`
         : "",
@@ -273,7 +301,7 @@ export function buildContentPrompt(
     ]
       .filter(Boolean)
       .join("\n"),
-    example: { ...contentGenerationExample(styleUsesOnScreenText(style), speech === "silent", speech === "light"), ...(platform === "shopee" ? { script: speech === "silent" ? "" : "ดูรายละเอียดชัดเลย กดดูสินค้าที่แนบได้เลย", caption: "ดูรายละเอียดสินค้าและเลือกแบบที่ต้องการ\n#รีวิวสินค้า #ของใช้ #ShopeeVideo", cta: "กดดูสินค้าที่แนบได้เลย" } : {}) },
+    example: contentGenerationExample(styleUsesOnScreenText(style), speech === "silent", speech === "light", platform),
   };
 }
 
