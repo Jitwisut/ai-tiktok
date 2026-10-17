@@ -50,6 +50,10 @@ interface CurrentItem {
   videoId?: string;
   postRequestedAt?: number;
   lastError?: string;
+  /** Videos of this item given up on earlier — adopted if one of them completes late. */
+  earlierVideoIds?: string[];
+  /** When the current video was first seen failed; it gets LATE_VIDEO_GRACE_MS to turn out fine. */
+  failedSeenAt?: number;
 }
 
 export interface AutopilotHistoryEntry {
@@ -62,6 +66,22 @@ export interface AutopilotHistoryEntry {
   error: string | null;
   style: string | null;
   at: number;
+  /** Earlier attempts' videos for a failed item, so a retry round can adopt one that completed late. */
+  otherVideoIds?: string[];
+  /** The script and scenes already written for this item, reused when it is tried again. */
+  contentId?: string;
+  /** The user asked to try this failed item again. */
+  retried?: boolean;
+}
+
+/** A failed item the user sent back: it runs before the queue and keeps its script and scenes. */
+interface RetryItem {
+  productId: string;
+  /** `at` of the history entry it came from. */
+  at: number;
+  contentId?: string;
+  style?: string;
+  videoIds: string[];
 }
 
 export interface AutopilotState {
@@ -80,6 +100,14 @@ export interface AutopilotState {
   consecutiveFailures: number;
   message: string | null;
   startedAt: number;
+  /** Batch mode: the extra pass over this run's failed items has started. */
+  retryRound?: boolean;
+  /** Failed items sent back with the history's "ลองใหม่" button. */
+  retries?: RetryItem[];
+  /** Started from idle only to run the retries; goes back to idle once they are done. */
+  retryOnly?: boolean;
+  /** Bumped on every change to `retries`, so a step that saves an older copy keeps the newer queue. */
+  retriesVersion?: number;
 }
 
 export interface AutopilotDeps {
@@ -108,6 +136,13 @@ const LEASE_GEMINI_MS = 5 * 60_000;
 const LEASE_START_MS = 3 * 60_000;
 const VIDEO_TIMEOUT_MS = 75 * 60_000;
 const POST_TIMEOUT_MS = 20 * 60_000;
+/**
+ * A video reported failed can still turn out fine: the generating tab may
+ * give up while the clip is still being saved, and Meta can deliver late
+ * (meta-automation.ts keeps watching for that). Wait this long before
+ * failing the step.
+ */
+const LATE_VIDEO_GRACE_MS = 3 * 60_000;
 
 export function parseTimes(input: string): string[] {
   const times = input
@@ -147,6 +182,16 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function retryItem(entry: AutopilotHistoryEntry): RetryItem {
+  return {
+    productId: entry.productId,
+    at: entry.at,
+    contentId: entry.contentId,
+    style: entry.style ?? undefined,
+    videoIds: [entry.videoId, ...(entry.otherVideoIds ?? [])].filter((id): id is string => !!id),
+  };
+}
+
 export function createAutopilot(deps: AutopilotDeps) {
   async function load(): Promise<AutopilotState | null> {
     const stored = await chrome.storage.local.get(STATE_KEY);
@@ -154,7 +199,34 @@ export function createAutopilot(deps: AutopilotDeps) {
   }
 
   async function save(state: AutopilotState) {
+    // A step can hold its copy of the state for minutes (waiting on ChatGPT);
+    // a retry queued meanwhile must survive that copy being written back.
+    const latest = await load();
+    if (latest && (latest.retriesVersion ?? 0) > (state.retriesVersion ?? 0)) adoptRetries(state, latest);
     await chrome.storage.local.set({ [STATE_KEY]: state });
+  }
+
+  function adoptRetries(state: AutopilotState, latest: AutopilotState) {
+    state.retries = latest.retries;
+    state.retriesVersion = latest.retriesVersion;
+    for (const entry of state.history) {
+      const stored = latest.history.find((h) => h.productId === entry.productId && h.at === entry.at);
+      if (stored) entry.retried = stored.retried;
+    }
+  }
+
+  /** Takes the next retry from the stored queue, not from this step's possibly older copy. */
+  async function takeRetry(state: AutopilotState): Promise<RetryItem | undefined> {
+    const latest = await load();
+    if (latest && (latest.retriesVersion ?? 0) > (state.retriesVersion ?? 0)) adoptRetries(state, latest);
+    const retry = state.retries?.shift();
+    if (retry) state.retriesVersion = (state.retriesVersion ?? 0) + 1;
+    return retry;
+  }
+
+  /** Whether this run already has a non-failed result for the product. */
+  function itemSucceeded(state: AutopilotState, productId: string): boolean {
+    return state.history.some((h) => h.productId === productId && h.at >= state.startedAt && h.status !== "failed");
   }
 
   function pickStyle(state: AutopilotState): string {
@@ -176,6 +248,8 @@ export function createAutopilot(deps: AutopilotDeps) {
       error,
       style: cur.style ?? null,
       at: Date.now(),
+      ...(cur.earlierVideoIds?.length ? { otherVideoIds: cur.earlierVideoIds } : {}),
+      ...(cur.contentId ? { contentId: cur.contentId } : {}),
     });
     state.history.length = Math.min(state.history.length, HISTORY_MAX);
     state.current = null;
@@ -213,6 +287,14 @@ export function createAutopilot(deps: AutopilotDeps) {
     }
   }
 
+  /** An earlier, given-up video of this item that completed after all — its id, if any. */
+  async function lateCompletedVideo(ids: string[] | undefined): Promise<string | undefined> {
+    for (const id of ids ?? []) {
+      if ((await store.getVideo(id))?.status === "completed") return id;
+    }
+    return undefined;
+  }
+
   /** A failed step is retried after a pause; the product is given up on after MAX_ATTEMPTS. */
   function failStep(state: AutopilotState, err: unknown) {
     if (isLicenseFailure(err)) {
@@ -232,7 +314,11 @@ export function createAutopilot(deps: AutopilotDeps) {
       finish(state, "failed", `${stepLabel(cur.step)}: ${cur.lastError}`);
       return;
     }
-    if (cur.step === "video") cur.videoId = undefined;
+    if (cur.step === "video") {
+      if (cur.videoId) cur.earlierVideoIds = [...(cur.earlierVideoIds ?? []), cur.videoId];
+      cur.videoId = undefined;
+      cur.failedSeenAt = undefined;
+    }
     if (cur.step === "post") cur.postRequestedAt = undefined;
     cur.leaseUntil = Date.now() + RETRY_BACKOFF_MS;
   }
@@ -240,6 +326,7 @@ export function createAutopilot(deps: AutopilotDeps) {
   function advance(cur: CurrentItem, step: Step) {
     cur.step = step;
     cur.attempts = 0;
+    cur.failedSeenAt = undefined;
     cur.leaseUntil = 0;
     cur.stepStartedAt = Date.now();
     cur.lastError = undefined;
@@ -269,14 +356,40 @@ export function createAutopilot(deps: AutopilotDeps) {
         await save(state);
       }
 
+      const retry = await takeRetry(state);
+      if (!retry && state.retryOnly) {
+        state.status = "idle";
+        state.retryOnly = false;
+        state.message = "ลองใหม่ครบแล้ว — ดูผลในประวัติ";
+        await save(state);
+        await chrome.alarms.clear(ALARM);
+        return false;
+      }
+
       let productId: string | undefined;
-      if (state.mode === "batch") {
+      if (retry) {
+        productId = retry.productId;
+      } else if (state.mode === "batch") {
         productId = state.productIds.shift();
+        // Queue done: go back once over this run's failed items before stopping.
+        if (!productId && !state.retryRound) {
+          const failedIds = [...new Set(
+            state.history.filter((h) => h.at >= state.startedAt && h.status === "failed").map((h) => h.productId),
+          )].filter((id) => inLibrary.has(id) && !itemSucceeded(state, id));
+          state.retryRound = true;
+          if (failedIds.length) {
+            state.productIds = failedIds;
+            state.consecutiveFailures = 0;
+            state.message = `ลองทำรายการที่ไม่สำเร็จอีกรอบ (${failedIds.length} ชิ้น)`;
+            productId = state.productIds.shift();
+          }
+        }
         if (!productId) {
           state.status = "idle";
-          const thisRun = state.history.filter((h) => h.at >= state.startedAt);
-          const ok = thisRun.filter((h) => h.status !== "failed").length;
-          state.message = `ทำครบแล้ว — สำเร็จ ${ok} ชิ้น, ไม่สำเร็จ ${thisRun.length - ok} ชิ้น`;
+          // Count products, not attempts: one that failed and then made it in the retry round is a success.
+          const products = [...new Set(state.history.filter((h) => h.at >= state.startedAt).map((h) => h.productId))];
+          const ok = products.filter((id) => itemSucceeded(state, id)).length;
+          state.message = `ทำครบแล้ว — สำเร็จ ${ok} ชิ้น, ไม่สำเร็จ ${products.length - ok} ชิ้น`;
           await save(state);
           await chrome.alarms.clear(ALARM);
           return false;
@@ -311,6 +424,30 @@ export function createAutopilot(deps: AutopilotDeps) {
         finish(state, "failed", "ไม่พบสินค้าในคลังแล้ว");
         await save(state);
         return true;
+      }
+      // Retry: keep the script and scenes already written (analysis is kept
+      // anyway), so only the failed step is done again.
+      const failedEntry = !retry && state.retryRound
+        ? state.history.find((h) => h.productId === productId && h.at >= state.startedAt && h.status === "failed")
+        : undefined;
+      const again = retry ?? (failedEntry && retryItem(failedEntry));
+      if (again) state.current.style = again.style;
+      if (again?.contentId && (await store.getContent(again.contentId))?.productId === productId) state.current.contentId = again.contentId;
+      // A video from the failed attempt that completed late is reused —
+      // straight to posting, no new script or render.
+      if (again?.videoIds.length) {
+        const videoId = await lateCompletedVideo(again.videoIds);
+        const video = videoId ? await store.getVideo(videoId) : null;
+        if (video) {
+          const content = await store.getContent(video.contentId);
+          state.current.videoId = video.id;
+          state.current.contentId = video.contentId;
+          state.current.caption = content?.caption;
+          if (state.settings.postMode === "none") finish(state, "made", null);
+          else advance(state.current, "post");
+          await save(state);
+          return true;
+        }
       }
       state.message = null;
       await save(state);
@@ -372,6 +509,19 @@ export function createAutopilot(deps: AutopilotDeps) {
       }
 
       case "video": {
+        // A video given up on earlier finished after all (Meta delivered
+        // late, or the save outlived the generating tab): use it instead of
+        // rendering another one. Only before a new render starts — adopting
+        // mid-render would leave that render holding the site's tab.
+        const late = cur.videoId ? undefined : await lateCompletedVideo(cur.earlierVideoIds);
+        if (late) {
+          cur.videoId = late;
+          cur.earlierVideoIds = cur.earlierVideoIds?.filter((id) => id !== late);
+          if (state.settings.postMode === "none") finish(state, "made", null);
+          else advance(cur, "post");
+          await save(state);
+          return true;
+        }
         if (!cur.videoId) {
           cur.leaseUntil = now + LEASE_START_MS;
           await save(state);
@@ -416,6 +566,17 @@ export function createAutopilot(deps: AutopilotDeps) {
           return false;
         }
         if (!video || video.status === "failed" || video.status === "cancelled" || (progress?.videoId === cur.videoId && progress.state === "failed")) {
+          // Not final yet: the clip may still be saving, or Meta may deliver
+          // late (the tab keeps watching). Re-checked every tick until the
+          // grace runs out — a cancelled or vanished job gets none.
+          if (video && video.status !== "cancelled") {
+            cur.failedSeenAt ??= now;
+            if (now - cur.failedSeenAt < LATE_VIDEO_GRACE_MS) {
+              cur.lastError = progressError ?? video.errorMessage ?? undefined;
+              await save(state);
+              return false;
+            }
+          }
           failStep(state, progressError ?? video?.errorMessage ?? "สร้างวิดีโอไม่สำเร็จ — ดูบันทึกขั้นตอนงานในแท็บคลัง");
           await save(state);
           return true;
@@ -626,6 +787,14 @@ export function createAutopilot(deps: AutopilotDeps) {
         const state = await load();
         if (!state) return { ok: true, state: null };
         const videoId = state.current?.videoId;
+        // Retries not started yet are dropped; their history rows can be retried again.
+        for (const retry of state.retries ?? []) {
+          const entry = state.history.find((h) => h.productId === retry.productId && h.at === retry.at);
+          if (entry) entry.retried = false;
+        }
+        state.retries = [];
+        state.retriesVersion = (state.retriesVersion ?? 0) + 1;
+        state.retryOnly = false;
         state.status = "idle";
         state.current = null;
         state.nextRunAt = null;
@@ -634,6 +803,40 @@ export function createAutopilot(deps: AutopilotDeps) {
         await save(state);
         await forgetTabJob(videoId);
         await chrome.alarms.clear(ALARM);
+        return { ok: true, state };
+      }
+
+      case "AUTOPILOT_RETRY": {
+        await deps.requireLicense();
+        const state = await load();
+        const entry = state?.history.find((h) => h.productId === message.productId && h.at === message.at && h.status === "failed");
+        if (!state || !entry) return { ok: false, error: "ไม่พบรายการนี้ในประวัติ" };
+        if (entry.retried) return { ok: false, error: "สั่งลองใหม่รายการนี้ไปแล้ว" };
+        if ((entry.platform ?? "tiktok") !== (state.settings.platform ?? "tiktok")) {
+          return { ok: false, error: `รายการนี้เป็นของ ${entry.platform === "shopee" ? "Shopee" : "TikTok"} — เริ่มระบบอัตโนมัติของแพลตฟอร์มนั้นก่อนแล้วค่อยลองใหม่` };
+        }
+        // Rows saved before the script id was kept: find it through the video.
+        for (const videoId of entry.contentId ? [] : [entry.videoId, ...(entry.otherVideoIds ?? [])]) {
+          const contentId = videoId ? (await store.getVideo(videoId))?.contentId : undefined;
+          if (contentId) { entry.contentId = contentId; break; }
+        }
+        if (state.current?.productId === entry.productId || state.retries?.some((r) => r.productId === entry.productId)) {
+          return { ok: false, error: "สินค้านี้กำลังทำหรือรอลองใหม่อยู่แล้ว" };
+        }
+        entry.retried = true;
+        (state.retries ??= []).push(retryItem(entry));
+        state.retriesVersion = (state.retriesVersion ?? 0) + 1;
+        state.consecutiveFailures = 0;
+        if (state.status === "idle") {
+          state.status = "running";
+          state.retryOnly = true;
+          state.message = `ลองใหม่: ${entry.productName}`;
+          await chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+        } else if (state.status === "paused") {
+          state.message = `เพิ่ม ${entry.productName} เข้าคิวลองใหม่แล้ว — กด "ทำต่อ" เพื่อเริ่ม`;
+        }
+        await save(state);
+        if (state.status === "running") void tick();
         return { ok: true, state };
       }
 

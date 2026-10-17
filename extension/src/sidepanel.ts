@@ -40,14 +40,21 @@ function send<T = any>(message: unknown): Promise<T> {
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
 function log(text: string) {
-  const list = $("log");
-  const line = document.createElement("div");
-  line.textContent = `${new Date().toLocaleTimeString("th-TH")} — ${text}`;
-  list.prepend(line);
-  while (list.children.length > 20) list.lastElementChild?.remove();
+  // One log for everything: panel messages join the job trace the generating
+  // tabs write (jobLog, shown in the library tab) — same entry shape, same cap.
+  void (async () => {
+    try {
+      const stored = await chrome.storage.local.get("jobLog");
+      const entries = (Array.isArray(stored.jobLog) ? stored.jobLog : []) as { at: number; text: string }[];
+      entries.push({ at: Date.now(), text });
+      while (entries.length > 300) entries.shift();
+      await chrome.storage.local.set({ jobLog: entries });
+    } catch {
+      // extension reloaded under the panel — the toast below still shows it
+    }
+  })();
 
-  // The log lives on the Products tab; mirror the newest line as a toast so
-  // feedback from the other tabs (autopilot, library, settings) is seen too.
+  // The newest line also shows as a toast on whatever tab is open.
   const toast = $("toast");
   toast.textContent = text;
   toast.classList.add("show");
@@ -101,6 +108,10 @@ function showTab(name: TabName) {
     $(`tab-${tab}`).setAttribute("aria-selected", String(tab === name));
   }
   window.scrollTo({ top: 0 });
+  // One set of video settings, shown in whichever of the two tabs is open.
+  if (name === "products" || name === "autopilot") {
+    $(name === "autopilot" ? "video-settings-slot-ap" : "video-settings-slot-studio").appendChild($("video-settings"));
+  }
   if (name === "library") loadLibrary();
   if (name === "autopilot") loadAutopilot();
   void phonePanel.setVisible(name === "phone");
@@ -265,7 +276,7 @@ function renderProductsTable() {
     const empty = el("div", "empty");
     empty.append(
       el("strong", "", "ยังไม่มีสินค้าในคลัง"),
-      el("span", "", 'เปิดหน้า TikTok Shop หรือ Shopee แล้วกด "ดึงจากหน้า TikTok" / "ดึงจากหน้า Shopee" ด้านบน'),
+      el("span", "", 'กด "ดึงสินค้าจาก Showcase" หรือเปิดหน้าสินค้า Shopee แล้วกด "ดึงจากหน้า Shopee" ด้านบน'),
     );
     list.append(empty);
     return;
@@ -316,38 +327,6 @@ function loadProducts() {
     renderProductsTable();
     updateSelectionCount();
   });
-}
-
-async function getProductFromTikTok() {
-  const tabId = await activeTabId();
-  if (!tabId) return;
-
-  const button = $("get-product") as HTMLButtonElement;
-  button.disabled = true;
-  button.textContent = "กำลังดึง...";
-
-  let scraped: ScrapedTikTokProduct[] = [];
-  try {
-    scraped = (await chrome.tabs.sendMessage(tabId, { type: "SCRAPE_CHECKED_PRODUCTS" })) ?? [];
-  } catch {
-    log("อ่านหน้านี้ไม่ได้ — เปิดหน้า TikTok Shop/Studio แล้วลองใหม่");
-  }
-
-  button.disabled = false;
-  button.textContent = "ดึงจากหน้า TikTok";
-
-  if (scraped.length === 0) {
-    log("ไม่พบสินค้าที่เลือกในหน้านี้ — ติ๊กเลือกสินค้าในตารางของ TikTok ก่อน");
-    return;
-  }
-
-  const result = await send<{ ok: boolean; error?: string }>({ type: "IMPORT_TIKTOK_PRODUCTS", products: scraped });
-  if (!result?.ok) {
-    log(result?.error ?? "โหลดสินค้าไม่สำเร็จ");
-    return;
-  }
-  log(`เพิ่มแล้ว ${scraped.length} รายการจากหน้านี้`);
-  loadProducts();
 }
 
 interface ExtractedProduct {
@@ -724,7 +703,6 @@ function importJsonFile(file: File) {
   reader.readAsText(file);
 }
 
-$("get-product").addEventListener("click", getProductFromTikTok);
 $("sync-showcase").addEventListener("click", () => {
   const button = $("sync-showcase") as HTMLButtonElement;
   button.disabled = true;
@@ -1249,7 +1227,6 @@ renderQueueInfo();
 
 const apSelected = new Set<string>();
 let apProductsLoaded = false;
-let apTextSourceTouched = false;
 const AP_TEXT_SOURCE_LABELS: Record<string, string> = {
   "gemini-web": "เว็บ Gemini",
   "chatgpt-web": "เว็บ ChatGPT",
@@ -1274,7 +1251,7 @@ function apRenderProducts() {
     list.appendChild(emptyNote('ยังไม่มีสินค้า — ไปแท็บสินค้าแล้วกด "ดึงสินค้าจาก Showcase"'));
     return;
   }
-  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const platform = ($("publish-platform") as HTMLSelectElement).value;
   const available = products.filter((p) => platform === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl));
   if (!available.length) list.appendChild(emptyNote(platform === "shopee" ? 'เปิดหน้าสินค้า Shopee ใน Chrome แล้วกด "ดึงจากหน้า Shopee" ในแท็บสินค้า' : "ยังไม่มีสินค้า TikTok"));
   for (const product of available) {
@@ -1300,11 +1277,6 @@ function apRenderProducts() {
 }
 
 function apSetupOptions() {
-  $("ap-text-source").addEventListener("change", () => { apTextSourceTouched = true; });
-  const style = $("ap-style") as HTMLSelectElement;
-  style.innerHTML =
-    `<option value="rotate">สลับสไตล์ทุกคลิป</option>` + styleOptions();
-  bindStyleDescription("ap-style", "ap-style-desc", "ใช้สไตล์ต่างกันในแต่ละคลิป วนไปตามลำดับ เพื่อให้คอนเทนต์ไม่ซ้ำกัน");
   for (const radio of Array.from(document.querySelectorAll<HTMLInputElement>('input[name="ap-mode"]'))) {
     radio.addEventListener("change", () => {
       $("ap-schedule-box").hidden = apMode() !== "schedule";
@@ -1328,7 +1300,6 @@ function apRender(state: AutopilotState | null) {
   $("ap-setup").hidden = running;
   $("ap-controls").hidden = !running;
   ($("ap-pause") as HTMLButtonElement).hidden = state?.status !== "running";
-  ($("ap-resume") as HTMLButtonElement).hidden = state?.status !== "paused";
   ($("ap-skip") as HTMLButtonElement).hidden = !state?.current;
 
   const status = $("ap-status");
@@ -1377,6 +1348,7 @@ function apRender(state: AutopilotState | null) {
     const row = el("div", "ap-history-row");
     const top = el("div", "ap-history-top");
     top.append(el("span", `tag ${meta.tone}`, meta.text), el("span", "name", entry.productName.slice(0, 40)));
+    if (entry.status === "failed") top.append(apRetryControl(state!, entry));
     row.append(
       top,
       el("div", "ap-history-meta", `${apFormatTime(entry.at)} · ${entry.platform === "shopee" ? "Shopee" : "TikTok"}${entry.style ? ` · ${styleLabel(entry.style).name}` : ""}`),
@@ -1386,6 +1358,21 @@ function apRender(state: AutopilotState | null) {
   }
 }
 
+/** "ลองใหม่" on a failed row: sends it back to the queue, keeping its script and scenes. */
+function apRetryControl(state: AutopilotState, entry: AutopilotState["history"][number]): HTMLElement {
+  const queued = state.retries?.some((r) => r.productId === entry.productId && r.at === entry.at);
+  if (queued) return el("span", "tag tag-muted", "รอลองใหม่");
+  if (entry.retried) return el("span", "tag tag-muted", "ลองใหม่แล้ว");
+  const button = el("button", "btn btn-sm", "ลองใหม่");
+  button.addEventListener("click", () => {
+    const reuse = entry.contentId ? "ใช้สคริปต์และฉากเดิม ไม่ต้องวิเคราะห์หรือเขียนใหม่\n" : "";
+    if (!confirm(`ลองทำ "${entry.productName.slice(0, 40)}" ใหม่อีกครั้ง?\n${reuse}ใช้เครดิตสร้างวิดีโออีก 1 ครั้ง`)) return;
+    button.disabled = true;
+    void apCommand("AUTOPILOT_RETRY", { productId: entry.productId, at: entry.at }).finally(() => { button.disabled = false; });
+  });
+  return button;
+}
+
 async function loadAutopilot() {
   if (!apProductsLoaded) {
     const result = await send<{ ok: boolean; products?: AppProduct[] }>({ type: "GET_TIKTOK_PRODUCTS" });
@@ -1393,16 +1380,8 @@ async function loadAutopilot() {
     apProductsLoaded = true;
   }
   apRenderProducts();
-  const [result, settingsResult] = await Promise.all([
-    send<{ ok: boolean; state?: AutopilotState | null }>({ type: "AUTOPILOT_GET_STATE" }),
-    send<{ ok: boolean; settings?: { textSource?: string } }>({ type: "GET_SETTINGS" }),
-  ]);
-  if (!apTextSourceTouched) {
-    const source = result?.state?.status !== "idle" && result?.state?.settings.textSource
-      ? result.state.settings.textSource : settingsResult?.settings?.textSource;
-    ($("ap-text-source") as HTMLSelectElement).value =
-      source && AP_TEXT_SOURCE_LABELS[source] ? source : "gemini-web";
-  }
+  const result = await send<{ ok: boolean; state?: AutopilotState | null }>({ type: "AUTOPILOT_GET_STATE" });
+  renderTextSourceNote();
   apRender(result?.state ?? null);
 }
 
@@ -1417,7 +1396,7 @@ function apCommand(type: string, extra: Record<string, unknown> = {}) {
 $("ap-pick-first").addEventListener("click", () => {
   const count = Math.max(1, Number(($("ap-count") as HTMLInputElement).value) || 1);
   apSelected.clear();
-  products.filter((p) => ($("ap-platform") as HTMLSelectElement).value === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl)).slice(0, count).forEach((p) => apSelected.add(p.id));
+  products.filter((p) => ($("publish-platform") as HTMLSelectElement).value === "shopee" ? !!shopeeProductLink(p.sourceUrl) : !shopeeProductLink(p.sourceUrl)).slice(0, count).forEach((p) => apSelected.add(p.id));
   apRenderProducts();
 });
 $("ap-pick-none").addEventListener("click", () => {
@@ -1437,11 +1416,11 @@ $("ap-start").addEventListener("click", () => {
     mode === "batch"
       ? `สร้างวิดีโอ ${productIds.length} ชิ้นต่อกันเลย`
       : `ทุกวันเวลา ${($("ap-times") as HTMLInputElement).value} ทำ 1 ชิ้น วนสินค้า ${productIds.length} ชิ้นไปเรื่อยๆ`;
-  const platform = ($("ap-platform") as HTMLSelectElement).value;
+  const platform = ($("publish-platform") as HTMLSelectElement).value;
   const warning = postMode === "auto" ? `\n\nระบบจะกด Post ให้เอง — วิดีโอจะขึ้นบัญชี ${platform === "shopee" ? "Shopee" : "TikTok"} จริงโดยไม่ถามอีก` : "";
-  const siteSelect = $("ap-site") as HTMLSelectElement;
+  const siteSelect = $("site") as HTMLSelectElement;
   const siteName = siteSelect.selectedOptions[0]?.textContent ?? "Flow";
-  const sourceSelect = $("ap-text-source") as HTMLSelectElement;
+  const sourceSelect = $("text-source") as HTMLSelectElement;
   const source = sourceSelect.value;
   const sourceQuota = source === "chatgpt-web" ? "โควต้าแชท ChatGPT" : source === "api" ? "โควต้า Gemini API" : "โควต้าแชท Gemini";
   if (!confirm(`${plan}\nใช้เครดิต/โควต้าวิดีโอของ ${siteName} และ${sourceQuota} ทุกชิ้น${warning}\n\nเริ่มเลยไหม?`)) return;
@@ -1452,16 +1431,15 @@ $("ap-start").addEventListener("click", () => {
     times: ($("ap-times") as HTMLInputElement).value,
     settings: {
       platform,
-      targetDuration: Number(($("ap-duration") as HTMLSelectElement).value),
-      style: ($("ap-style") as HTMLSelectElement).value,
+      targetDuration: Number(($("duration") as HTMLSelectElement).value),
+      style: ($("ap-rotate-style") as HTMLInputElement).checked ? "rotate" : ($("style") as HTMLSelectElement).value,
       postMode,
-      site: ($("ap-site") as HTMLSelectElement).value,
+      site: siteSelect.value,
       textSource: source,
     },
   });
 });
 $("ap-pause").addEventListener("click", () => apCommand("AUTOPILOT_PAUSE"));
-$("ap-resume").addEventListener("click", () => apCommand("AUTOPILOT_RESUME"));
 $("ap-skip").addEventListener("click", () => {
   if (confirm("ข้ามสินค้าที่กำลังทำอยู่แล้วไปชิ้นถัดไป?")) apCommand("AUTOPILOT_SKIP_CURRENT");
 });
@@ -1495,6 +1473,7 @@ function loadSettings() {
       settings.presenter === "female" || settings.presenter === "male" ? settings.presenter : "alternate";
     ($("text-source") as HTMLSelectElement).value =
       settings.textSource === "api" || settings.textSource === "chatgpt-web" ? settings.textSource : "gemini-web";
+    renderTextSourceNote();
     ($("gemini-model") as HTMLInputElement).value = settings.geminiModel;
     ($("flow-project-url") as HTMLInputElement).value = settings.flowProjectUrl;
   });
@@ -1600,6 +1579,9 @@ $("presenter").addEventListener("change", () => {
 
 /* ---------- boot ---------- */
 
+// Shown in the header so it is obvious whether Chrome has loaded the latest build.
+$("app-version").textContent = `v${chrome.runtime.getManifest().version}`;
+
 // Small disclosure menus (e.g. "ข้อมูล") fold away once an item in them is used.
 for (const menu of Array.from(document.querySelectorAll<HTMLDetailsElement>("details.menu"))) {
   menu.addEventListener("click", (event) => {
@@ -1609,24 +1591,109 @@ for (const menu of Array.from(document.querySelectorAll<HTMLDetailsElement>("det
 
 populateStyles();
 bindDurationToSite("duration", "site");
-bindDurationToSite("ap-duration", "ap-site");
 loadProducts();
 loadSettings();
 
 
-function updatePlatformOptions(prefix: "ap-" | "") {
-  const platform = ($(prefix ? "ap-platform" : "publish-platform") as HTMLSelectElement).value as PublishPlatform;
-  const select = $(`${prefix}style`) as HTMLSelectElement;
-  select.innerHTML = (prefix ? '<option value="rotate">สลับสไตล์ทุกคลิป</option>' : "") + styleOptions(platform);
+/** The platform drives both tabs: style list, autopilot's product list and post options. */
+function updatePlatformOptions() {
+  const platform = ($("publish-platform") as HTMLSelectElement).value as PublishPlatform;
+  const select = $("style") as HTMLSelectElement;
+  const previous = select.value;
+  select.innerHTML = styleOptions(platform);
+  if (Array.from(select.options).some((o) => o.value === previous)) select.value = previous;
   select.dispatchEvent(new Event("change"));
-  if (prefix) {
-    apSelected.clear(); apRenderProducts();
-    if (platform === "shopee") ($("ap-post-mode") as HTMLSelectElement).value = "none";
-    $("ap-post-hint").textContent = platform === "shopee" ? "Shopee Affiliate: สร้างคลิปขายแล้วดาวน์โหลดไปโพสต์ในแอป Shopee ได้ ส่วนโพสต์ผ่าน Chrome ต้องมีสิทธิ์ปักสินค้าร้านอื่นในหน้าเว็บก่อน — Seller Centre อาจแสดงเฉพาะสินค้าร้านตัวเอง" : "โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง";
-  } else resetReview();
+  apSelected.clear();
+  apRenderProducts();
+  if (platform === "shopee") ($("ap-post-mode") as HTMLSelectElement).value = "none";
+  $("ap-post-hint").textContent = platform === "shopee" ? "Shopee Affiliate: สร้างคลิปขายแล้วดาวน์โหลดไปโพสต์ในแอป Shopee ได้ ส่วนโพสต์ผ่าน Chrome ต้องมีสิทธิ์ปักสินค้าร้านอื่นในหน้าเว็บก่อน — Seller Centre อาจแสดงเฉพาะสินค้าร้านตัวเอง" : "โพสต์จะติดลิงก์สินค้าให้อัตโนมัติถ้าสินค้ามาจาก TikTok Showcase และเปิดป้าย AI-generated content ทุกครั้ง";
+  resetReview();
 }
-$("ap-platform").addEventListener("change", () => updatePlatformOptions("ap-"));
-$("publish-platform").addEventListener("change", () => updatePlatformOptions(""));
+$("publish-platform").addEventListener("change", () => updatePlatformOptions());
+
+/* ---------- shared video settings, remembered between sessions ---------- */
+
+const VIDEO_PREFS_KEY = "videoPrefs";
+type VideoPrefs = { platform?: string; site?: string; style?: string; duration?: string };
+
+function saveVideoPrefs() {
+  const prefs: VideoPrefs = {
+    platform: ($("publish-platform") as HTMLSelectElement).value,
+    site: ($("site") as HTMLSelectElement).value,
+    style: ($("style") as HTMLSelectElement).value,
+    duration: ($("duration") as HTMLSelectElement).value,
+  };
+  void chrome.storage.local.set({ [VIDEO_PREFS_KEY]: prefs }).catch(() => {});
+}
+
+async function restoreVideoPrefs() {
+  const stored = (await chrome.storage.local.get(VIDEO_PREFS_KEY).catch(() => ({}))) as Record<string, unknown>;
+  const prefs = (stored[VIDEO_PREFS_KEY] ?? {}) as VideoPrefs;
+  const setIf = (id: string, value: string | undefined) => {
+    const select = $(id) as HTMLSelectElement;
+    if (value && Array.from(select.options).some((o) => o.value === value)) select.value = value;
+  };
+  // Order matters: the platform decides the style list, the site the lengths.
+  setIf("publish-platform", prefs.platform);
+  if (prefs.platform === "shopee") updatePlatformOptions();
+  setIf("style", prefs.style);
+  $("style").dispatchEvent(new Event("change"));
+  setIf("site", prefs.site);
+  $("site").dispatchEvent(new Event("change"));
+  setIf("duration", prefs.duration);
+  for (const id of ["publish-platform", "site", "style", "duration"]) $(id).addEventListener("change", saveVideoPrefs);
+}
+
+/* ---------- AI text source: set once, in the Settings tab ---------- */
+
+function renderTextSourceNote() {
+  const select = $("text-source") as HTMLSelectElement;
+  const label = AP_TEXT_SOURCE_LABELS[select.value] ?? "เว็บ Gemini";
+  $("ap-text-source-note").textContent = `วิเคราะห์สินค้าและเขียนสคริปต์ด้วย ${label} — เปลี่ยนได้ในแท็บตั้งค่า`;
+}
+
+// Saved as soon as it changes, like the presenter: every way of starting a video reads it.
+$("text-source").addEventListener("change", () => {
+  void send({ type: "SAVE_SETTINGS", settings: { textSource: ($("text-source") as HTMLSelectElement).value } });
+  renderTextSourceNote();
+});
+
+/* ---------- one "ทำต่อ" for anything paused ---------- */
+
+async function renderResumeBar() {
+  const stored = await chrome.storage.local.get(["autopilot", "jobProgress", "licenseQueuePaused"]).catch(() => ({} as Record<string, unknown>));
+  const pilot = stored.autopilot as AutopilotState | undefined;
+  const progress = stored.jobProgress as { state?: string; error?: string } | undefined;
+  const autopilotPaused = pilot?.status === "paused";
+  const jobPaused = progress?.state === "paused" || !!stored.licenseQueuePaused;
+  $("resume-bar").hidden = !autopilotPaused && !jobPaused;
+  $("resume-text").textContent = autopilotPaused
+    ? pilot?.message ?? "ระบบอัตโนมัติหยุดชั่วคราว"
+    : progress?.error ?? "งานถูกพักไว้ — ตรวจสิทธิ์ใช้งานแล้วกดทำต่อ";
+}
+
+$("license-resume").addEventListener("click", async () => {
+  const button = $("license-resume") as HTMLButtonElement;
+  button.disabled = true;
+  try {
+    const { autopilot } = await chrome.storage.local.get("autopilot");
+    // Autopilot resumes its own paused video/post; anything else (a job paused
+    // for the licence, a stalled queue) goes through the licence resume.
+    const result = (autopilot as AutopilotState | undefined)?.status === "paused"
+      ? await apCommand("AUTOPILOT_RESUME")
+      : await send<{ ok: boolean; error?: string }>({ type: "LICENSE_RESUME_WORK" });
+    log(result?.ok ? "ทำงานต่อแล้ว" : result?.error ?? "ทำต่อไม่สำเร็จ");
+  } finally {
+    button.disabled = false;
+    void renderResumeBar();
+  }
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && (changes.autopilot || changes.jobProgress || changes.licenseQueuePaused)) void renderResumeBar();
+});
+void renderResumeBar();
+// Last, so every helper and constant above exists when the saved choices are applied.
+void restoreVideoPrefs();
 $("get-shopee-product").addEventListener("click", async () => {
   const button = $("get-shopee-product") as HTMLButtonElement;
   const status = $("shopee-import-status");
@@ -1639,7 +1706,7 @@ $("get-shopee-product").addEventListener("click", async () => {
     if (!result.ok || !result.products?.length) throw new Error(result.error ?? "ไม่พบข้อมูลสินค้า Shopee ที่นำเข้าได้");
     status.textContent = `นำเข้า/อัปเดตสินค้า Shopee ${result.products.length} รายการแล้ว${result.warnings?.length ? ` · ${result.warnings.join(" · ")}` : ""}`;
     log(status.textContent); await loadProducts();
-    ($("publish-platform") as HTMLSelectElement).value = "shopee"; updatePlatformOptions("");
+    ($("publish-platform") as HTMLSelectElement).value = "shopee"; updatePlatformOptions(); saveVideoPrefs();
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     log(status.textContent);

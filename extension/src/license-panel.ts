@@ -30,10 +30,6 @@ export function initLicensePanel() {
     finally { activate.disabled = refresh.disabled = false; }
   }
   activate.addEventListener("click", () => void request("LICENSE_ACTIVATE"));
-  document.getElementById("license-resume")!.addEventListener("click", async () => {
-    const result = await chrome.runtime.sendMessage({ type: "LICENSE_RESUME_WORK" }).catch(() => null) as { ok?: boolean; error?: string } | null;
-    status.textContent = result?.ok ? "ส่งคำสั่งทำงานต่อแล้ว หากเป็น Autopilot ให้กดทำต่อในแท็บอัตโนมัติด้วย" : result?.error ?? "เริ่มงานต่อไม่สำเร็จ";
-  });
   refresh.addEventListener("click", () => void request("LICENSE_CHECK"));
   input.addEventListener("keydown", e => { if (e.key === "Enter" && !activate.disabled) void request("LICENSE_ACTIVATE"); });
   chrome.storage.onChanged.addListener((changes, area) => {

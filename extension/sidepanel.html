@@ -189,14 +189,18 @@
         border-radius: var(--radius);
       }
       #license-card > summary::-webkit-details-marker { display: none; }
-      .license-foot {
+      .resume-bar {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 8px 12px;
-        border-top: 1px solid var(--line);
+        gap: 10px;
+        margin: 0 14px 10px;
+        padding: 9px 10px 9px 12px;
+        border-radius: var(--radius);
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        background: rgba(251, 191, 36, 0.07);
       }
+      .resume-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); flex-shrink: 0; }
+      .resume-text { flex: 1; min-width: 0; font-size: 12px; color: #fde68a; line-height: 1.5; overflow-wrap: anywhere; }
       .license-dot {
         width: 8px;
         height: 8px;
@@ -431,11 +435,12 @@
       .menu-panel .btn:hover { background: rgba(255, 255, 255, 0.06); }
 
       /* ---------- import sources ---------- */
-      .sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+      .sources { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
       .source {
         display: grid;
         gap: 6px;
         justify-items: start;
+        justify-content: stretch;
         min-height: 74px;
         padding: 10px;
         border: 1px solid var(--line);
@@ -584,6 +589,13 @@
       .studio-target.is-ready { border-style: solid; border-color: rgba(167, 139, 250, 0.4); background: rgba(124, 92, 255, 0.08); color: var(--text); }
       .studio-target img { width: 28px; height: 28px; border-radius: 7px; object-fit: cover; background: var(--surface-3); }
       .studio-target span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .video-settings {
+        padding: 12px;
+        border-radius: 11px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .video-settings-head { display: grid; gap: 1px; margin-bottom: 10px; }
       .style-desc {
         margin-top: 6px;
         padding: 8px 10px;
@@ -982,6 +994,7 @@
       .ap-history-row:last-child { border-bottom: 0; }
       .ap-history-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
       .ap-history-top .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .ap-history-top > :last-child:not(.name):not(:first-child) { margin-left: auto; flex: none; }
       .ap-history-meta { font-size: 11px; color: var(--faint); }
       .ap-history-err { font-size: 11px; color: var(--danger); }
 
@@ -1023,7 +1036,7 @@
       </span>
       <div class="brand">
         <div class="brand-name">AI Affiliate Studio</div>
-        <div class="brand-sub">Creative Intelligence OS</div>
+        <div class="brand-sub">Creative Intelligence OS · <span id="app-version"></span></div>
       </div>
     </header>
 
@@ -1047,12 +1060,14 @@
         </div>
       </div>
     </details>
-      <!-- Outside the fold on purpose: after a renewal the licence reads OK (card folded) but paused work still needs this. -->
-      <div class="license-foot">
-        <span class="hint">งานถูกพักเพราะสิทธิ์หมด? ต่ออายุแล้วกดปุ่มนี้</span>
-        <button id="license-resume" class="btn btn-sm" data-icon="play">ทำงานที่พักต่อ</button>
-      </div>
     </section>
+
+    <!-- The one "continue" button: shown on every tab, only while something is paused. -->
+    <div id="resume-bar" class="resume-bar" role="status" aria-live="polite" hidden>
+      <span class="resume-dot" aria-hidden="true"></span>
+      <span id="resume-text" class="resume-text">มีงานถูกพักไว้</span>
+      <button id="license-resume" class="btn btn-sm btn-primary" data-icon="play">ทำต่อ</button>
+    </div>
 
     <nav id="tabs" role="tablist" aria-label="เมนูหลัก">
       <button id="tab-products" class="tab active" role="tab" aria-selected="true" aria-controls="view-products" data-icon="package">สินค้า</button>
@@ -1068,7 +1083,7 @@
         <div class="card-head">
           <div>
             <h2 id="import-title" class="card-title">นำเข้าสินค้า</h2>
-            <p class="card-desc">เปิดหน้าสินค้าในแท็บที่ใช้งานอยู่ แล้วเลือกแหล่งที่มา</p>
+            <p class="card-desc">Showcase ตรวจสต็อกให้ด้วย — สินค้าที่หมดหรือไม่อยู่ใน Showcase แล้วจะถูกลบออก</p>
           </div>
           <details class="menu">
             <summary class="btn btn-sm btn-ghost" data-icon="more" aria-label="จัดการข้อมูลสินค้า">ข้อมูล</summary>
@@ -1081,7 +1096,6 @@
           <input id="import-file" type="file" accept="application/json" hidden />
         </div>
         <div class="sources">
-          <button id="get-product" class="btn source" data-tone="tiktok" data-icon="music">ดึงจากหน้า TikTok</button>
           <button id="sync-showcase" class="btn source" data-tone="showcase" data-icon="store">ดึงสินค้าจาก Showcase</button>
           <button id="get-shopee-product" class="btn source" data-tone="shopee" data-icon="bag">ดึงจากหน้า Shopee</button>
         </div>
@@ -1120,53 +1134,61 @@
           <span>เลือกสินค้า 1 ชิ้นจากคลังด้านบน</span>
         </div>
 
-        <div class="grid-2">
-          <div class="field">
-            <label for="publish-platform">แพลตฟอร์ม</label>
-            <select id="publish-platform" title="แพลตฟอร์มของวิดีโอ"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
-          </div>
-          <div class="field">
-            <label for="site">เว็บสร้างวิดีโอ</label>
-            <select id="site">
-              <option value="aistudio">AI Studio</option>
-              <option value="flow" selected>Google Flow</option>
-              <option value="gemini">Gemini</option>
-              <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
-            </select>
+        <div id="video-settings-slot-studio">
+          <div id="video-settings" class="video-settings">
+            <div class="video-settings-head">
+              <span class="field-label">ตั้งค่าวิดีโอ</span>
+              <span class="hint">ใช้ร่วมกันทั้งแท็บสินค้าและแท็บอัตโนมัติ · จำค่าไว้ให้</span>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <label for="publish-platform">แพลตฟอร์ม</label>
+                <select id="publish-platform" title="แพลตฟอร์มของวิดีโอ"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
+              </div>
+              <div class="field">
+                <label for="site">เว็บสร้างวิดีโอ</label>
+                <select id="site">
+                  <option value="aistudio">AI Studio</option>
+                  <option value="flow" selected>Google Flow</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
+                </select>
+              </div>
+            </div>
+            <div class="field" style="margin-top: 10px">
+              <label for="style">สไตล์คอนเทนต์</label>
+              <select id="style"></select>
+              <div id="style-desc" class="style-desc"></div>
+            </div>
+            <div class="grid-2" style="margin-top: 10px">
+              <div class="field">
+                <label for="duration">ความยาว</label>
+                <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
+                  <option value="8">8 วิ · คลิปเดียว</option>
+                  <option value="16">16 วิ · ต่อ 2 คลิป</option>
+                  <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="presenter">ผู้รีวิวในวิดีโอ</label>
+                <select id="presenter" title="คนรีวิวในวิดีโอ — สลับ = เปลี่ยนหญิง/ชายทุกวิดีโอ เสียงและคำลงท้าย ครับ/ค่ะ จะตามเพศผู้รีวิว">
+                  <option value="alternate" selected>สลับ หญิง-ชาย</option>
+                  <option value="female">ผู้หญิง</option>
+                  <option value="male">ผู้ชาย</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
         <div class="field" style="margin-top: 10px">
-          <label for="style">สไตล์คอนเทนต์</label>
-          <select id="style"></select>
-          <div id="style-desc" class="style-desc"></div>
-        </div>
-        <div class="grid-2" style="margin-top: 10px">
-          <div class="field">
-            <label for="duration">ความยาว</label>
-            <select id="duration" title="ความยาววิดีโอ — Flow/AI Studio สร้างได้ครั้งละ 8 วิ ยาวกว่านั้นจะต่อหลายคลิป (สูงสุด 3 คลิป) ส่วน Gemini สร้าง 10 หรือ 20 วิได้ในครั้งเดียว">
-              <option value="8">8 วิ · คลิปเดียว</option>
-              <option value="16">16 วิ · ต่อ 2 คลิป</option>
-              <option value="24" selected>24 วิ · ต่อ 3 คลิป</option>
-            </select>
-          </div>
-          <div class="field">
-            <label for="repeat">จำนวนวิดีโอ</label>
-            <select id="repeat" title="สร้างกี่วิดีโอจากคอนเทนต์นี้ — แต่ละวิดีโอจะต่างกัน และรันต่อกันอัตโนมัติ">
-              <option value="1" selected>ทำ 1 วิดีโอ</option>
-              <option value="2">ทำ 2 วิดีโอ</option>
-              <option value="3">ทำ 3 วิดีโอ</option>
-              <option value="4">ทำ 4 วิดีโอ</option>
-              <option value="5">ทำ 5 วิดีโอ</option>
-            </select>
-          </div>
-          <div class="field" style="grid-column: 1 / -1">
-            <label for="presenter">ผู้รีวิวในวิดีโอ</label>
-            <select id="presenter" title="คนรีวิวในวิดีโอ — สลับ = เปลี่ยนหญิง/ชายทุกวิดีโอ (ใช้กับระบบอัตโนมัติด้วย) เสียงและคำลงท้าย ครับ/ค่ะ จะตามเพศผู้รีวิว">
-              <option value="alternate" selected>ผู้รีวิว: สลับ หญิง-ชาย</option>
-              <option value="female">ผู้รีวิว: ผู้หญิง</option>
-              <option value="male">ผู้รีวิว: ผู้ชาย</option>
-            </select>
-          </div>
+          <label for="repeat">จำนวนวิดีโอจากคอนเทนต์นี้</label>
+          <select id="repeat" title="สร้างกี่วิดีโอจากคอนเทนต์นี้ — แต่ละวิดีโอจะต่างกัน และรันต่อกันอัตโนมัติ">
+            <option value="1" selected>ทำ 1 วิดีโอ</option>
+            <option value="2">ทำ 2 วิดีโอ</option>
+            <option value="3">ทำ 3 วิดีโอ</option>
+            <option value="4">ทำ 4 วิดีโอ</option>
+            <option value="5">ทำ 5 วิดีโอ</option>
+          </select>
         </div>
 
         <ol class="stepper" aria-label="ขั้นตอนสร้างวิดีโอ" style="list-style: none; padding: 0; margin-bottom: 0">
@@ -1190,12 +1212,6 @@
 
       <section id="review" class="card" aria-label="ผลลัพธ์จาก AI" hidden></section>
 
-      <section class="card" aria-labelledby="activity-title">
-        <div class="card-head" style="margin-bottom: 8px">
-          <h2 id="activity-title" class="card-title" style="font-size: 12.5px">กิจกรรมล่าสุด</h2>
-        </div>
-        <div id="log" aria-live="polite"></div>
-      </section>
     </main>
 
     <!-- ===================== Library ===================== -->
@@ -1220,8 +1236,8 @@
       <div class="eyebrow"><b>03</b> คลิปที่เสร็จแล้ว</div>
       <div id="clips-list"></div>
 
-      <details class="card disclosure">
-        <summary><i class="ic" data-icon="terminal" aria-hidden="true"></i>บันทึกขั้นตอนงาน (สำหรับแก้บั๊ก)</summary>
+      <details class="card disclosure" open>
+        <summary><i class="ic" data-icon="terminal" aria-hidden="true"></i>บันทึกการทำงาน</summary>
         <div class="row" style="justify-content: flex-end; margin-bottom: 8px">
           <button id="copy-job-log" class="btn btn-sm" data-icon="copy">คัดลอก</button>
         </div>
@@ -1235,7 +1251,6 @@
 
       <div id="ap-controls" hidden>
         <button id="ap-pause" class="btn" data-icon="pause">หยุดชั่วคราว</button>
-        <button id="ap-resume" class="btn btn-primary" data-icon="play">ทำต่อ</button>
         <button id="ap-skip" class="btn" data-icon="skip">ข้ามชิ้นนี้</button>
         <button id="ap-stop" class="btn btn-danger" data-icon="stop">หยุดทั้งหมด</button>
       </div>
@@ -1258,44 +1273,10 @@
         </section>
 
         <section class="card">
-          <div class="eyebrow" style="margin: 0 0 12px"><b>02</b> ตั้งค่าวิเคราะห์ วิดีโอและโพสต์</div>
-          <div class="field">
-            <label for="ap-text-source">วิเคราะห์สินค้า / เขียนสคริปต์ด้วย</label>
-            <select id="ap-text-source">
-              <option value="gemini-web">เว็บ Gemini (gemini.google.com)</option>
-              <option value="chatgpt-web">เว็บ ChatGPT (chatgpt.com)</option>
-              <option value="api">Gemini API key</option>
-            </select>
-            <p class="hint">ใช้แหล่งนี้กับการวิเคราะห์สินค้า เขียนสคริปต์ และวางฉากตลอดรอบอัตโนมัติ ต้องล็อกอินเว็บที่เลือกไว้ใน Chrome</p>
-          </div>
-          <div class="grid-2" style="margin-top: 10px">
-            <div class="field">
-              <label for="ap-platform">ปลายทางโพสต์</label>
-              <select id="ap-platform" title="ปลายทางโพสต์"><option value="tiktok">TikTok</option><option value="shopee">Shopee Video</option></select>
-            </div>
-            <div class="field">
-              <label for="ap-site">เว็บสร้างวิดีโอ</label>
-              <select id="ap-site" title="เว็บที่ใช้สร้างวิดีโอ">
-                <option value="flow" selected>Google Flow</option>
-                <option value="gemini">Gemini</option>
-                <option value="meta">Meta AI (สร้างหลายฉากในครั้งเดียว)</option>
-                <option value="aistudio">AI Studio</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="ap-style">สไตล์</label>
-              <select id="ap-style"></select>
-            </div>
-            <div class="field">
-              <label for="ap-duration">ความยาว</label>
-              <select id="ap-duration">
-                <option value="8" selected>8 วิ · คลิปเดียว</option>
-                <option value="16">16 วิ · ต่อ 2 คลิป</option>
-                <option value="24">24 วิ · ต่อ 3 คลิป</option>
-              </select>
-            </div>
-          </div>
-          <div id="ap-style-desc" class="style-desc"></div>
+          <div class="eyebrow" style="margin: 0 0 12px"><b>02</b> วิดีโอและการโพสต์</div>
+          <div id="video-settings-slot-ap"></div>
+          <label class="check" style="margin-top: 10px"><input id="ap-rotate-style" type="checkbox" /> สลับสไตล์ทุกชิ้น (ไม่ใช้สไตล์ด้านบนตายตัว)</label>
+          <p id="ap-text-source-note" class="hint" style="margin-top: 8px"></p>
           <div class="field" style="margin-top: 10px">
             <label for="ap-post-mode">การโพสต์</label>
             <select id="ap-post-mode">
